@@ -15,3 +15,5 @@ test-out.txt
 # 运行数据与备份（数据根实际位于 ~/.dsh/fasti，仓库内不应出现）
 fasti/
 backup/
+# 转写用真实数据副本（含个人对话，不进公开仓库）
+raw-data/
