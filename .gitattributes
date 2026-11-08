@@ -1,0 +1,31 @@
+# 行尾统一 —— 仓库内一律 LF，检出到 Windows 工作区也保持 LF。
+#
+# 背景：仓库历史上有 9 个文件以 CRLF 入库（docs/acceptance-selfcheck.md、
+# docs/implementation-notes.md、tests/api/*.test.ts、tests/contract/experience.test.ts、
+# tests/contract/primitives.test.ts、tests/helpers.ts、tests/projection/transaction.test.ts、
+# tests/source/raw-log.test.ts）。混合行尾会让 diff 出现整文件噪音，也让
+# 「这个文件到底改了哪几行」难以审阅。
+#
+# 声明后：仓库存储与工作区均为 LF，跨平台协作不再受行尾影响。
+* text=auto eol=lf
+
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# 二进制资源：禁止行尾转换。
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary

@@ -13,6 +13,7 @@
 
 import type { ChannelDescriptor } from './channel.ts';
 import type { Experience, Pointer } from './experience.ts';
+import type { RawTurnInput } from './raw-turn.ts';
 
 /**
  * appendExperience 的入参。
@@ -27,10 +28,26 @@ export type AppendExperienceInput = Omit<Experience, 'recorded_at' | 'tick'> & {
   recorded_at?: string;
 };
 
+/**
+ * ingestRawTurn 的入参 —— 原文层的一行 + 若干可选的口径覆盖。
+ *
+ * 底层即 `RawTurnInput`（原文层 8 字段），另加两个**可选**覆盖项：
+ *  - `occurred_at`：世界轴（事情发生的时刻）。缺省取 `asserted_at`。
+ *  - `ingested_at`：系统轴（进入真源的时刻）。缺省由 A 分配**本次摄入的唯一落盘时刻**。
+ *
+ * 关键：缺省时 A 在同一个原子操作内**只计算一次**落盘时刻，原文行的 `ingested_at`
+ * 与经历条目的 `recorded_at` 严格相等（世界轴与系统轴分离，但同一操作的两处落盘不漂移）。
+ */
+export interface IngestRawTurnInput extends RawTurnInput {
+  /** 世界轴：事情发生/被感知的时刻；缺省取 asserted_at。 */
+  occurred_at?: string | undefined;
+}
+
 /** 原语名全集 —— 测试据此核对 §9 是否齐备。 */
 export const PRIMITIVE_NAMES = [
   'registerChannel',
   'appendExperience',
+  'ingestRawTurn',
   'ingestMedia',
   'preserveMedia',
   'query',
@@ -194,6 +211,24 @@ export interface FastiPrimitives {
    * 以 id 为幂等键：重复 append 同 id 视为重试，返回既有条目、不重复写、不报错。
    */
   appendExperience(experience: AppendExperienceInput): Promise<Experience>;
+
+  /**
+   * 摄入一轮原始对话 —— 「写原文 → 构造经历 → 写经历 → 更新投影」封装为
+   * **一个经单写者队列的原子操作**（阶段 4 开放面扩展，定案稿 §9 之外的加法）。
+   *
+   * 幂等键是 **(channel, event_id)**：
+   *  - 命中 → 直接返回既有经历，**零新增、不重复写、不报错**；
+   *  - 未命中 → 生成新 ULID 写原文与经历，并把 (channel, event_id) → experience.id
+   *    记入真源派生的内存索引（进程重启后从真源恢复）。
+   *
+   * `event_id` 仅在通道命名空间内唯一，故键必须带 channel。
+   *
+   * 落盘时刻只计算一次：原文行的 `ingested_at` 与经历条目的 `recorded_at`
+   * 严格相等（同一原子操作的两处落盘不漂移）。
+   *
+   * 不改变 Experience schema、时间三轴、ULID/指针口径；投影仍可从真源重建。
+   */
+  ingestRawTurn(channel: string, input: IngestRawTurnInput): Promise<Experience>;
 
   /** 摄入媒体（full/notice：字节进 staging；reference-only：仅登记 origin）。阶段 3+。 */
   ingestMedia(bytes: Uint8Array | undefined, meta: Record<string, unknown>): Promise<never>;

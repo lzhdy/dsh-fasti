@@ -2,7 +2,7 @@
   "name": "dsh-fasti",
   "version": "0.1.0",
   "private": true,
-  "description": "Fasti A 块阶段 0–2：真源层 + 最小投影（底层架构）",
+  "description": "Fasti A 块阶段 0–4：真源层 + 最小投影 + dsh 通道适配器（底层架构）",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -14,7 +14,11 @@
     "verify": "npm run build && npm run typecheck && npm test"
   },
   "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
   "devDependencies": {
+    "@deepseek-ai/cordis": "^4.1.0",
     "@types/node": "^22.20.5",
     "typescript": "^5.9.3"
   }

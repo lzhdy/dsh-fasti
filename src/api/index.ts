@@ -30,6 +30,7 @@ import type {
   EdgeQuery,
   EdgeView,
   FastiPrimitives,
+  IngestRawTurnInput,
   IntegrityReport,
   QueryFilter,
   RebuildResult,
@@ -43,6 +44,7 @@ import { TickAllocator } from '../source/tick.ts';
 import { WriterQueue } from '../source/writer-queue.ts';
 import { layoutOf, rawDirOf, resolveDataRoot } from '../source/paths.ts';
 import type { DataLayout } from '../source/paths.ts';
+import { defaultUlid } from '../core/ulid.ts';
 import { selectEngine } from '../projection/detect.ts';
 import { toEdgeRow } from '../projection/edge.ts';
 import { rebuildProjection } from '../projection/rebuild.ts';
@@ -79,6 +81,17 @@ export class Fasti implements FastiPrimitives {
   private degraded = false;
   private degradedReason = '';
 
+  /**
+   * 事件幂等索引 —— `(channel, event_id)` → `experience.id`。
+   *
+   * **真源派生**：键来自每条经历的 `(scene.channel, observation.text.id)`，
+   * 值是经历自身的 id。故本索引不是新真源、不是新表，进程重启后从真源恢复，
+   * 投影重建时也不需要额外动作（符合冻结面第 5 条：投影/索引皆可从真源重建）。
+   *
+   * 键必须带 channel：`event_id` 仅在通道命名空间内唯一。
+   */
+  private readonly eventIndex = new Map<string, string>();
+
   private constructor(options: FastiOptions) {
     this.env = options.env ?? process.env;
     this.layout = layoutOf(resolveDataRoot(options));
@@ -92,6 +105,8 @@ export class Fasti implements FastiPrimitives {
 
     this.experienceLog = new ExperienceLog(this.layout.experiences);
     this.experienceLog.reindex();
+
+    this.reindexEvents();
 
     this.checkpoint = new CheckpointStore(path.join(this.layout.state, 'checkpoint.json'));
 
@@ -151,50 +166,146 @@ export class Fasti implements FastiPrimitives {
   // ── 写入 ────────────────────────────────────────────────────────────────
 
   async appendExperience(experience: AppendExperienceInput): Promise<Experience> {
+    return this.queue.run(() => this.appendExperienceUnlocked(experience));
+  }
+
+  /**
+   * 从真源经历重建事件幂等索引。
+   *
+   * 键是 `(channel, event_id)`，取自每条经历的 `(scene.channel, observation.text.id)`；
+   * 值是经历自身的 id。故索引**完全派生自真源** —— 不是新真源、不是新表，
+   * 进程重启后自动恢复（冻结面第 5 条：投影/索引皆可从真源重建）。
+   *
+   * 没有 `observation.text.id` 的经历不进索引：它们本来就没有 event_id 幂等键。
+   */
+  private reindexEvents(): void {
+    this.eventIndex.clear();
+    for (const experience of this.experienceLog.readAll()) {
+      const eventId = experience.observation.text?.id;
+      if (eventId === undefined || eventId === '') {
+        continue;
+      }
+      this.eventIndex.set(eventKeyOf(experience.scene.channel, eventId), experience.id);
+    }
+  }
+
+  /**
+   * 写结构层经历 + 增量更新投影 —— **不经过单写者队列**。
+   *
+   * 存在的唯一理由：`ingestRawTurn` 需要在**同一个**队列任务内完成
+   * 「写原文 → 写经历 → 更新投影」。若这里的实现再排一次队，
+   * 就是队列内再排队（`WriterQueue` 是 Promise 串行队列）→ **永久挂起**。
+   *
+   * 因此纪律是：**只有最外层入口可以调它**。公开的 `appendExperience`
+   * 仍以 `queue.run` 包裹，行为与既有实现完全一致。
+   */
+  private async appendExperienceUnlocked(experience: AppendExperienceInput): Promise<Experience> {
+    // 幂等：同 id 视为重试，返回既有条目、不重复写、不报错（审计口径 7）。
+    if (this.experienceLog.has(experience.id)) {
+      return this.experienceLog.get(experience.id);
+    }
+
+    const parsed = parseExperience(
+      { ...experience, recorded_at: experience.recorded_at ?? '' } as unknown,
+      'write',
+    );
+
+    // recorded_at（系统轴）：
+    //  - 调用方未提供 → 由 A 分配当前时刻（定案稿 §9「appendExperience 分配 recorded_at/tick」）；
+    //  - 调用方显式提供 → 予以保留。定案稿 §12 的转写要求 recorded_at=ingested_at
+    //    （原文进入真源的时刻），若一律覆盖当前时刻，转写行的系统轴就会失真。
+    // 一旦落盘即永不改写（定案稿 §5：系统轴「永不」）。
+    const recordedAt =
+      experience.recorded_at === undefined || experience.recorded_at === ''
+        ? nowIso()
+        : experience.recorded_at;
+
+    const tick = this.ticks.next();
+
+    const stamped: Experience = {
+      ...parsed,
+      recorded_at: recordedAt,
+      tick,
+    };
+
+    const outcome = this.experienceLog.append(stamped);
+
+    // 同步增量更新投影（审计口径 13）：投影失败 → 回滚并标记需重建，
+    // 但真源写入不回滚（真源是唯一权威）。
+    try {
+      await this.updateProjection(stamped, outcome.location);
+    } catch {
+      this.checkpoint.setNeedsRebuild(true);
+      this.checkpoint.save();
+    }
+
+    this.checkpoint.setTick(tick);
+    this.checkpoint.save();
+
+    return outcome.experience;
+  }
+
+  /**
+   * 摄入一轮原始对话 —— 「写原文 → 构造经历 → 写经历 → 更新投影」
+   * 封装为一个**经单写者队列的原子操作**（阶段 4 开放面扩展）。
+   *
+   * 幂等键是 **(channel, event_id)**：
+   *  - 命中 → 返回既有经历，零新增、不重复写、不报错；
+   *  - 未命中 → 生成新 ULID，写原文 + 写经历，并把映射记入真源派生的索引。
+   *
+   * 落盘时刻只算一次：原文行的 `ingested_at` 与经历条目的 `recorded_at` 严格相等。
+   */
+  async ingestRawTurn(channel: string, input: IngestRawTurnInput): Promise<Experience> {
     return this.queue.run(async () => {
-      // 幂等：同 id 视为重试，返回既有条目、不重复写、不报错（审计口径 7）。
-      if (this.experienceLog.has(experience.id)) {
-        return this.experienceLog.get(experience.id);
+      // 幂等：先查 (channel, event_id) → experience.id。
+      const key = eventKeyOf(channel, input.event_id);
+      const existingId = this.eventIndex.get(key);
+      if (existingId !== undefined) {
+        const existing = this.experienceLog.get(existingId);
+        // 幂等命中也要补登记索引（覆盖「原文已在、经历刚补建」的半成品状态）。
+        this.eventIndex.set(key, existing.id);
+        return existing;
       }
 
-      const parsed = parseExperience(
-        { ...experience, recorded_at: experience.recorded_at ?? '' } as unknown,
-        'write',
-      );
+      // 落盘时刻**只计算一次**：原文的 ingested_at 与经历的 recorded_at 必须严格相等，
+      // 否则跨毫秒边界时两者会漂移（同一次摄入却有两个落盘时刻）。
+      const ingestedAt = input.ingested_at ?? nowIso();
 
-      // recorded_at（系统轴）：
-      //  - 调用方未提供 → 由 A 分配当前时刻（定案稿 §9「appendExperience 分配 recorded_at/tick」）；
-      //  - 调用方显式提供 → 予以保留。定案稿 §12 的转写要求 recorded_at=ingested_at
-      //    （原文进入真源的时刻），若一律覆盖当前时刻，转写行的系统轴就会失真。
-      //  一旦落盘即永不改写（定案稿 §5：系统轴「永不」）。
-      const recordedAt =
-        experience.recorded_at === undefined || experience.recorded_at === ''
-          ? nowIso()
-          : experience.recorded_at;
+      // 写原文层 —— 拿落点 (shard, seq) 构造双定位指针。
+      const log = this.rawLog(channel);
+      if (log === undefined) {
+        throw new NotFoundError(`通道未注册，无法写入原文层：${channel}`);
+      }
+      const location = log.append({ ...input, ingested_at: ingestedAt });
 
-      const tick = this.ticks.next();
-
-      const stamped: Experience = {
-        ...parsed,
-        recorded_at: recordedAt,
-        tick,
+      // 构造经历 —— tick 由 A 分配，调用方不传。
+      const experience: AppendExperienceInput = {
+        id: defaultUlid.next(),
+        schema_version: 1,
+        kind: 'dialogue',
+        scene: {
+          channel,
+          ref: input.session_id ?? '',
+        },
+        initiation: initiationOf(input.speaker),
+        observation: {
+          text: {
+            id: input.event_id,
+            channel,
+            shard: location.shard,
+            seq: location.seq,
+          },
+        },
+        occurred_at: input.occurred_at ?? input.asserted_at ?? ingestedAt,
+        recorded_at: ingestedAt,
       };
 
-      const outcome = this.experienceLog.append(stamped);
+      const written = await this.appendExperienceUnlocked(experience);
 
-      // 同步增量更新投影（审计口径 13）：投影失败 → 回滚并标记需重建，
-      // 但真源写入不回滚（真源是唯一权威）。
-      try {
-        await this.updateProjection(stamped, outcome.location);
-      } catch {
-        this.checkpoint.setNeedsRebuild(true);
-        this.checkpoint.save();
-      }
+      // 索引登记（真源派生：键取自刚写入经历自身的 observation.text.id）。
+      this.eventIndex.set(key, written.id);
 
-      this.checkpoint.setTick(tick);
-      this.checkpoint.save();
-
-      return outcome.experience;
+      return written;
     });
   }
 
@@ -610,6 +721,41 @@ export class Fasti implements FastiPrimitives {
       await this.engine.close();
       this.engine = null;
     }
+  }
+}
+
+/**
+ * 事件幂等键 —— `(channel, event_id)`。
+ *
+ * 必须带 channel：`event_id` 仅在**通道命名空间内**唯一
+ * （`RawLog` 是「一个通道命名空间一份」）。
+ *
+ * 分隔符用 U+0000 —— 它不可能出现在 event_id 或 channel id 里，
+ * 故不存在「拼接歧义」（`a` + `b\0c` 与 `a\0b` + `c` 撞键）。
+ */
+export function eventKeyOf(channel: string, eventId: string): string {
+  return `${channel}\u0000${eventId}`;
+}
+
+/**
+ * speaker → initiation 映射（开放枚举）。
+ *
+ * 与阶段 3 迁移脚本 `INITIATION_BY_SPEAKER` 同口径：
+ * `user`→`user`、`assistant`→`her`、`system`→`system`、`tool`→`environment`。
+ * 未知值**原样保留**（开放枚举：不报错、不丢事件）。
+ */
+export function initiationOf(speaker: string): string {
+  switch (speaker) {
+    case 'user':
+      return 'user';
+    case 'assistant':
+      return 'her';
+    case 'system':
+      return 'system';
+    case 'tool':
+      return 'environment';
+    default:
+      return speaker;
   }
 }
 

@@ -476,6 +476,7 @@ facts / self-model 同入投影库（表结构归 B，A 给容器与版本纪律
 |---|---|---|
 | 注册 | `registerChannel(desc)` | 通道注册表写入（数据文件 + 投影同步）；接入新来源第一步 |
 | 写入 | `appendExperience(entry)` | 追加真源（通道无关）；分配 recorded_at/tick；校验 schema_version |
+| 写入 | `ingestRawTurn(channel, input)` | 摄入一轮原始对话：**写原文 → 构造经历 → 写经历 → 更新投影**封装为一个经单写者队列的原子操作；以 **(channel, event_id)** 为幂等键，重复摄入零新增（阶段 4 开放面扩展，见 `src/adapters/dsh/`） |
 | 写入 | `ingestMedia(bytes?, meta)` | full/notice：字节进 staging 生成 MediaRef；reference-only：仅登记 origin |
 | 写入 | `preserveMedia(ref_id)` | staging→assets；留 action 经历；**只有她可调** |
 | 查询 | `query({time, kind, channel, scene, initiation, status})` | 经历流多维查询（channel 一等维度） |

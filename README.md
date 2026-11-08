@@ -1,6 +1,6 @@
-# dsh-fasti —— A 块阶段 0–2（底层架构）
+# dsh-fasti —— A 块阶段 0–4（底层架构）
 
-Fasti 是 DSH 宿主插件。本仓库实现 A 块**阶段 0–2**：真源层 + 最小投影。
+Fasti 是 DSH 宿主插件。本仓库实现 A 块**阶段 0–4**：真源层 + 最小投影 + dsh 通道适配器。
 
 > 核心命题：把「对话插件的地基」换成「存在日志的地基」——
 > 她的一生是一条不可变的经历流；记忆、自我模型、事件摘要、一切索引都是**可重建的投影**。
@@ -23,7 +23,7 @@ npm run verify     # build + typecheck + test
 ## 分层
 
 ```
-接口层 api/         §9 的 14 个原语
+接口层 api/         §9 的 15 个原语
    ↓
 真源层 source/      append-only、不可变 —— 唯一不可再生资产
    ↓
@@ -43,8 +43,10 @@ npm run verify     # build + typecheck + test
 | `src/source/` | 阶段 1 真源层：原文层、结构层、通道注册表、单写者队列、tick |
 | `src/projection/` | 阶段 2 最小投影：三表 DDL、L1/L2/L3 引擎、探测降级、重建对账 |
 | `src/runtime/` | 运行态检查点 |
-| `src/api/` | 接口层实现 |
-| `tests/` | 与 `src/` 同构，125 个用例 |
+| `src/api/` | 接口层实现（§9 的 15 个原语） |
+| `src/adapters/dsh/` | 阶段 4 适配器层：dsh 事件转换（纯函数）+ cordis 插件入口 |
+| `scripts/` | 一次性工具与验收工具（不进 `src/`、不进 `lib/`） |
+| `tests/` | 与 `src/` 同构，174 个用例 |
 | `docs/` | 定案稿、依据文档、实现说明、验收自检 |
 
 ## 关键纪律
@@ -61,6 +63,7 @@ npm run verify     # build + typecheck + test
 | 文件 | 内容 |
 |---|---|
 | `docs/a-block-final-design.md` | A 块定案稿（唯一架构依据） |
+| `docs/stage4-dsh-adapter-plan.md` | 阶段 4 实施计划（已执行，按此文档落地） |
 | `docs/reference/legacy-behavior-contract.md` | 旧项目行为契约清单 |
 | `docs/reference/a-block-implementation-audit.md` | 实现审计与验收清单 |
 | `docs/implementation-plan.md` | 模块拆分与实现计划 |
@@ -78,5 +81,14 @@ const fasti = await Fasti.open({ dataRoot: '/path/to/root' });
 
 ## 阶段边界
 
-本仓库**只含阶段 0–2**。资产层、实体表、转写脚本、DSH 适配器及 B/C/D/E 块的一切行为均未实现；
-其原语签名已在契约层声明，调用时抛 `NotImplementedError`（不静默返回空）。
+本仓库**含阶段 0–4**：
+
+- **阶段 0–2**：真源层 + 最小投影（A 内核，零生产依赖）；
+- **阶段 3**：一次性转写脚本 `scripts/migrate-raw-turns.ts` + 专项自测 `scripts/selftest-migration.ts`；
+- **阶段 4**：dsh 通道适配器（`src/adapters/dsh/`）—— 让真实对话事件实时写入。
+
+**仍未实现**：资产层（媒体字节）、实体表，以及 B/C/D/E 块的一切行为（复盘读出、主动系统、权限、身份）。
+这些原语的签名已在契约层声明，调用时抛 `NotImplementedError`（不静默返回空）。
+
+阶段 3 的两个脚本是**一次性工具**，不进 `src/`、不进 `lib/`，也不进默认 `npm run verify`
+（它们需要 legacy 源数据环境才能运行）。

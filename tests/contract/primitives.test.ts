@@ -15,10 +15,11 @@ import { Fasti } from '../../src/api/index.ts';
 import { NotImplementedError } from '../../src/core/errors.ts';
 import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
 
-test('§9 全部原语都在契约里（14 项，无遗漏）', () => {
+test('§9 全部原语都在契约里（15 项，无遗漏）', () => {
   const expected = [
     'registerChannel',
     'appendExperience',
+    'ingestRawTurn',
     'ingestMedia',
     'preserveMedia',
     'query',
@@ -33,13 +34,14 @@ test('§9 全部原语都在契约里（14 项，无遗漏）', () => {
     'verifyChannel',
   ];
   assert.deepEqual([...PRIMITIVE_NAMES].sort(), [...expected].sort());
-  assert.equal(PRIMITIVE_NAMES.length, 14);
+  assert.equal(PRIMITIVE_NAMES.length, 15);
 });
 
 test('Fasti 实现了契约的全部原语（结构检查）', () => {
   const methods: Array<keyof FastiPrimitives> = [
     'registerChannel',
     'appendExperience',
+    'ingestRawTurn',
     'ingestMedia',
     'preserveMedia',
     'query',
