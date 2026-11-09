@@ -63,7 +63,7 @@ npm run verify     # build + typecheck + test
 | 文件 | 内容 |
 |---|---|
 | `docs/a-block-final-design.md` | A 块定案稿（唯一架构依据） |
-| `docs/stage4-dsh-adapter-plan.md` | 阶段 4 实施计划（已执行，按此文档落地） |
+| `docs/stage4-dsh-adapter-plan.md` | 阶段 4 实施计划（已执行；§13 为真机验收结论与口径澄清） |
 | `docs/reference/legacy-behavior-contract.md` | 旧项目行为契约清单 |
 | `docs/reference/a-block-implementation-audit.md` | 实现审计与验收清单 |
 | `docs/implementation-plan.md` | 模块拆分与实现计划 |
@@ -92,3 +92,22 @@ const fasti = await Fasti.open({ dataRoot: '/path/to/root' });
 
 阶段 3 的两个脚本是**一次性工具**，不进 `src/`、不进 `lib/`，也不进默认 `npm run verify`
 （它们需要 legacy 源数据环境才能运行）。
+
+## scripts 各自的性质
+
+| 脚本 | 性质 | 什么时候用 |
+|---|---|---|
+| `migrate-raw-turns.ts` | 一次性转写（旧根 → 新根） | 迁移当次；事后可用于回查迁移口径 |
+| `selftest-migration.ts` | 上述迁移脚本的专项自测（S1–S15） | 只在迁移当次；不进默认 verify |
+| `simulate-realtime-session.ts` | 在数据根副本上模拟宿主事件流 | 对账工具链自检 + 宿主接法的可运行样例 |
+| `verify-stage4-frozen-surface.ts` | 冻结面回归核验（7/7） | **长期**：改了 A 内核就跑一次 |
+| `verify-stage4-realtime.ts` | 真机对账（验收四问 + 重放幂等） | **长期**：每次真机验收跑一次 |
+
+两个 `verify-*` 是长期工具，前者守「冻结面没被破坏」，后者守「真机对话没丢没重」。
+后三者都在临时目录/副本上作业，绝不写真实数据根。
+
+## 阶段 4 真机验收
+
+已在真实 dsh 宿主上跑通：headless 3 轮 + web 完整往返 1 轮，
+四问全 PASS（含重放幂等）。结论与两条口径澄清见
+`docs/stage4-dsh-adapter-plan.md` §13；验收日志只在本机、不入仓库。

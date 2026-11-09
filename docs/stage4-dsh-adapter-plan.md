@@ -527,3 +527,58 @@ const axesOk =
 `src/projection/sqlite.ts` 第 221 行 `const db = this.require();` 未被使用 ——
 经比对基线 `18de976` **就存在**、非本阶段引入，且本阶段 `src/projection/` 零改动。
 按审计意见**只登记不修**，留待后续清理（避免扩大本阶段改动范围）。
+
+## 13. 真机验收结果（2026-11-09，通过）
+
+本节只记录**结论与口径**；验收日志、事件流、对账明细与备份**全部只在本机**，
+不入仓库、不含任何真实对话内容。
+
+### 13.1 环境
+
+- dsh `0.2.1-rc.5`，插件以 `file:` 形式装入两个临时 profile（`fasti-accept` / `fasti-web`），
+  与既有 profile、既有数据根 `~/.dsh/persona-innate` 完全隔离。
+- 真实数据根指向 `~/.dsh/fasti`（当时 247 条原文 / 247 条经历 / tick 246）。
+
+### 13.2 验收结果
+
+| 组 | 场景 | 结果 |
+|---|---|---|
+| A | headless profile，真实宿主跑 3 轮对话 | ΔM = R = 3，逐条 event_id 对得上 |
+| B | web profile，真实 LLM 完整往返 1 轮 | ΔM = R = 2（user + assistant），逐字一致 |
+| C | 重放幂等（同一事件流再喂一次） | 原文 250 → 250、经历 250 → 250 |
+
+四问逐条：① 无丢事件 PASS ② 无重复 PASS（250 行 / 250 唯一 event_id）
+③ 正文逐字一致 PASS（指针回读 `raw_text` 与宿主事件逐字比对）
+④ 指针可解析 PASS ⑤ 重放幂等 PASS。
+
+### 13.3 两个口径澄清（写进本节，避免后人重踩）
+
+**① headless 组合无法使用 OAuth 账号路由 —— 是设计，不是故障**
+
+dsh 有两条 deepseek 接入：`dsh-llm-deepseek-api-key`（PROVIDER `deepseek-official`，需 API key）与
+`dsh-llm-deepseek-account`（PROVIDER `deepseek-account`，用登录态）。`dsh-base` 的
+`agent-default-model` 默认指前者；而 `dsh-headless` 的 bundle patch 显式写了
+`credentials / authorization: disabled: true`（一次性任务只认启动环境变量）。
+
+因此 headless 下必然 `MISSING_CREDENTIAL` 或 `ACCOUNT_SIGN_IN_REQUIRED`。
+**要跑真实 LLM 必须走 web profile**（`dsh-base` + `dsh-web-app` + 本插件）。
+
+**② assistant 的幂等键取 `data.message.id`，不是 `data.id`**
+
+- `user/message` → `data.id`
+- `assistant/message` → `data.message.id`（`data.id` 为 null）
+- 缺失即 `skip: no-event-id`，**不伪造**
+
+实测该字段是宿主真实 message id，故重放确定性命中；对账工具早期误判「无 id」，
+是探针只读了 `data.id`，代码本身正确。
+
+### 13.4 数据纪律
+
+- 验收产生的测试经历已全部清除，数据根回到 247 / tick 246 / 投影 247-247-0；
+- 清理前快照留在本机备份目录；
+- 仓库 `git status` 干净，远程仍为阶段 4 提交。
+
+### 13.5 未覆盖（登记，不属本阶段）
+
+- 非 text 块（图片/文件附件）路径：真机上未构造该场景，仅由单元测试覆盖；
+- 多通道（qq / browser / camera）：阶段 6 验证。
