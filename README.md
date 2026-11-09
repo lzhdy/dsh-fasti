@@ -64,6 +64,7 @@ npm run verify     # build + typecheck + test
 |---|---|
 | `docs/a-block-final-design.md` | A 块定案稿（唯一架构依据） |
 | `docs/stage4-dsh-adapter-plan.md` | 阶段 4 实施计划（已执行；§13 为真机验收结论与口径澄清） |
+| `docs/b-block-event-layer-design.md` | B 块事件层设计（评审稿 v0.2，未定案） |
 | `docs/reference/legacy-behavior-contract.md` | 旧项目行为契约清单 |
 | `docs/reference/a-block-implementation-audit.md` | 实现审计与验收清单 |
 | `docs/implementation-plan.md` | 模块拆分与实现计划 |
