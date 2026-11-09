@@ -259,3 +259,96 @@ test('插件：通道未注册时不写入（只核对、不自动注册）', as
   await fiber.dispose();
   cleanupTempRoot(root);
 });
+
+// ── 闭合链路（T7/T8/T9）：端口注入 + 后台 worker ────────────────────────
+
+test('parseAdapterConfig：modelRoute 必须是实现了 complete() 的对象（坏路由当场拒）', () => {
+  assert.throws(() => parseAdapterConfig({ modelRoute: 'nope' }), /modelRoute 必须实现 complete/);
+  assert.throws(() => parseAdapterConfig({ modelRoute: { complete: 1 } }), /modelRoute 必须实现 complete/);
+  assert.throws(() => parseAdapterConfig({ closureIntervalMs: 0 }), /closureIntervalMs 必须是正数/);
+
+  const route = { complete: async () => '{}' };
+  const parsed = parseAdapterConfig({ dataRoot: '/tmp/x', modelRoute: route, closureIntervalMs: 50 });
+  assert.equal(parsed.modelRoute, route, '路由原样透传（不做结构化改造）');
+  assert.equal(parsed.closureIntervalMs, 50);
+});
+
+/** 读事件真源里的全部版本行。 */
+function readEventRows(root: string): Array<Record<string, unknown>> {
+  const dir = path.join(root, 'events');
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  const out: Array<Record<string, unknown>> = [];
+  for (const name of fs.readdirSync(dir).sort()) {
+    if (!name.endsWith('.jsonl')) {
+      continue;
+    }
+    for (const line of fs.readFileSync(path.join(dir, name), 'utf8').split('\n')) {
+      if (line.trim() !== '') {
+        out.push(JSON.parse(line) as Record<string, unknown>);
+      }
+    }
+  }
+  return out;
+}
+
+test('插件：注入模型路由 → 闭合事件由后台 worker 补上摘要（端到端，不等摄入）', async () => {
+  const root = makeTempRoot();
+  const ctx = new Context();
+
+  let calls = 0;
+  const route = {
+    complete: async (): Promise<string> => {
+      calls += 1;
+      return JSON.stringify({
+        summary: '她问了一句在不在，随后继续处理排期。',
+        key_points: ['问在不在'],
+        anchors: ['发消息'],
+      });
+    },
+  };
+
+  const fiber = ctx.plugin({ apply }, { dataRoot: root, modelRoute: route, closureIntervalMs: 50 });
+  await fiber;
+
+  // 两条消息相隔一小时 → 第一条被静默闭合（机械信号），第二条开新事件。
+  ctx.emit('session/event', SESSION, userEvent('evt-1', '在吗'));
+  await settle();
+  const later = {
+    type: 'user/message',
+    time: Date.parse('2026-11-08T11:00:00.000Z'),
+    data: { id: 'evt-2', content: [{ type: 'text', text: '看下排期' }], source: { kind: 'user' } },
+  };
+  ctx.emit('session/event', SESSION, later);
+
+  // 后台 worker 的间隔是 50ms —— 等到摘要落盘（最多约 2 秒）。
+  let ready: Record<string, unknown> | undefined;
+  for (let i = 0; i < 100; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    ready = readEventRows(root).find(
+      (row) => row['status'] === 'closed' && row['summary_quality'] === 'ready',
+    );
+    if (ready !== undefined) {
+      break;
+    }
+  }
+
+  assert.ok(ready, '闭合事件应被后台 worker 摘到并写出 ready 版本');
+  assert.equal(ready['summary_source'], 'llm');
+  assert.equal(ready['summary'], '她问了一句在不在，随后继续处理排期。');
+  assert.ok(calls >= 1, '宿主路由真的被调用过');
+
+  await fiber.dispose();
+  cleanupTempRoot(root);
+});
+
+// ── 闭合超时配置（设计稿 v1.1 §6.3.1 纪律①）────────────────────────────
+
+test('parseAdapterConfig：closureTimeoutMs 必须是正数（坏值当场拒，不静默降级成无限等）', () => {
+  assert.throws(() => parseAdapterConfig({ closureTimeoutMs: 0 }), /closureTimeoutMs 必须是正数/);
+  assert.throws(() => parseAdapterConfig({ closureTimeoutMs: -1 }), /closureTimeoutMs 必须是正数/);
+  assert.throws(() => parseAdapterConfig({ closureTimeoutMs: '60s' }), /closureTimeoutMs 必须是正数/);
+  assert.equal(parseAdapterConfig({}).closureTimeoutMs, undefined, '缺省不占位（走管线默认 60s）');
+  assert.equal(parseAdapterConfig({ closureTimeoutMs: 250 }).closureTimeoutMs, 250);
+});

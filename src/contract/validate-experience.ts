@@ -5,6 +5,14 @@
  *  1. 未知字段原样保留（定案稿 §10.4 C2）—— 校验器只检查已知字段，绝不裁剪对象；
  *  2. 写入路径拒绝保留字字段 —— 红线②「不得出现系统判定的『重要性』字段」、
  *     红线①「不得把聊天/对话写成前提」，在写入边界上拦住，不依赖下游自觉。
+ *
+ * 未知字段按模式分流（审计 N2）：
+ *  - write：未知字段即契约违约 → 抛错（写入边界要拦住脏字段）；
+ *  - read ：未知字段原样带过 —— 不报错、也不裁剪（读路径必须能读回未来版本
+ *    写入的字段；否则一次升级就让旧数据读不出来）。
+ *
+ * 红线纪律：禁字段拦截（isForbiddenFieldName）**只**在 write 模式执行，
+ * 本次放宽只针对「未知字段」这一项，不得弱化红线①/②。
  */
 
 import { SchemaError } from '../core/errors.ts';
@@ -61,7 +69,17 @@ function optionalNumber(value: unknown, at: string): number | undefined {
   return value;
 }
 
-function assertKnownFields(obj: Record<string, unknown>, known: readonly string[], at: string): void {
+// ── G05 区块：未知字段的 write/read 双模 ──
+function assertKnownFields(
+  obj: Record<string, unknown>,
+  known: readonly string[],
+  at: string,
+  mode: ParseMode,
+): void {
+  // read 模式宽容：未知字段多半是未来版本写进来的，不是脏数据（审计 N2）。
+  if (mode !== 'write') {
+    return;
+  }
   for (const key of Object.keys(obj)) {
     if (!known.includes(key)) {
       fail(`${at} 含有未知字段 ${key}`);
@@ -69,10 +87,34 @@ function assertKnownFields(obj: Record<string, unknown>, known: readonly string[
   }
 }
 
+/**
+ * read 模式：把输入里未被消费的键原样拷进结果 —— 不裁剪。
+ *
+ * 判据用「结果对象已有的键」：已知字段都已归一进结果，
+ * 结果里没有的键即未知字段，原样带过（定案稿 §10.4 C2）。
+ *
+ * write 模式维持既有行为（未知字段照旧丢弃）—— 本次只放宽 read 侧。
+ */
+function carryUnknownFields(
+  obj: Record<string, unknown>,
+  target: object,
+  mode: ParseMode,
+): void {
+  if (mode !== 'read') {
+    return;
+  }
+  const sink = target as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined && !(key in sink)) {
+      sink[key] = value;
+    }
+  }
+}
+
 /** 校验指针（Pointer.seq 从 0 起算；区间为闭区间）。 */
-export function parsePointer(raw: unknown, at = 'pointer'): Pointer {
+export function parsePointer(raw: unknown, at = 'pointer', mode: ParseMode = 'read'): Pointer {
   const obj = requireObject(raw, at);
-  assertKnownFields(obj, POINTER_FIELDS, at);
+  assertKnownFields(obj, POINTER_FIELDS, at, mode);
 
   const pointer: Pointer = {};
   const id = optionalString(obj['id'], `${at}.id`);
@@ -115,11 +157,13 @@ export function parsePointer(raw: unknown, at = 'pointer'): Pointer {
     }
   }
 
+  carryUnknownFields(obj, pointer, mode);
+
   return pointer;
 }
 
 /** 校验媒体引用。 */
-export function parseMediaRef(raw: unknown, at = 'media'): MediaRef {
+export function parseMediaRef(raw: unknown, at = 'media', mode: ParseMode = 'read'): MediaRef {
   const obj = requireObject(raw, at);
   const ref: MediaRef = {
     ref_id: requireString(obj['ref_id'], `${at}.ref_id`),
@@ -147,17 +191,23 @@ export function parseMediaRef(raw: unknown, at = 'media'): MediaRef {
     host_ref: requireString(origin['host_ref'], `${at}.origin.host_ref`),
     captured_at: requireString(origin['captured_at'], `${at}.origin.captured_at`),
   };
+  // read 模式：origin 容器里的未知键也原样带过（不裁剪）。
+  carryUnknownFields(origin, ref.origin, mode);
 
   // 「有字节时必填 sha256」——完整性校验的前提（定案稿 §4.2）。
   if (ref.bytes !== undefined && ref.sha256 === undefined) {
     fail(`${at} 有 bytes 时必须提供 sha256`);
   }
 
+  // read 模式：媒体元素上的未知字段原样带过 —— 媒体能力挂记录本，
+  // 未来版本加的字段不该让旧读取器报错、更不该被悄悄丢掉。
+  carryUnknownFields(obj, ref, mode);
+
   return ref;
 }
 
 /** 校验规则层标记：只贴标签，不否决。 */
-export function parseMark(raw: unknown, at = 'mark'): Mark {
+export function parseMark(raw: unknown, at = 'mark', mode: ParseMode = 'read'): Mark {
   const obj = requireObject(raw, at);
   const by = requireString(obj['by'], `${at}.by`);
   if (by !== 'rule-layer') {
@@ -171,11 +221,12 @@ export function parseMark(raw: unknown, at = 'mark'): Mark {
   if (note !== undefined) {
     mark.note = note;
   }
+  carryUnknownFields(obj, mark, mode);
   return mark;
 }
 
 /** 校验摄入期结构关系。 */
-export function parseEdge(raw: unknown, at = 'edge'): Edge {
+export function parseEdge(raw: unknown, at = 'edge', mode: ParseMode = 'read'): Edge {
   const obj = requireObject(raw, at);
   const edge: Edge = {
     type: requireString(obj['type'], `${at}.type`),
@@ -185,13 +236,14 @@ export function parseEdge(raw: unknown, at = 'edge'): Edge {
   if (note !== undefined) {
     edge.note = note;
   }
+  carryUnknownFields(obj, edge, mode);
   return edge;
 }
 
 /** 校验场景。 */
-export function parseScene(raw: unknown, at = 'scene'): Scene {
+export function parseScene(raw: unknown, at = 'scene', mode: ParseMode = 'read'): Scene {
   const obj = requireObject(raw, at);
-  assertKnownFields(obj, SCENE_FIELDS, at);
+  assertKnownFields(obj, SCENE_FIELDS, at, mode);
 
   const scene: Scene = {
     channel: requireString(obj['channel'], `${at}.channel`),
@@ -202,24 +254,28 @@ export function parseScene(raw: unknown, at = 'scene'): Scene {
   if (detail !== undefined) {
     const detailObj = requireObject(detail, `${at}.detail`);
     const out: Record<string, string> = {};
+    // detail 本身就是开放字典（通道自定义键值）：其内层键**不是**未知字段，
+    // 全部原样保留，不做字段名判定。
     for (const [key, value] of Object.entries(detailObj)) {
       out[key] = requireString(value, `${at}.detail.${key}`);
     }
     scene.detail = out;
   }
 
+  carryUnknownFields(obj, scene, mode);
+
   return scene;
 }
 
 /** 校验观察槽位。 */
-export function parseObservation(raw: unknown, at = 'observation'): Observation {
+export function parseObservation(raw: unknown, at = 'observation', mode: ParseMode = 'read'): Observation {
   const obj = requireObject(raw, at);
-  assertKnownFields(obj, OBSERVATION_FIELDS, at);
+  assertKnownFields(obj, OBSERVATION_FIELDS, at, mode);
 
   const observation: Observation = {};
 
   if (obj['text'] !== undefined) {
-    observation.text = parsePointer(obj['text'], `${at}.text`);
+    observation.text = parsePointer(obj['text'], `${at}.text`, mode);
   }
 
   const media = obj['media'];
@@ -227,7 +283,7 @@ export function parseObservation(raw: unknown, at = 'observation'): Observation 
     if (!Array.isArray(media)) {
       fail(`${at}.media 必须是数组`);
     }
-    observation.media = media.map((item, index) => parseMediaRef(item, `${at}.media[${index}]`));
+    observation.media = media.map((item, index) => parseMediaRef(item, `${at}.media[${index}]`, mode));
   }
 
   const cue = optionalString(obj['cue'], `${at}.cue`);
@@ -239,13 +295,15 @@ export function parseObservation(raw: unknown, at = 'observation'): Observation 
     observation.cue = cue;
   }
 
+  carryUnknownFields(obj, observation, mode);
+
   return observation;
 }
 
 /** 校验动作槽位。 */
-export function parseAction(raw: unknown, at = 'action'): Action {
+export function parseAction(raw: unknown, at = 'action', mode: ParseMode = 'read'): Action {
   const obj = requireObject(raw, at);
-  assertKnownFields(obj, ACTION_FIELDS, at);
+  assertKnownFields(obj, ACTION_FIELDS, at, mode);
 
   const action: Action = { type: requireString(obj['type'], `${at}.type`) };
   const tool = optionalString(obj['tool'], `${at}.tool`);
@@ -255,27 +313,29 @@ export function parseAction(raw: unknown, at = 'action'): Action {
 
   const args = obj['args'];
   if (args !== undefined) {
-    action.args = typeof args === 'string' ? args : parsePointer(args, `${at}.args`);
+    action.args = typeof args === 'string' ? args : parsePointer(args, `${at}.args`, mode);
   }
 
   const thought = obj['thought'];
   if (thought !== undefined) {
-    action.thought = typeof thought === 'string' ? thought : parsePointer(thought, `${at}.thought`);
+    action.thought = typeof thought === 'string' ? thought : parsePointer(thought, `${at}.thought`, mode);
   }
+
+  carryUnknownFields(obj, action, mode);
 
   return action;
 }
 
 /** 校验结果槽位。 */
-export function parseOutcome(raw: unknown, at = 'outcome'): Outcome {
+export function parseOutcome(raw: unknown, at = 'outcome', mode: ParseMode = 'read'): Outcome {
   const obj = requireObject(raw, at);
-  assertKnownFields(obj, OUTCOME_FIELDS, at);
+  assertKnownFields(obj, OUTCOME_FIELDS, at, mode);
 
   const outcome: Outcome = {};
 
   const text = obj['text'];
   if (text !== undefined) {
-    outcome.text = typeof text === 'string' ? text : parsePointer(text, `${at}.text`);
+    outcome.text = typeof text === 'string' ? text : parsePointer(text, `${at}.text`, mode);
   }
 
   const status = optionalString(obj['status'], `${at}.status`);
@@ -305,8 +365,11 @@ export function parseOutcome(raw: unknown, at = 'outcome'): Outcome {
     if (output !== undefined) {
       out.output = output;
     }
+    carryUnknownFields(tokenObj, out, mode);
     outcome.tokens = out;
   }
+
+  carryUnknownFields(obj, outcome, mode);
 
   return outcome;
 }
@@ -314,8 +377,9 @@ export function parseOutcome(raw: unknown, at = 'outcome'): Outcome {
 /**
  * 校验一条经历。
  *
- * @param mode 'read'  —— 读取路径：未知字段原样保留（保留字名只当普通未知字段，不报错）
- * @param mode 'write' —— 写入路径：额外拒绝「重要性」类与「聊天前提」类字段名
+ * @param mode 'read'  —— 读取路径：未知字段原样保留（含嵌套层），不报错、不裁剪
+ *                        （保留字名只当普通未知字段）
+ * @param mode 'write' —— 写入路径：拒绝未知字段，并额外拒绝「重要性」类与「聊天前提」类字段名
  */
 export function parseExperience(raw: unknown, mode: ParseMode = 'read'): Experience {
   const obj = requireObject(raw, 'experience');
@@ -338,9 +402,9 @@ export function parseExperience(raw: unknown, mode: ParseMode = 'read'): Experie
       return value;
     })(),
     kind: requireString(obj['kind'], 'experience.kind'),
-    scene: parseScene(obj['scene'], 'experience.scene'),
+    scene: parseScene(obj['scene'], 'experience.scene', mode),
     initiation: requireString(obj['initiation'], 'experience.initiation'),
-    observation: parseObservation(obj['observation'], 'experience.observation'),
+    observation: parseObservation(obj['observation'], 'experience.observation', mode),
     occurred_at: requireString(obj['occurred_at'], 'experience.occurred_at'),
     recorded_at: requireString(obj['recorded_at'], 'experience.recorded_at'),
     tick: (() => {
@@ -369,14 +433,15 @@ export function parseExperience(raw: unknown, mode: ParseMode = 'read'): Experie
       out.persona_version = personaVersion;
     }
     experience.agent_meta = out;
+    carryUnknownFields(meta, out, mode);
   }
 
   if (obj['action'] !== undefined) {
-    experience.action = parseAction(obj['action'], 'experience.action');
+    experience.action = parseAction(obj['action'], 'experience.action', mode);
   }
 
   if (obj['outcome'] !== undefined) {
-    experience.outcome = parseOutcome(obj['outcome'], 'experience.outcome');
+    experience.outcome = parseOutcome(obj['outcome'], 'experience.outcome', mode);
   }
 
   const marks = obj['marks'];
@@ -384,7 +449,7 @@ export function parseExperience(raw: unknown, mode: ParseMode = 'read'): Experie
     if (!Array.isArray(marks)) {
       fail('experience.marks 必须是数组');
     }
-    experience.marks = marks.map((item, index) => parseMark(item, `experience.marks[${index}]`));
+    experience.marks = marks.map((item, index) => parseMark(item, `experience.marks[${index}]`, mode));
   }
 
   const pointers = obj['pointers'];
@@ -392,7 +457,7 @@ export function parseExperience(raw: unknown, mode: ParseMode = 'read'): Experie
     if (!Array.isArray(pointers)) {
       fail('experience.pointers 必须是数组');
     }
-    experience.pointers = pointers.map((item, index) => parseEdge(item, `experience.pointers[${index}]`));
+    experience.pointers = pointers.map((item, index) => parseEdge(item, `experience.pointers[${index}]`, mode));
   }
 
   // 未知字段原样保留（定案稿 §10.4 C2）：把输入对象上未被上面消费的键拷回。

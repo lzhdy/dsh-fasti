@@ -28,6 +28,8 @@ import type { Context } from '@deepseek-ai/cordis';
 
 import { Fasti } from '../../api/index.ts';
 import { convertSessionEvent } from './convert-event.ts';
+import { createDshLLMPort, startClosureWorker } from './llm.ts';
+import type { DshModelRoute } from './llm.ts';
 
 /**
  * dsh-session 广播的事件：会话日志追加（含 user/message / assistant/message）。
@@ -52,10 +54,52 @@ export interface DshAdapterConfig {
   dataRoot?: string | undefined;
   /** 通道 id；缺省 'dsh'。 */
   channel?: string | undefined;
+  /** 摘要模型（D8：可与做梦模型分开、可用更便宜的模型）；缺省走宿主默认模型。 */
+  model?: string | undefined;
+  /**
+   * 宿主模型路由 —— **注入后闭合摘要链路才真正可用**。
+   *
+   * 为什么是显式注入而不是从 ctx 里摸：宿主模型路由的入口形态在仓库内无从查证
+   * （技术基线 §6.6「T7 开工前须在真机确认」），摸错了会在运行期静默拿不到模型。
+   * 故这里只认**注入**：宿主（或真机验收脚本）把 `complete()` 塞进来。
+   *
+   * 未注入 = 本环境没有模型 → 事件闭合后摘要保持 `pending` + `summary: null`
+   * 如实标注，**绝不伪造**；配置就绪下次开机由清道夫补齐。
+   */
+  modelRoute?: DshModelRoute | undefined;
+  /** 闭合 worker 的轮询间隔（毫秒）；缺省 5 秒。 */
+  closureIntervalMs?: number | undefined;
+  /**
+   * 单次摘要调用的硬超时（毫秒）；缺省 60 秒（设计稿 v1.1 §6.3.1 纪律①）。
+   *
+   * 调到分钟级以上等于把「一次挂死停掉整条队列」放回来 —— 不许调成无限。
+   */
+  closureTimeoutMs?: number | undefined;
 }
 
 /** 日志前缀 —— 便于在 dsh 日志里一眼认出。 */
 const LOG_PREFIX = '[dsh-fasti]';
+
+/**
+ * 「门面不可用 → 丢弃」的告警节奏（m6）。
+ *
+ * 逐条 warn 会刷屏（每个会话事件一条），完全静默更糟（出事几个月没人知道）。
+ * 首条必告警，之后每 100 条再说一次，并带上累计数。
+ */
+const DROP_WARN_EVERY = 100;
+
+/** 丢弃计数（本插件实例内）。 */
+interface DropCounter {
+  count: number;
+}
+
+/** 记一次「门面不可用」的丢弃，按节奏告警（不刷屏、不静默）。 */
+function noteDrop(ctx: Context, drops: DropCounter, reason: string): void {
+  drops.count += 1;
+  if (drops.count === 1 || drops.count % DROP_WARN_EVERY === 0) {
+    ctx.logger.warn('%s %s（累计 %d 条未写入）', LOG_PREFIX, reason, drops.count);
+  }
+}
 
 /**
  * 插件配置的手写校验（不引入 schemastery —— 两个可选字段不值得多一个 peer 依赖）。
@@ -81,6 +125,40 @@ export function parseAdapterConfig(raw: unknown): DshAdapterConfig {
     throw new TypeError('dsh-fasti 适配器配置 channel 必须是非空字符串');
   }
 
+  const model = obj['model'];
+  if (model !== undefined && (typeof model !== 'string' || model === '')) {
+    throw new TypeError('dsh-fasti 适配器配置 model 必须是非空字符串');
+  }
+
+  const modelRoute = obj['modelRoute'];
+  if (modelRoute !== undefined) {
+    // 路由是宿主注入的对象，不是 JSON —— 只校验它真的能发起补全，
+    // 免得「配了但形状不对」在运行期静默降级成 no model。
+    if (
+      typeof modelRoute !== 'object' ||
+      modelRoute === null ||
+      typeof (modelRoute as DshModelRoute).complete !== 'function'
+    ) {
+      throw new TypeError('dsh-fasti 适配器配置 modelRoute 必须实现 complete(req) 方法');
+    }
+  }
+
+  const closureIntervalMs = obj['closureIntervalMs'];
+  if (
+    closureIntervalMs !== undefined &&
+    (typeof closureIntervalMs !== 'number' || !Number.isFinite(closureIntervalMs) || closureIntervalMs <= 0)
+  ) {
+    throw new TypeError('dsh-fasti 适配器配置 closureIntervalMs 必须是正数（毫秒）');
+  }
+
+  const closureTimeoutMs = obj['closureTimeoutMs'];
+  if (
+    closureTimeoutMs !== undefined &&
+    (typeof closureTimeoutMs !== 'number' || !Number.isFinite(closureTimeoutMs) || closureTimeoutMs <= 0)
+  ) {
+    throw new TypeError('dsh-fasti 适配器配置 closureTimeoutMs 必须是正数（毫秒）');
+  }
+
   // 只保留显式给出的键 —— 缺省字段不占位（配置对象保持干净）。
   const config: DshAdapterConfig = {};
   if (dataRoot !== undefined) {
@@ -88,6 +166,18 @@ export function parseAdapterConfig(raw: unknown): DshAdapterConfig {
   }
   if (channel !== undefined) {
     config.channel = channel as string;
+  }
+  if (model !== undefined) {
+    config.model = model as string;
+  }
+  if (modelRoute !== undefined) {
+    config.modelRoute = modelRoute as DshModelRoute;
+  }
+  if (closureIntervalMs !== undefined) {
+    config.closureIntervalMs = closureIntervalMs as number;
+  }
+  if (closureTimeoutMs !== undefined) {
+    config.closureTimeoutMs = closureTimeoutMs as number;
   }
   return config;
 }
@@ -111,19 +201,75 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   /** 适配器运行态 —— 卸载后据此明确停写。 */
   const state = { closed: false };
 
+  /** 门面不可用导致的丢弃计数（m6：首条 warn + 每 100 条一次）。 */
+  const drops: DropCounter = { count: 0 };
+
+  /**
+   * 摘要端口 —— 宿主路由注入了才有模型；没注入就是 null（如实降级，不伪造）。
+   */
+  const port =
+    config.modelRoute === undefined
+      ? null
+      : createDshLLMPort(config.modelRoute, {
+          ...(config.model === undefined ? {} : { model: config.model }),
+          ...(config.closureTimeoutMs === undefined ? {} : { timeoutMs: config.closureTimeoutMs }),
+        });
+
   // 监听器**同步注册**（不放在异步 effect 体内 —— 见文件头时序要点）。
   ctx.on('session/event', (session: unknown, event: unknown) => {
     // 不 await —— 旁路捕获，不阻断 dsh 主链路。
-    void handleSessionEvent(ctx, state, ready, channel, session, event);
+    void handleSessionEvent(ctx, state, drops, ready, channel, session, event);
   });
+
+  // ── 闭合 worker（T8/T9）──
+  // 没有它就「事件照切、摘要永远不出」——闭合管线必须有人周期性地推。
+  // 独立注册（不嵌在下面的 open effect 里）：两类生命周期互不依赖，
+  // 卸载时无论谁先释放都不会碰到未初始化/已关闭的实例。
+  if (port !== null) {
+    startClosureWorker(
+      ctx,
+      async () => {
+        const fasti = await ready;
+        if (fasti === null || state.closed) {
+          // worker 是周期性的：门面没打开时不必告警（事件路径那侧已经记过账），
+          // 只需安静返回 0，别在日志里每 5 秒刷一条。
+          return 0;
+        }
+        return fasti.drainClosure();
+      },
+      config.closureIntervalMs === undefined ? {} : { intervalMs: config.closureIntervalMs },
+    );
+  }
 
   // 生命周期：装载时 open，卸载时 close（释放 SQLite 句柄）。
   ctx.effect(async () => {
     let fasti: Fasti;
     try {
-      fasti = await Fasti.open(
-        config.dataRoot === undefined ? {} : { dataRoot: config.dataRoot },
-      );
+      fasti = await Fasti.open({
+        ...(config.dataRoot === undefined ? {} : { dataRoot: config.dataRoot }),
+        // 端口注入门面：闭合后摘要由门面内部那条管线在后台做。
+        llmPort: port,
+        // 单次调用硬超时（与端口兜底同一个数，避免两处各调一套）。
+        ...(config.closureTimeoutMs === undefined
+          ? {}
+          : { closureCallTimeoutMs: config.closureTimeoutMs }),
+        // 摘要失败上报宿主日志（可观测性三处之一：内存明细 / 检查点 / 宿主日志）。
+        onClosureFailure: (failure) => {
+          ctx.logger.warn(
+            '%s 摘要未生成（%s，已试 %d 次）：%s',
+            LOG_PREFIX,
+            failure.state,
+            failure.attempts,
+            failure.error,
+          );
+        },
+        // 门面内部诊断（目前只有「待补摘要数读不出来」）—— 转给宿主日志。
+        onDiagnostic: (level, message) => {
+          if (level === 'warn') {
+            ctx.logger.warn('%s %s', LOG_PREFIX, message);
+          }
+        },
+      });
     } catch (error) {
       ctx.logger.error('%s 打开数据根失败：%s', LOG_PREFIX, String(error));
       markReady(null);
@@ -147,10 +293,11 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
     }
 
     ctx.logger.info(
-      '%s 适配器已装载：通道=%s，数据根=%s',
+      '%s 适配器已装载：通道=%s，数据根=%s，摘要模型=%s',
       LOG_PREFIX,
       channel,
       fasti.paths.root,
+      port === null ? '未配置（摘要保持待生成）' : (config.model ?? '宿主默认'),
     );
     markReady(fasti);
 
@@ -170,6 +317,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
 async function handleSessionEvent(
   ctx: Context,
   state: { closed: boolean },
+  drops: DropCounter,
   ready: Promise<Fasti | null>,
   channel: string,
   session: unknown,
@@ -194,6 +342,11 @@ async function handleSessionEvent(
 
     const fasti = await ready;
     if (fasti === null || state.closed) {
+      // 卸载中（state.closed）是正常收尾，静默；门面没打开（fasti === null）则
+      // 意味着**每条事件都白掉了** —— 首条 warn + 计数，不刷屏也不静默（m6）。
+      if (fasti === null && !state.closed) {
+        noteDrop(ctx, drops, `门面未就绪，事件未写入（通道=${channel}）`);
+      }
       return;
     }
 

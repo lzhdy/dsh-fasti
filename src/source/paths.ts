@@ -58,6 +58,8 @@ export interface DataLayout {
   raw: string;
   /** 结构层 · 经历条目。 */
   experiences: string;
+  /** 记事本 · 事件条目（二级真源，按月分片）。 */
+  events: string;
   /** 通道注册表（数据文件，随她迁移）。 */
   channelsFile: string;
   /** 投影层目录（可丢弃、可重建）。 */
@@ -73,6 +75,7 @@ export function layoutOf(root: string): DataLayout {
     rawTurns: path.join(root, 'raw-turns'),
     raw: path.join(root, 'raw'),
     experiences: path.join(root, 'experiences'),
+    events: path.join(root, 'events'),
     channelsFile: path.join(root, 'channels.json'),
     projection: path.join(root, 'projection'),
     state: path.join(root, 'state'),

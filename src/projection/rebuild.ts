@@ -1,27 +1,50 @@
 /**
  * 重建协议（定案稿 §7.3）与对账。
  *
- * 1. 停写或降级标注（沿 §7.3 语义）；
- * 2. 新建投影库，顺序扫描真源折叠；
- * 3. 对账（RawTurn 数 = dialogue 经历数；media 数 = asset 数；各通道 experience_count 与 channels.json 一致）；
- * 4. 原子换名。SQLite 文件即快照；年级别 <20 万条，分钟级。
+ * 本文件实际执行的是 §7.3 里的**就地重建 + 对账**两步：
+ *  1. 就地清空投影（engine.clear）—— 不新建投影库、不做原子换名；
+ *  2. 顺序扫描真源折叠（经历行 + 折叠边 + 全文文档）；
+ *  3. 对账（RawTurn 数 = dialogue 经历数；各通道 experience_count 与 channels.json 一致；
+ *     media 数与 asset 数在资产层未实现时显式标注 N/A）。
+ *
+ * 「停写 / 降级标注」不落在本文件：停写由调用方经单写者队列串行化保证，
+ * 降级标注由运行态检查点承担（needs_rebuild 标记）。
  *
  * 关键纪律：
  *  - 重建**只折叠真源已有内容**，不重新调 LLM、不重新判断（定案稿 §7.2）；
  *  - 投影确定性：同样的真源 → 同样的投影内容；
- *  - 幂等：重建两次结果一致。
+ *  - 幂等：重建两次结果一致；
+ *  - **重建白名单**（T13）：experience 投影从 `experiences/` 重建；
+ *    event 投影从 `events/` 重建；**`events/` 永不从 `experiences/` 重建**。
+ *    结构性保证：`rebuildProjection` 里的事件折叠只调 `source.events()`
+ *    （唯一实现读 `events/` 目录），代码中**没有任何**从 experiences 推导事件的路径。
  */
 
 import { isoToMs } from '../core/time.ts';
 import type { Experience } from '../contract/experience.ts';
+import type { EventRecord } from '../contract/event.ts';
 import type { ReconciliationReport } from '../contract/primitives.ts';
 import { toEdgeRow } from './edge.ts';
+import { foldCurrentEvents } from './event-row.ts';
 import type { ExperienceProjection, ProjectionEngine } from './types.ts';
 
 /** 重建所需的数据源。 */
 export interface RebuildSource {
   /** 全部经历 + 真源落点（摄入顺序）。 */
   experiences(): Array<{ experience: Experience; location: { shard: string; seq: number } }>;
+  /**
+   * 全部事件**版本行** + 真源落点。
+   *
+   * **重建白名单的核心**：事件投影的数据源**只有** `events/` 真源。
+   * 本方法**不**从 `experiences()` 推导任何事件 —— 重建只折叠已有事件，
+   * 绝不拿记录本重跑切分算法去覆盖已有事件（定案稿 §7.4「禁止重建」）。
+   *
+   * **可选**（裁定 19）：白名单的保证来自**代码路径**（下面只调 `source.events?.()`、
+   * 没有任何从 experiences 推导事件的分支），不来自「接口必填」。必填只会让
+   * 只想重建经历投影的老调用方被迫实现一个它并不拥有的数据源。
+   * 缺省 = 本环境没有事件层 → 事件折叠 0 行（而不是抛错）。
+   */
+  events?(): Array<{ event: EventRecord; location: { shard: string; seq: number } }>;
   /** 某通道的原文行总数。 */
   rawTurnCount(channel: string): number;
   /** 全文文档文本（id → 原文回读 + cue）。 */
@@ -39,13 +62,19 @@ export interface RebuildOutcome {
   experiences: number;
   edges: number;
   documents: number;
+  /** 折叠出的事件当前态数（每 event id 一行）。 */
+  events: number;
   reconciliation: ReconciliationReport;
 }
 
+// ── G03 区块：重建协议注释与实际行为对齐 ──
 /**
- * 执行重建：清空投影 → 顺序扫描真源折叠 → 对账。
+ * 执行重建：就地清空投影 → 顺序扫描真源折叠 → 对账。
  *
- * 不做原子换名（换名由调用方在关闭旧库后进行）—— 这样重建失败时旧投影仍在。
+ * **就地清空，不是原子换名**：清空与重建发生在同一份投影存储上，
+ * 因此中途失败会留下半截投影（旧投影此时已不在）。
+ * 调用方必须在调用本函数**之前**落 `needs_rebuild=true`，
+ * 失败时该标记保持为 true —— 下次启动才知道投影是半截的、需要重来。
  */
 export async function rebuildProjection(
   engine: ProjectionEngine,
@@ -78,12 +107,30 @@ export async function rebuildProjection(
     }
   }
 
+  // ── T13 区块：事件折叠（重建白名单）──
+  //
+  // 事件折叠**只认 `source.events()`**（即 `events/` 真源），绝不从 experiences 推导：
+  //   - 重建只是把真源里已有的事件重新折进投影；
+  //   - 「拿全量记录重跑切分算法去覆盖已有事件」是**重建**，定案稿 §7.4 明令禁止
+  //     （那会把她修正过的边界抹掉）。
+  // 因此 `source.events()` 返回**全部版本行**，折叠时按 id 取最大 version
+  // → 她的修正版本胜出，边界原样还在。
+  //
+  // 存在性判断而非直接调用：`events` 是可选数据源（裁定 19）。**没有**任何
+  // 「没有 events 就从 experiences 造」的兜底分支 —— 那正是白名单要禁的事，
+  // 宁可得 0 行，也不凭空造事件。
+  const eventRows = foldCurrentEvents((source.events?.() ?? []).map((item) => item.event));
+  for (const row of eventRows) {
+    await engine.upsertEvent(row);
+  }
+
   const reconciliation = await reconcile(engine, source);
 
   return {
     experiences: entries.length,
     edges: edgeCount,
     documents: documentCount,
+    events: eventRows.length,
     reconciliation,
   };
 }

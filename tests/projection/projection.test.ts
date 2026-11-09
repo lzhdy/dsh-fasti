@@ -454,6 +454,7 @@ test('手动指定 L1 但 sqlite 不可用时抛错（不静默回退）', async
         readExperiences: () => [],
         readDocumentText: () => undefined,
         readAllDocuments: () => new Map(),
+        readEvents: () => [],
       },
       force: 'L1',
     });

@@ -75,18 +75,73 @@ test('assertFrozenSurface 对违规导出抛错', () => {
   assert.doesNotThrow(() => assertFrozenSurfaceOrThrow(['appendExperience']));
 });
 
-test('真源层的写入原语确实只有 append（无 update/delete 同义入口）', () => {
-  const sourceDir = path.join(repoRoot, 'src', 'source');
-  const files = fs.readdirSync(sourceDir).filter((name) => name.endsWith('.ts'));
+/**
+ * 剥掉注释与字符串字面量 —— 扫描看的是**代码**，不是说明文字。
+ *
+ * 不剥的话，「注释里提到 `.delete(`」就会变红，而真正的调用反倒被淹没。
+ */
+function stripCommentsAndStrings(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/`(?:[^`\\]|\\.)*`/g, "''")
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""');
+}
 
-  const mutatingCalls: string[] = [];
-  for (const file of files) {
-    const text = fs.readFileSync(path.join(sourceDir, file), 'utf8');
-    for (const match of text.matchAll(/\.(update|delete|remove|rewrite|overwrite|truncate)\s*\(/g)) {
-      mutatingCalls.push(`${file}: ${match[1]}`);
+/**
+ * 本文件里**声明为内存集合**的变量名（`X = new Map(...)` / `new Set(...)` 等）。
+ *
+ * 用途：`Map.delete` / `Set.delete` 是集合自身的方法，与「删真源里的记录」
+ * 是两件事。白名单不手写，而是**从声明推导** —— 手写白名单会腐化
+ * （新增一个集合忘了登记就误报），而推导出来的名单天然跟着代码走：
+ * 一个名字只有在同一文件里被声明成 Map/Set 时，它的 `.delete()` 才被放行。
+ * 真源对象（log / record / shard）永远不在这个名单里。
+ */
+function declaredCollectionNames(code: string): Set<string> {
+  const names = new Set<string>();
+  // 覆盖两种声明形态：
+  //   局部/模块级  `const X = new Map(...)`
+  //   类字段      `private readonly X = new Map(...)` / `private X: Map<..> = new Map()`
+  const pattern =
+    /^[ \t]*(?:(?:private|protected|public|static|readonly|declare)\s+)*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=\s*new\s+(?:Map|Set|WeakMap|WeakSet)\b/gm;
+  for (const match of code.matchAll(pattern)) {
+    if (match[1] !== undefined) {
+      names.add(match[1]);
     }
   }
-  assert.deepEqual(mutatingCalls, [], `真源层出现修改既有记录的方法调用：${mutatingCalls.join('、')}`);
+  return names;
+}
+
+test('真源层与事件层没有「改既有记录」的调用（静态扫描；集合自身的 delete 除外）', () => {
+  // m2：范围从 src/source 扩到 src/event —— 事件层是真源写入的唯一调用方，
+  // 它能不能守住「只追加」，不该只靠自觉。
+  const dirs = [path.join(repoRoot, 'src', 'source'), path.join(repoRoot, 'src', 'event')];
+  const files = dirs.flatMap((dir) =>
+    fs
+      .readdirSync(dir)
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => path.join(dir, name)),
+  );
+  assert.ok(files.length > 0, '未扫描到任何文件');
+
+  const call = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.(update|delete|remove|rewrite|overwrite|truncate|unlink|rm)\s*\(/g;
+  const violations: string[] = [];
+  for (const file of files) {
+    const code = stripCommentsAndStrings(fs.readFileSync(file, 'utf8'));
+    const collections = declaredCollectionNames(code);
+    for (const match of code.matchAll(call)) {
+      const receiver = match[1] ?? '';
+      const verb = match[2] ?? '';
+      const head = receiver.split('.').pop() ?? '';
+      // 唯一豁免：本文件里声明成 Map/Set 的变量调 delete（内存集合自身的方法）。
+      if (verb === 'delete' && collections.has(head)) {
+        continue;
+      }
+      violations.push(`${path.relative(repoRoot, file)}: ${receiver}.${verb}()`);
+    }
+  }
+  assert.deepEqual(violations, [], `出现修改既有记录的调用：${violations.join('、')}`);
 });
 
 test('投影层可整体重建（重建协议存在且从真源折叠）', () => {

@@ -102,11 +102,15 @@ export class RawLog {
     return readManifest(this.dir).months.slice().sort();
   }
 
+  // ── G02 区块：resolve 快路径的 id 比对 ──
   /**
    * 按指针定位原文行。
    *
    * 双定位：给了 seq 就用 seq（冗余加速路径），没给就用 id（权威路径）。
    * 缺指针或越界一律抛错，不返回空。
+   *
+   * 冗余坐标**不得**盖过权威 id（审计 M8）：给了 id 时，(shard,seq) 命中行的
+   * event_id 与之不符 → 该坐标已陈旧 → 回退 id 扫描，绝不静默返回错行。
    */
   resolve(pointer: { id?: string; shard?: string; seq?: number | [number, number] }): RawTurn[] {
     const shard = pointer.shard;
@@ -120,7 +124,13 @@ export class RawLog {
           `指针越界：${this.channel}/${shard} 只有 ${rows.length} 行，请求 seq=${range.to}`,
         );
       }
-      return rows.slice(range.from, range.to + 1);
+      const hits = rows.slice(range.from, range.to + 1);
+      // 没给 id 就无从比对 → 保持既有快路径行为（冗余坐标单独可用）。
+      // 给了 id 且命中行与之相符 → 快路径结果可信，直接返回。
+      if (pointer.id === undefined || hits.some((row) => row.event_id === pointer.id)) {
+        return hits;
+      }
+      // 命中行与 id 不符 → 落到下面的 id 扫描（权威路径）。
     }
 
     if (pointer.id !== undefined) {

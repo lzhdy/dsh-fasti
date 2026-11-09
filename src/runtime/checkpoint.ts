@@ -18,6 +18,10 @@ import { ensureDir, exists, writeFileAtomic } from '../core/fsx.ts';
 import { parseJsonStrict } from '../core/fsx.ts';
 import fs from 'node:fs';
 import type { ProjectionLevel } from '../projection/types.ts';
+import type { StageFailure } from '../event/ingest-stage.ts';
+
+/** 最近失败明细的保留条数（环形缓冲上限；无界数组会撑大检查点）。 */
+const MAX_STAGE_FAILURE_RECENT = 10;
 
 /** 检查点内容。 */
 export interface Checkpoint {
@@ -32,6 +36,14 @@ export interface Checkpoint {
   degraded_reason: string;
   /** 是否需要全量重建投影。 */
   needs_rebuild: boolean;
+  /** 事件层：上次投影到的 tick（启动对账用）。 */
+  last_projected_tick?: number;
+  /** 事件层：最近一次启动清道夫扫到的 pending 数。 */
+  pending_events?: number;
+  /** 摄入 stage 失败**累计计数**（可观测：既知发生过多少，也知不知道还在持续）。 */
+  stage_failures?: number;
+  /** 摄入 stage 最近若干次失败的明细（环形缓冲，只留最近 MAX_STAGE_FAILURE_RECENT 条）。 */
+  stage_failure_recent?: StageFailure[];
 }
 
 /** 检查点存储。 */
@@ -81,6 +93,20 @@ export class CheckpointStore {
       degraded_reason: parsed.degraded_reason ?? '',
       needs_rebuild: parsed.needs_rebuild ?? false,
     };
+    // 事件层字段是后加的可选项：旧检查点文件没有这些键 → 保持缺省，
+    // 不报错、不改写既有字段语义（version 仍为 1）。
+    if (typeof parsed.last_projected_tick === 'number') {
+      this.state.last_projected_tick = parsed.last_projected_tick;
+    }
+    if (typeof parsed.pending_events === 'number') {
+      this.state.pending_events = parsed.pending_events;
+    }
+    if (typeof parsed.stage_failures === 'number') {
+      this.state.stage_failures = parsed.stage_failures;
+    }
+    if (Array.isArray(parsed.stage_failure_recent)) {
+      this.state.stage_failure_recent = parsed.stage_failure_recent.slice(-MAX_STAGE_FAILURE_RECENT);
+    }
     return { ...this.state };
   }
 
@@ -110,5 +136,28 @@ export class CheckpointStore {
   /** 标记需要全量重建。 */
   setNeedsRebuild(needsRebuild: boolean): void {
     this.state.needs_rebuild = needsRebuild;
+  }
+
+  /** 记录事件层上次投影到的 tick（启动对账用）。 */
+  setLastProjectedTick(tick: number): void {
+    this.state.last_projected_tick = tick;
+  }
+
+  /** 记录待补摘要的事件数（启动清道夫扫到的 pending 数）。 */
+  setPendingEvents(count: number): void {
+    this.state.pending_events = count;
+  }
+
+  /**
+   * 记录摄入 stage 失败：累计计数 + 最近若干条明细。
+   *
+   * 两者都要：单个累计数**既不能定位问题、也看不出是否在持续发生**；
+   * 但无界数组会撑大检查点 → 明细只留最近 MAX_STAGE_FAILURE_RECENT 条。
+   */
+  setStageFailures(count: number, recent?: readonly StageFailure[]): void {
+    this.state.stage_failures = count;
+    if (recent !== undefined) {
+      this.state.stage_failure_recent = recent.slice(-MAX_STAGE_FAILURE_RECENT);
+    }
   }
 }

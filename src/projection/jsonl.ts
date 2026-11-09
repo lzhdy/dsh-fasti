@@ -21,9 +21,18 @@ import path from 'node:path';
 import { appendJsonl, readJsonlFile } from '../core/jsonl.ts';
 import { ensureDir, writeFileAtomic } from '../core/fsx.ts';
 import { asciiLower, makeSnippet, matchesSubstring } from './types.ts';
+import {
+  decodeEventRow,
+  encodeEventRow,
+  foldCurrentEventRows,
+  matchesEventQuery,
+  sortEventRows,
+} from './event-row.ts';
 import { toEdgeProjection, toExperienceProjection } from './sqlite.ts';
 import type {
   EdgeProjection,
+  EventProjection,
+  EventQuery,
   ExperienceProjection,
   ProjectionEdgeQuery,
   ProjectionEngine,
@@ -96,6 +105,8 @@ export class JsonlProjection implements ProjectionEngine {
   private readonly edges = new Map<string, EdgeProjection>();
   /** id → 全文文本。 */
   private readonly documents = new Map<string, string>();
+  /** id → 事件投影（当前态）。 */
+  private readonly events = new Map<string, EventProjection>();
   /** 词 → 文档 id 集合（倒排）。 */
   private readonly inverted = new Map<string, Set<string>>();
   /** 通道 → 文档 id 集合。 */
@@ -111,6 +122,7 @@ export class JsonlProjection implements ProjectionEngine {
     this.experiences.clear();
     this.edges.clear();
     this.documents.clear();
+    this.events.clear();
     this.inverted.clear();
     this.byChannel.clear();
     this.byTimeBucket.clear();
@@ -127,6 +139,12 @@ export class JsonlProjection implements ProjectionEngine {
     for (const row of readJsonlFile<{ id: string; text: string }>(this.file('document.jsonl'))) {
       this.documents.set(row.id, row.text);
       this.indexText(row.id, row.text);
+    }
+    // 事件行：文件里可能残留同 id 的旧版本行 → 载入时按最大 version 折叠。
+    for (const row of foldCurrentEventRows(
+      readJsonlFile<unknown>(this.file('event.jsonl')).map((raw) => decodeEventRow(raw)),
+    )) {
+      this.events.set(row.id, row);
     }
   }
 
@@ -229,7 +247,13 @@ export class JsonlProjection implements ProjectionEngine {
       if (query.as_of_ms !== undefined) {
         const valid = row.valid_ms === null || row.valid_ms <= query.as_of_ms;
         const notInvalid = row.invalid_ms === null || row.invalid_ms > query.as_of_ms;
-        if (!valid || !notInvalid) {
+        // ── G06 区块：as-of 的时间轴修正（created_ms <= T）──
+        // as-of 还要看「这一行在 T 时刻是否已经存在」：回填行（created_ms 晚于 T）
+        // 不能被当成「早前就已相信」。created_ms 为 null → 无法证明它在 T 时刻
+        // 存在 → 不返回（L1/L2/L3 三档口径一致）。
+        const created: number | null = row.created_ms;
+        const existed = created !== null && created <= query.as_of_ms;
+        if (!valid || !notInvalid || !existed) {
           return false;
         }
       }
@@ -254,14 +278,44 @@ export class JsonlProjection implements ProjectionEngine {
     return new Map(this.documents);
   }
 
+  // ── T13 区块：事件投影 ──
+
+  /**
+   * 幂等写入一条事件投影。
+   *
+   * **版本保护**：只在 `incoming.version > existing.version` 时覆盖 ——
+   * 旧版本不得覆盖新版本（与 L1 的 `WHERE excluded.version > event.version` 同规则）。
+   */
+  async upsertEvent(row: EventProjection): Promise<void> {
+    const existing = this.events.get(row.id);
+    if (existing !== undefined && existing.version >= row.version) {
+      return;
+    }
+    this.events.set(row.id, row);
+    appendJsonl(this.file('event.jsonl'), encodeEventRow(row));
+  }
+
+  /** 事件查询（过滤与排序走共享实现 → 与 L1/L3 同语义）。 */
+  async queryEvents(query: EventQuery): Promise<EventProjection[]> {
+    const matched = sortEventRows(
+      [...this.events.values()].filter((row) => matchesEventQuery(row, query)),
+    );
+    return query.limit !== undefined ? matched.slice(0, query.limit) : matched;
+  }
+
+  async allEvents(): Promise<EventProjection[]> {
+    return sortEventRows([...this.events.values()]);
+  }
+
   async clear(): Promise<void> {
     this.experiences.clear();
     this.edges.clear();
     this.documents.clear();
+    this.events.clear();
     this.inverted.clear();
     this.byChannel.clear();
     this.byTimeBucket.clear();
-    for (const name of ['experience.jsonl', 'edge.jsonl', 'document.jsonl']) {
+    for (const name of ['experience.jsonl', 'edge.jsonl', 'document.jsonl', 'event.jsonl']) {
       writeFileAtomic(this.file(name), '');
     }
     for (const name of ['time.jsonl', 'channel.jsonl', 'term.jsonl']) {

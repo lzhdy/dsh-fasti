@@ -15,9 +15,19 @@ import { DatabaseSync } from 'node:sqlite';
 import { CorruptedError, UnavailableError } from '../core/errors.ts';
 import { ensureDir } from '../core/fsx.ts';
 import { MINIMAL_SCHEMA } from './schema.ts';
+import { EXPECTED_EVENT_COLUMNS } from './event-schema.ts';
+import {
+  decodeEventRow,
+  encodeEventRow,
+  eventQueryConditions,
+  matchesEventQuery,
+  sortEventRows,
+} from './event-row.ts';
 import { asciiLower, makeSnippet, matchesSubstring } from './types.ts';
 import type {
   EdgeProjection,
+  EventProjection,
+  EventQuery,
   ExperienceProjection,
   ProjectionEdgeQuery,
   ProjectionEngine,
@@ -87,6 +97,7 @@ export class SqliteProjection implements ProjectionEngine {
       for (const statement of MINIMAL_SCHEMA) {
         db.exec(statement);
       }
+      this.addMissingEventColumns(db);
       this.db = db;
     } catch (error) {
       if (db !== null) {
@@ -104,6 +115,29 @@ export class SqliteProjection implements ProjectionEngine {
     if (this.db !== null) {
       this.db.close();
       this.db = null;
+    }
+  }
+
+  /**
+   * 给已存在的 event 表补齐新增的**可空**列（本版新增两个摘要溯源列）。
+   *
+   * 为什么必须做：`CREATE TABLE IF NOT EXISTS` 对已存在的表是**空操作** ——
+   * 老库会继续缺列，于是 `upsertEvent` 的 INSERT 直接抛错，事件投影永远写不进去
+   * （真源是好的，坏的是投影）。事件投影确实能从真源整体重建，
+   * 但「加一列就得删库重来」不是可接受的运维动作，也不是重建能自动跨过的坑
+   * （重建先 clear 再插，表结构还是旧的）。
+   *
+   * 只做 `ALTER TABLE ADD COLUMN`：纯加法、可空、无默认值 → 不重写既有行、
+   * 不回填任何猜测值（老行的两个新列就是 NULL，语义正好是「不知道」）。
+   */
+  private addMissingEventColumns(db: DatabaseSync): void {
+    const rows = db.prepare('PRAGMA table_info(event)').all() as Array<{ name: unknown }>;
+    const existing = new Set(rows.map((row) => String(row.name)));
+    for (const [name, type] of EXPECTED_EVENT_COLUMNS) {
+      if (existing.has(name)) {
+        continue;
+      }
+      db.exec(`ALTER TABLE event ADD COLUMN ${name} ${type}`);
     }
   }
 
@@ -269,6 +303,12 @@ export class SqliteProjection implements ProjectionEngine {
       params.push(query.as_of_ms);
       where.push('(invalid_ms IS NULL OR invalid_ms > ?)');
       params.push(query.as_of_ms);
+      // ── G06 区块：as-of 的时间轴修正（created_ms <= T）──
+      // as-of 还要看「这一行在 T 时刻是否已经存在」：回填行（created_ms 晚于 T）
+      // 不能被当成「早前就已相信」。created_ms 为 null → 无法证明它在 T 时刻
+      // 存在 → 不返回（L1/L2/L3 三档口径一致）。
+      where.push('(created_ms IS NOT NULL AND created_ms <= ?)');
+      params.push(query.as_of_ms);
     }
 
     const sql =
@@ -302,9 +342,98 @@ export class SqliteProjection implements ProjectionEngine {
     return out;
   }
 
+  // ── T13 区块：事件投影 ──
+
+  /**
+   * 幂等写入一条事件投影。
+   *
+   * **版本保护**：`WHERE excluded.version > event.version` —— 旧版本不得覆盖新版本。
+   * 增量写入可能乱序到达（事件真源按版本推进，投影增量按到达顺序），
+   * 没有这道闸，较早的版本会把较新的当前态冲掉。
+   */
+  async upsertEvent(row: EventProjection): Promise<void> {
+    const db = this.require();
+    const stored = encodeEventRow(row);
+    db.prepare(
+      `INSERT INTO event(
+         id, version, status, channel, started_ms, ended_ms, assembled_ms,
+         summary, summary_quality, summary_source, summary_prompt_version, summary_model,
+         key_points, anchors, topic_lines, boundary_candidates,
+         pointer_count, merged_into, split_into, created_by, created_at_ms)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         version=excluded.version, status=excluded.status, channel=excluded.channel,
+         started_ms=excluded.started_ms, ended_ms=excluded.ended_ms, assembled_ms=excluded.assembled_ms,
+         summary=excluded.summary, summary_quality=excluded.summary_quality,
+         summary_source=excluded.summary_source,
+         summary_prompt_version=excluded.summary_prompt_version,
+         summary_model=excluded.summary_model,
+         key_points=excluded.key_points, anchors=excluded.anchors, topic_lines=excluded.topic_lines,
+         boundary_candidates=excluded.boundary_candidates, pointer_count=excluded.pointer_count,
+         merged_into=excluded.merged_into, split_into=excluded.split_into,
+         created_by=excluded.created_by, created_at_ms=excluded.created_at_ms
+       WHERE excluded.version > event.version`,
+    ).run(
+      stored.id,
+      stored.version,
+      stored.status,
+      stored.channel,
+      stored.started_ms,
+      stored.ended_ms,
+      stored.assembled_ms,
+      stored.summary,
+      stored.summary_quality,
+      stored.summary_source,
+      stored.summary_prompt_version,
+      stored.summary_model,
+      stored.key_points,
+      stored.anchors,
+      stored.topic_lines,
+      stored.boundary_candidates,
+      stored.pointer_count,
+      stored.merged_into,
+      stored.split_into,
+      stored.created_by,
+      stored.created_at_ms,
+    );
+  }
+
+  /**
+   * 事件查询。
+   *
+   * SQL 只做**预筛**（走索引），最终判定仍以共享的 `matchesEventQuery` 收口
+   * → 与 L2/L3 走同一份过滤语义，结果集必然一致。
+   */
+  async queryEvents(query: EventQuery): Promise<EventProjection[]> {
+    const db = this.require();
+    const conditions = eventQueryConditions(query);
+    const where = conditions.map((condition) => condition.sql);
+    const params = conditions.flatMap((condition) => [...condition.params]);
+
+    const sql =
+      `SELECT id, version, status, channel, started_ms, ended_ms, assembled_ms,` +
+      ` summary, summary_quality, summary_source, summary_prompt_version, summary_model,` +
+      ` key_points, anchors, topic_lines,` +
+      ` boundary_candidates, pointer_count, merged_into, split_into, created_by, created_at_ms` +
+      ` FROM event${where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''}` +
+      ` ORDER BY started_ms ASC, id ASC`;
+
+    const rows = db.prepare(sql).all(...(params as never[]));
+    // 排序走共享比较器（不依赖 SQL 的 collation）→ 三档顺序逐条相同。
+    const matched = sortEventRows(
+      rows.map((row) => decodeEventRow(row)).filter((row) => matchesEventQuery(row, query)),
+    );
+
+    return query.limit !== undefined ? matched.slice(0, query.limit) : matched;
+  }
+
+  async allEvents(): Promise<EventProjection[]> {
+    return this.queryEvents({});
+  }
+
   async clear(): Promise<void> {
     const db = this.require();
-    db.exec('DELETE FROM experience_fts; DELETE FROM edge; DELETE FROM experience;');
+    db.exec('DELETE FROM experience_fts; DELETE FROM edge; DELETE FROM experience; DELETE FROM event;');
   }
 
   /**

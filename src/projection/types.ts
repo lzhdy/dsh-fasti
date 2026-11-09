@@ -9,6 +9,8 @@
  * 三档结果集必须一致 —— 这正是「每级功能不丢、仅性能/丰富度下降」的机器可验形式。
  */
 
+import type { BoundaryCandidate } from '../contract/event.ts';
+
 /** 投影行 —— 结构层全量折叠（对应 §7.1 的 experience 表）。 */
 export interface ExperienceProjection {
   id: string;
@@ -63,6 +65,51 @@ export interface ProjectionEdgeQuery {
   as_of_ms?: number | undefined;
 }
 
+/**
+ * 事件投影行 —— 只存**当前态**（每个 event id 一行 + version 列）。
+ *
+ * 版本历史留在 `events/` 真源（append-only），投影层不提供读历史版本的能力。
+ * 字段口径见技术基线 §7.1；折叠与过滤的唯一实现见 `projection/event-row.ts`。
+ */
+export interface EventProjection {
+  id: string;
+  /** 当前态的版本号（= 同 id 的最大 version）。 */
+  version: number;
+  status: string;
+  channel: string;
+  started_ms: number;
+  ended_ms: number;
+  assembled_ms: number;
+  summary: string | null;
+  summary_quality: string;
+  summary_source: string | null;
+  /** 生成该摘要时的提示词版本号（可空，只做溯源）。 */
+  summary_prompt_version: string | null;
+  /** 生成该摘要的模型标识（可空，只做溯源）。 */
+  summary_model: string | null;
+  key_points: string[];
+  anchors: string[];
+  topic_lines: string[];
+  /** 语义候选标记（开放枚举，未知 kind 原样保留）。 */
+  boundary_candidates: BoundaryCandidate[];
+  pointer_count: number;
+  merged_into: string | null;
+  split_into: string[];
+  created_by: string;
+  created_at_ms: number;
+}
+
+/** 事件查询条件（投影层口径；门面另有 `EventQueryFilter` 契约）。 */
+export interface EventQuery {
+  status?: string | undefined;
+  channel?: string | undefined;
+  /** 按 started_ms 过滤，下界（含）。 */
+  from_ms?: number | undefined;
+  /** 按 started_ms 过滤，上界（含）。 */
+  to_ms?: number | undefined;
+  limit?: number | undefined;
+}
+
 /** 全文检索命中。 */
 export interface ProjectionSearchHit {
   id: string;
@@ -115,6 +162,19 @@ export interface ProjectionEngine {
 
   /** 全部全文文档（id → 文本）。 */
   allDocuments(): Promise<Map<string, string>>;
+
+  /**
+   * 幂等写入一条事件投影（只存当前态；旧版本不得覆盖新版本）。
+   *
+   * L3 无投影存储 → no-op（同 upsertExperience 的处理）。
+   */
+  upsertEvent(row: EventProjection): Promise<void>;
+
+  /** 事件查询（三档同一语义）。 */
+  queryEvents(query: EventQuery): Promise<EventProjection[]>;
+
+  /** 全部事件投影（当前态）。 */
+  allEvents(): Promise<EventProjection[]>;
 
   /**
    * 在一个事务里执行一批写入。

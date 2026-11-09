@@ -33,4 +33,10 @@ export {
 
 export type { ContentBlock, DshEvent, DshSession, MessageEventData } from './event-types.ts';
 
+export {
+  createDshLLMPort,
+  startClosureWorker,
+  type DshModelRoute,
+} from './llm.ts';
+
 export { default } from './plugin.ts';

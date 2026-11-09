@@ -11,10 +11,14 @@
  */
 
 import type { Experience } from '../contract/experience.ts';
+import type { EventRecord } from '../contract/event.ts';
 import { makeSnippet, matchesSubstring } from './types.ts';
 import { toEdgeRow } from './edge.ts';
+import { foldCurrentEvents, matchesEventQuery, sortEventRows } from './event-row.ts';
 import type {
   EdgeProjection,
+  EventProjection,
+  EventQuery,
   ExperienceProjection,
   ProjectionEdgeQuery,
   ProjectionEngine,
@@ -30,6 +34,13 @@ export interface SourceReader {
   readDocumentText(id: string): string | undefined;
   /** 全部文档（id → 文本）。 */
   readAllDocuments(): Map<string, string>;
+  /**
+   * 全部事件版本行（含历史）—— 事件真源 `events/` 的直读入口。
+   *
+   * L3 无投影存储，故「当前态」在读取时现算：版本行 → `foldCurrentEvents`
+   * （按 id 取最大 version）→ 与 L1/L2 重建后的当前态同口径。
+   */
+  readEvents(): EventRecord[];
 }
 
 /** L3 引擎。 */
@@ -138,7 +149,13 @@ export class SourceScanProjection implements ProjectionEngine {
         if (query.as_of_ms !== undefined) {
           const valid = row.valid_ms === null || row.valid_ms <= query.as_of_ms;
           const notInvalid = row.invalid_ms === null || row.invalid_ms > query.as_of_ms;
-          if (!valid || !notInvalid) {
+          // ── G06 区块：as-of 的时间轴修正（created_ms <= T）──
+          // as-of 还要看「这一行在 T 时刻是否已经存在」：回填行（created_ms 晚于 T）
+          // 不能被当成「早前就已相信」。created_ms 为 null → 无法证明它在 T 时刻
+          // 存在 → 不返回（L1/L2/L3 三档口径一致）。
+          const created: number | null = row.created_ms;
+          const existed = created !== null && created <= query.as_of_ms;
+          if (!valid || !notInvalid || !existed) {
             continue;
           }
         }
@@ -162,6 +179,25 @@ export class SourceScanProjection implements ProjectionEngine {
 
   async allDocuments(): Promise<Map<string, string>> {
     return this.reader.readAllDocuments();
+  }
+
+  // ── T13 区块：事件投影 ──
+
+  /** L3 无投影存储 —— no-op（同 upsertExperience 的处理）。 */
+  async upsertEvent(): Promise<void> {
+    // 真源直读模式下没有投影可写。
+  }
+
+  /** 事件查询：真源版本行 → 当前态 → 共享过滤与排序 → 与 L1/L2 同语义。 */
+  async queryEvents(query: EventQuery): Promise<EventProjection[]> {
+    const matched = sortEventRows(
+      foldCurrentEvents(this.reader.readEvents()).filter((row) => matchesEventQuery(row, query)),
+    );
+    return query.limit !== undefined ? matched.slice(0, query.limit) : matched;
+  }
+
+  async allEvents(): Promise<EventProjection[]> {
+    return foldCurrentEvents(this.reader.readEvents());
   }
 
   async clear(): Promise<void> {

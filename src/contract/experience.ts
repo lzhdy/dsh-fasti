@@ -204,6 +204,44 @@ export function isForbiddenFieldName(name: string): boolean {
   );
 }
 
+/**
+ * **递归**收集命中的禁字段名（含嵌套，返回 `路径=字段名` 形式的清单）。
+ *
+ * 为什么要递归：只查顶层等于给嵌套开了后门 —— `marks: { score: 0.8 }`、
+ * `pointers: [{ importance: 3 }]` 都能从顶层检查底下溜过去，而红线是「不得预设重要性」，
+ * 它不关心你把它藏在第几层。
+ *
+ * 有环保护：手写对象可能带环（真源 JSON 不会），撞上环就跳过该分支，不抛栈溢出。
+ */
+export function findForbiddenFieldKeys(value: unknown, path = ''): string[] {
+  const hits: string[] = [];
+  const seen = new WeakSet<object>();
+
+  const walk = (node: unknown, at: string): void => {
+    if (typeof node !== 'object' || node === null) {
+      return;
+    }
+    if (seen.has(node)) {
+      return;
+    }
+    seen.add(node);
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => walk(item, `${at}[${index}]`));
+      return;
+    }
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      const childPath = at === '' ? key : `${at}.${key}`;
+      if (isForbiddenFieldName(key)) {
+        hits.push(childPath);
+      }
+      walk(child, childPath);
+    }
+  };
+
+  walk(value, path);
+  return hits;
+}
+
 /** 顶层字段名全集 —— 校验器据此判定「未知字段」（未知即原样保留，不报错）。 */
 export const EXPERIENCE_FIELDS = [
   'id',
