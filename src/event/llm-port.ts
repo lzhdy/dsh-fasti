@@ -9,6 +9,8 @@
  * 调用方负责退避重试，**不得**用占位文案糊过去（定案稿 §6.3）。
  */
 
+import type { BoundaryCandidate } from '../contract/event.ts';
+
 /** 摘要请求。 */
 export interface LLMSummarizeRequest {
   /** 系统提示（内核生成：口径 + 写法指引 + 自检要求）。 */
@@ -36,6 +38,18 @@ export interface LLMSummarizeResponse {
    * 模型别名解析或降级）。宿主报不出来就是空，不填、不猜。
    */
   readonly model?: string | undefined;
+  /**
+   * 话题跳转候选（v1.4 · C7 慢路径）—— 摘要调用的**附带输出**。
+   *
+   * 唯一来源 = 摘要调用本身（不接 embedding 探测器，§5.2 B 类信号）。
+   *
+   * 硬约束：
+   *  - **非权威**：候选只写 `boundary_candidates`，**绝不改** `pointers`/`time_range`/`status`；
+   *  - **无分数、无置信度**：`kind` 是开放字符串，取值 '话题跳转'；没有 score 字段；
+   *  - **最多 5 条**（超出由调用方截断）；
+   *  - 解析失败则**丢弃候选、摘要照常落盘**（失败降级表第 4 行：不写半成品）。
+   */
+  readonly boundary_candidates?: readonly BoundaryCandidate[] | undefined;
 }
 
 /** 单次调用选项（由调用方给，不是模型参数）。 */

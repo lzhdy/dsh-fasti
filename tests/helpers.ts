@@ -59,6 +59,7 @@ export function makeExperience(overrides: Partial<Experience> = {}): Experience 
     occurred_at: '2026-11-08T10:00:00.000Z',
     recorded_at: '2026-11-08T10:00:00.000Z',
     tick: 0,
+    char_count: null,
   };
   return { ...base, ...overrides };
 }

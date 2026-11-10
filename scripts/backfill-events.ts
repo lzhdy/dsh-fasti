@@ -18,6 +18,14 @@
  *   node scripts/backfill-events.ts --data-root <临时根>              # 试运行（默认）
  *   node scripts/backfill-events.ts --data-root <临时根> --apply      # 真写
  *   node scripts/backfill-events.ts --data-root <临时根> --json       # 机器可读报告
+ *   node scripts/backfill-events.ts --data-root <临时根> --backfill-counts  # 附带历史计数补齐
+ *
+ * v1.4（C11）：
+ *  - 两个上限（7000 / 50000）只作用于**新切出**的事件 —— 既有事件不重切、不重算；
+ *  - 报告增补两计数器预演值与各 `closed_reason` 命中统计；
+ *  - 历史 `char_count` / 两计数器 / action / outcome 的离线补齐是**显式可选**能力
+ *    （`--backfill-counts`），**默认关闭**；开启后只喂给沙箱里的切分器，真源一个字节都不改；
+ *  - 默认仍是试运行；**是否对真实根执行 `--apply` 由用户另行批准**（实现方不得自行执行）。
  *
  * 关于「初始很碎」（定案稿 §16.2）：
  *   历史记录按「静默 ≥30 分钟即闭合」切分，跨天的相邻记录必然各自成段 → 单条事件与孤立记录很多。
@@ -31,13 +39,15 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { EventSegmenter, ORPHAN_MARK_KIND, isPendingMergeOf } from '../src/event/segmenter.ts';
+import { typeToolTurn } from '../src/event/tool-typing.ts';
 import { resolveEventParams } from '../src/event/params.ts';
 import type { EventParams } from '../src/event/params.ts';
 import { EventLog } from '../src/source/event-log.ts';
 import { ExperienceLog } from '../src/source/experience-log.ts';
+import { RawLog } from '../src/source/raw-log.ts';
 import { layoutOf, resolveDataRoot } from '../src/source/paths.ts';
 import { msToIso } from '../src/core/time.ts';
-import type { Experience } from '../src/contract/experience.ts';
+import type { Experience, Outcome } from '../src/contract/experience.ts';
 
 // ── 参数 ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +58,19 @@ export interface BackfillOptions {
   apply?: boolean | undefined;
   /** 事件层参数覆盖（缺省用默认参数）。 */
   params?: Partial<EventParams> | undefined;
+  /**
+   * 历史 `char_count` / 两计数器 / action / outcome 的离线补齐（v1.4 · C11）。
+   *
+   * **默认关闭**（显式可选能力 —— 定案稿 §16.1 的加法窗口只允许「新事件用新阈值」，
+   * 历史补齐是**另一件事**，必须由人显式打开）。
+   *
+   * 开启后：读原文层按 `observation.text.id` 取回 raw_text → 算 `char_count`
+   * （全量码点）→ 按载荷形状补 action/outcome → 供沙箱切分时累计两个计数器。
+   *
+   * **不改真源**：只影响沙箱里的切分输入；历史经历本身**不回写**
+   * （真源 append-only，且「不在线回算历史计数」是纪律）。
+   */
+  backfillCounts?: boolean | undefined;
 }
 
 /** 补切出来的一段事件（报告用）。 */
@@ -67,6 +90,18 @@ export interface BackfillSegment {
   single_record: boolean;
   /** 是否待归并（单记录 + 静默闭合 → 7 天后会被标「孤立记录」）。 */
   pending_merge: boolean;
+  /**
+   * 有效对话字数预演值（v1.4 · C11）—— 该段累计的非工具轮字符数。
+   *
+   * `null` = 未统计（历史记录没有 `char_count`，且未开启补齐）。
+   */
+  effective_chars: number | null;
+  /**
+   * 原文全量字符预演值（v1.4 · C11）—— 该段累计的全量字符数（含工具 JSON）。
+   *
+   * `null` = 未统计（同上）。
+   */
+  raw_chars: number | null;
 }
 
 /** 回填报告 —— 诚实优先：数字都来自真源实测，不估算、不美化。 */
@@ -105,6 +140,28 @@ export interface BackfillReport {
     /** 既有事件是否字节级未变（既有分片文件在回填后仍以回填前的文本为前缀）。 */
     untouched: boolean;
   };
+  /**
+   * 两个上限的预演统计（v1.4 · C11）。
+   *
+   * 只统计**新切出**的事件（既有事件不重切、不重算 —— 新阈值只作用于新事件）。
+   * `max_*` 是命中数（真实数据应当为 0 —— 定案稿 §5.2 实测零误触发）。
+   */
+  caps: {
+    /** 有效对话字数上限命中数（reason='max-dialogue-chars'）。 */
+    max_dialogue_chars: number;
+    /** 硬保险丝命中数（reason='max-chars'）。 */
+    max_chars: number;
+    /** 各段有效对话字数最大值（null = 全部未统计）。 */
+    max_effective_chars: number | null;
+    /** 各段 raw 全量字符最大值（null = 全部未统计）。 */
+    max_raw_chars: number | null;
+  };
+  /**
+   * 各 `closed_reason` 命中统计（v1.4 · C11）—— 新切出事件的闭合原因分布。
+   *
+   * key 为闭合原因，'open' 表示未被机械闭合；值是命中段数。
+   */
+  reason_stats: Record<string, number>;
   /** 逐段明细。 */
   segments: BackfillSegment[];
   warnings: string[];
@@ -226,6 +283,13 @@ export function backfillEvents(options: BackfillOptions = {}): BackfillReport {
       version_rows: existingRows.length,
       untouched: true,
     },
+    caps: {
+      max_dialogue_chars: 0,
+      max_chars: 0,
+      max_effective_chars: null,
+      max_raw_chars: null,
+    },
+    reason_stats: {},
     segments: [],
     warnings,
   };
@@ -276,12 +340,25 @@ export function backfillEvents(options: BackfillOptions = {}): BackfillReport {
       return a.location.seq - b.location.seq;
     });
 
+    // v1.4 · C11：历史计数补齐（显式可选，默认关闭）。
+    //
+    // 开启时先把原文读进内存（event_id → raw_text），再逐条补 `char_count`
+    // 与类型化产物 —— **只喂给沙箱里的切分器**，真源记录一个字都不改。
+    const rawTexts =
+      options.backfillCounts === true
+        ? readRawTextsOf(root, [...new Set(uncovered.map((item) => item.experience.scene.channel))])
+        : new Map<string, string>();
+
     for (const item of ordered) {
+      const experience =
+        options.backfillCounts === true
+          ? backfillCountsOf(item.experience, rawTexts).experience
+          : item.experience;
       segmenter.run({
-        experience: item.experience,
+        experience,
         location: item.location,
-        channel: item.experience.scene.channel,
-        tick: item.experience.tick,
+        channel: experience.scene.channel,
+        tick: experience.tick,
       });
     }
 
@@ -324,6 +401,28 @@ export function backfillEvents(options: BackfillOptions = {}): BackfillReport {
       if (event.boundary_candidates.some((item) => item.kind === ORPHAN_MARK_KIND)) {
         report.created.orphan_marked += 1;
       }
+
+      // ── v1.4 · C11：两计数器预演值 + 各 closed_reason 命中统计 ──
+      const effectiveChars = event.effective_chars;
+      const rawChars = event.raw_chars;
+      if (effectiveChars !== null) {
+        report.caps.max_effective_chars = Math.max(
+          report.caps.max_effective_chars ?? 0,
+          effectiveChars,
+        );
+      }
+      if (rawChars !== null) {
+        report.caps.max_raw_chars = Math.max(report.caps.max_raw_chars ?? 0, rawChars);
+      }
+      if (event.closed_reason === 'max-dialogue-chars') {
+        report.caps.max_dialogue_chars += 1;
+      }
+      if (event.closed_reason === 'max-chars') {
+        report.caps.max_chars += 1;
+      }
+      const reasonKey = event.closed_reason ?? 'open';
+      report.reason_stats[reasonKey] = (report.reason_stats[reasonKey] ?? 0) + 1;
+
       report.segments.push({
         id: event.id,
         channel: event.channel,
@@ -333,6 +432,8 @@ export function backfillEvents(options: BackfillOptions = {}): BackfillReport {
         closed_reason: event.closed_reason,
         single_record: event.pointers.length === 1,
         pending_merge: isPendingMergeOf(event),
+        effective_chars: effectiveChars,
+        raw_chars: rawChars,
       });
     }
     report.created.version_rows = sandboxRows.length;
@@ -363,8 +464,104 @@ export function backfillEvents(options: BackfillOptions = {}): BackfillReport {
   return report;
 }
 
-// ── 报告输出 ──────────────────────────────────────────────────────────────
+// ── v1.4 · C11：历史计数补齐（显式可选，默认关闭）────────────────────────
 
+/**
+ * 补齐后的经历副本 —— 含 `char_count` 与类型化产物。
+ *
+ * **原记录一律不改**：真源 append-only，且「不在线回算历史计数」是纪律。
+ * 补齐只存在于沙箱里，用来让新切出的事件带上正确的两个计数器。
+ */
+interface CountedExperience {
+  readonly experience: Experience;
+  readonly charCount: number | null;
+  readonly toolTurn: boolean;
+}
+
+/**
+ * 历史计数补齐（显式可选能力，**默认关闭**）。
+ *
+ * 做三件事，逐条对应任务书 C11：
+ *  1. 按 `observation.text` 指针回原文层取 `raw_text`；
+ *  2. 算 `char_count` = 全量码点长度（`Array.from(...).length`）；
+ *  3. 按载荷形状补 `action`/`outcome`（阶段 0 类型化的离线等价物）。
+ *
+ * 读不到原文 → `char_count = null`、不加 action/outcome（**不猜不编**，
+ * 失败降级表第 1 行）；**不回写真源**。
+ *
+ * @returns 补齐后的经历副本（原样返回 = 未补齐）
+ */
+function backfillCountsOf(
+  experience: Experience,
+  rawTexts: ReadonlyMap<string, string>,
+): CountedExperience {
+  const pointer = experience.observation.text;
+  if (pointer?.id === undefined) {
+    return { experience, charCount: null, toolTurn: false };
+  }
+  const rawText = rawTexts.get(pointer.id);
+  if (rawText === undefined) {
+    return { experience, charCount: null, toolTurn: false };
+  }
+
+  const charCount = Array.from(rawText).length;
+  const typing = typeToolTurn(rawText);
+  const enriched: Experience = { ...experience, char_count: charCount };
+
+  if (typing.kind === 'call-step') {
+    enriched.action = {
+      type: 'tool-call',
+      tool: typing.tool,
+      args: { ...pointer },
+      call_id: typing.callId,
+    };
+    return { experience: enriched, charCount, toolTurn: true };
+  }
+
+  if (typing.kind === 'result') {
+    const outcome: Outcome = { text: { ...pointer }, status: typing.status };
+    if (typing.callId !== undefined) {
+      outcome.call_id = typing.callId;
+    }
+    if (typing.errorType !== undefined) {
+      outcome.error_type = typing.errorType;
+    }
+    if (typing.durationMs !== undefined) {
+      outcome.duration_ms = typing.durationMs;
+    }
+    enriched.outcome = outcome;
+    return { experience: enriched, charCount, toolTurn: true };
+  }
+
+  return { experience: enriched, charCount, toolTurn: false };
+}
+
+/**
+ * 读原文层 → 建立 `event_id → raw_text` 映射（补齐用）。
+ *
+ * 逐通道读；读不到的通道跳过（**不编造原文**）。
+ */
+function readRawTextsOf(root: string, channels: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const layout = layoutOf(root);
+  for (const channel of channels) {
+    const dir = channel === 'dsh' ? layout.rawTurns : path.join(layout.raw, channel);
+    if (!fs.existsSync(dir)) {
+      continue;
+    }
+    const log = new RawLog(channel, dir);
+    try {
+      for (const turn of log.readAll()) {
+        out.set(turn.event_id, turn.raw_text);
+      }
+    } catch {
+      // 原文层读不了 → 该通道不补齐（不猜、不编）。
+    }
+  }
+  return out;
+}
+
+// ── 报告输出 ──────────────────────────────────────────────────────────────
 /** 人读的报告。 */
 export function formatReport(report: BackfillReport): string {
   const lines: string[] = [];
@@ -391,6 +588,20 @@ export function formatReport(report: BackfillReport): string {
   lines.push(`单记录事件数        ：${report.created.single_record_events}`);
   lines.push(`待归并（孤立候选）  ：${report.created.pending_merge}`);
   lines.push(`已标孤立记录        ：${report.created.orphan_marked}`);
+  lines.push('');
+  lines.push('── v1.4 两个上限预演（只作用于新切出的事件）──────────────────');
+  lines.push(`有效对话字数上限命中：${report.caps.max_dialogue_chars}（reason=max-dialogue-chars）`);
+  lines.push(`硬保险丝命中        ：${report.caps.max_chars}（reason=max-chars）`);
+  lines.push(
+    `最大有效对话字数    ：${report.caps.max_effective_chars ?? '（未统计：未开启历史计数补齐）'}`,
+  );
+  lines.push(
+    `最大 raw 全量字符   ：${report.caps.max_raw_chars ?? '（未统计：未开启历史计数补齐）'}`,
+  );
+  const reasons = Object.entries(report.reason_stats);
+  lines.push(
+    `闭合原因分布        ：${reasons.length === 0 ? '（无）' : reasons.map(([reason, n]) => `${reason}=${n}`).join('、')}`,
+  );
   lines.push('');
   lines.push('── 既有事件 ────────────────────────────────────────────────────');
   lines.push(`既有事件数（未触碰）：${report.existing.events}`);
@@ -426,6 +637,7 @@ function parseArgs(argv: string[]): CliOptions {
     dataRoot: undefined,
     apply: false,
     params: undefined,
+    backfillCounts: false,
     json: false,
     help: false,
   };
@@ -444,6 +656,10 @@ function parseArgs(argv: string[]): CliOptions {
       }
       case '--apply':
         options.apply = true;
+        break;
+      case '--backfill-counts':
+        // v1.4 · C11：历史计数补齐是**显式可选**能力，默认关闭。
+        options.backfillCounts = true;
         break;
       case '--json':
         options.json = true;
@@ -465,10 +681,14 @@ function usage(): string {
     '',
     '  --data-root <目录>  数据根（默认 resolveDataRoot：显式配置 > $DSH_HOME/fasti > ~/.dsh/fasti）',
     '  --apply             真写（缺省是试运行：只报告，不写任何东西）',
+    '  --backfill-counts   历史 char_count / 两计数器 / action / outcome 的离线补齐',
+    '                     （**默认关闭**；开启后只影响新切出的事件，真源记录一个字节都不改）',
     '  --json              输出 JSON 报告（机器可读）',
     '  --help              本帮助',
     '',
     '纪律：只补齐不重建 —— 已被事件覆盖的记录一律跳过，既有事件的边界与版本一个字节都不碰。',
+    '',
+    '两个上限（7000 / 50000）只作用于**新切出**的事件 —— 既有事件不重切、不重算。',
     '',
   ].join('\n');
 }

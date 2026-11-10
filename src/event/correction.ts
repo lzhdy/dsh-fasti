@@ -551,6 +551,10 @@ export class EventCorrector {
       // 退役指针：本次不写（置 undefined = 该字段不存在）。
       merged_into: undefined,
       split_into: undefined,
+      // v1.4 双计数器：新建事件尚无统计 → null（同 segmenter，必须显式写 null，
+      // 补位循环只服务数组类字段）。
+      effective_chars: null,
+      raw_chars: null,
     };
 
     // 只为**数组类**字段兜底：可空字符串字段（summary / summary_source /

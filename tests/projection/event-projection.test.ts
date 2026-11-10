@@ -56,6 +56,8 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
     created_at: BASE_TIME,
     channel: 'dsh',
     boundary_candidates: [],
+    effective_chars: null,
+    raw_chars: null,
   };
   return { ...base, ...overrides };
 }
@@ -336,6 +338,7 @@ test('重建白名单：experiences/ 有数据、events/ 为空 → 重建后事
               occurred_at: '2026-11-15T12:00:00.000Z',
               recorded_at: '2026-11-15T12:00:00.000Z',
               tick: 0,
+              char_count: null,
             },
             location: { shard: '2026-11', seq: 0 },
           },
@@ -469,6 +472,7 @@ test('重建白名单：events/ 永不从 experiences/ 重建（只改 experienc
       occurred_at: '2026-11-15T12:00:00.000Z',
       recorded_at: '2026-11-15T12:00:00.000Z',
       tick: 0,
+      char_count: null,
     });
 
     const fasti = await Fasti.open({ dataRoot: root });
@@ -662,6 +666,132 @@ test('L1 迁移：老库缺 summary_prompt_version / summary_model → 打开时
       const written = (await engine.allEvents()).find((row) => row.id === 'evt-new');
       assert.equal(written?.summary_prompt_version, 'v1');
       assert.equal(written?.summary_model, 'dsh-pro');
+    } finally {
+      await engine.close();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+// ── 7. v1.4 双计数器：投影两列往返与老库补列（定案稿 §16.1 / A8）──────────
+
+test('双计数器：三档列往返一致（含 null 与有值两种情形）', async () => {
+  const root = makeTempRoot();
+  try {
+    const log = new EventLog(layoutOf(root).events);
+    // 一条已统计（有效对话 700 字 / raw 13477 字），一条未统计（旧数据 → null）。
+    log.appendVersion(
+      makeEvent({ id: 'evt-counted', effective_chars: 700, raw_chars: 13477 }),
+    );
+    log.appendVersion(makeEvent({ id: 'evt-uncounted', effective_chars: null, raw_chars: null }));
+
+    const engines: ProjectionEngine[] = [
+      new SqliteProjection(path.join(root, 'proj-l1', 'proj.db')),
+      new JsonlProjection(path.join(root, 'proj-l2')),
+      new SourceScanProjection({
+        readExperiences: () => [],
+        readDocumentText: () => undefined,
+        readAllDocuments: () => new Map(),
+        readEvents: () => log.readAllVersions(),
+      }),
+    ];
+
+    const results: EventProjection[][] = [];
+    for (const engine of engines) {
+      await engine.open();
+      try {
+        for (const event of log.readAll()) {
+          await engine.upsertEvent(toEventProjection(event));
+        }
+        results.push(await engine.allEvents());
+      } finally {
+        await engine.close();
+      }
+    }
+
+    const [l1, l2, l3] = results;
+    assert.ok(l1 !== undefined && l2 !== undefined && l3 !== undefined);
+    assert.deepEqual(plain(l1), plain(l2), 'L1 与 L2 必须逐字段一致');
+    assert.deepEqual(plain(l2), plain(l3), 'L2 与 L3 必须逐字段一致');
+
+    const counted = l1.find((row) => row.id === 'evt-counted');
+    assert.equal(counted?.effective_chars, 700, '已统计的有效对话字数要能读回来');
+    assert.equal(counted?.raw_chars, 13477);
+
+    const uncounted = l1.find((row) => row.id === 'evt-uncounted');
+    assert.equal(uncounted?.effective_chars, null, 'null 不能被读成 0 或 undefined');
+    assert.equal(uncounted?.raw_chars, null);
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('双计数器：L1 老库缺两列 → 打开时自动补列，老行读成 null，新行可写', async () => {
+  const root = makeTempRoot();
+  try {
+    const file = path.join(root, 'old', 'proj.db');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+
+    // 造一个「上一版」的 event 表：没有两个计数器列，且已有一行数据。
+    const { DatabaseSync } = await loadSqlite();
+    const old = new DatabaseSync(file);
+    old.exec(`CREATE TABLE event(
+      id TEXT PRIMARY KEY, version INTEGER NOT NULL, status TEXT NOT NULL, channel TEXT NOT NULL,
+      started_ms INTEGER NOT NULL, ended_ms INTEGER NOT NULL, assembled_ms INTEGER NOT NULL,
+      summary TEXT, summary_quality TEXT NOT NULL, summary_source TEXT,
+      summary_prompt_version TEXT, summary_model TEXT,
+      key_points TEXT, anchors TEXT, topic_lines TEXT, boundary_candidates TEXT,
+      pointer_count INTEGER NOT NULL, merged_into TEXT, split_into TEXT,
+      created_by TEXT NOT NULL, created_at_ms INTEGER NOT NULL);`);
+    old
+      .prepare(
+        `INSERT INTO event(id, version, status, channel, started_ms, ended_ms, assembled_ms,
+           summary, summary_quality, summary_source, summary_prompt_version, summary_model,
+           key_points, anchors, topic_lines, boundary_candidates,
+           pointer_count, merged_into, split_into, created_by, created_at_ms)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'evt-old',
+        1,
+        'closed',
+        'dsh',
+        Date.parse(BASE_TIME),
+        Date.parse(BASE_TIME),
+        Date.parse(BASE_TIME),
+        '老摘要',
+        'ready',
+        'llm',
+        'v1',
+        'dsh-pro',
+        '[]',
+        '[]',
+        '[]',
+        '[]',
+        1,
+        null,
+        '[]',
+        'system',
+        Date.parse(BASE_TIME),
+      );
+    old.close();
+
+    const engine = new SqliteProjection(file);
+    await engine.open();
+    try {
+      const rows = await engine.allEvents();
+      assert.equal(rows.length, 1, '老行还在（迁移是纯加法，不重建）');
+      assert.equal(rows[0]?.effective_chars, null, '新列对老行就是「不知道」');
+      assert.equal(rows[0]?.raw_chars, null);
+
+      // 新列可写：不补列的话这条 upsert 会直接抛错（缺列）。
+      await engine.upsertEvent(
+        toEventProjection(makeEvent({ id: 'evt-new', effective_chars: 5170, raw_chars: 13477 })),
+      );
+      const written = (await engine.allEvents()).find((row) => row.id === 'evt-new');
+      assert.equal(written?.effective_chars, 5170);
+      assert.equal(written?.raw_chars, 13477);
     } finally {
       await engine.close();
     }

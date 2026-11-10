@@ -16,8 +16,12 @@ import { SUMMARY_MAX_CHARS } from '../contract/event.ts';
  * 改了 `closure.ts` 里两段提示词就**必须**改这个值：它是「这条摘要是哪版提示词
  * 生成的」的唯一标识。散落成字面量的话，改 prompt 时必然漏改某一处，
  * 溯源就成了假信息。
+ *
+ * **v1 → v2（v1.4 · C7）**：提示词扩展了「话题跳转候选」的输出指引，
+ * 摘要正文的口径未变，但产出结构变了 → 版本号同次 bump（任务书 C7 明列）。
+ * 新摘要写 `summary_prompt_version='v2'`；旧事件的 'v1' 原样保留（溯源是历史事实）。
  */
-export const SUMMARY_PROMPT_VERSION = 'v1';
+export const SUMMARY_PROMPT_VERSION = 'v2';
 
 /**
  * 单次模型调用的硬超时默认值（毫秒）—— 设计稿 v1.1 §6.3.1 纪律①。
@@ -42,8 +46,10 @@ export const DEFAULT_CLOSURE_ROUND_BUDGET_MS = 120_000;
 export interface EventParams {
   /** A 类 · 静默闭合分钟数（≥ 则闭合）。默认 30。 */
   silenceGapMinutes: number;
-  /** A 类 · 单事件记录数上限（达到则闭合）。默认 20。 */
-  maxRecordsPerEvent: number;
+  /** A 类 · 单事件有效对话字数上限（非工具轮 char_count 累计，达到则闭合）。默认 7000。（v1.4 新增） */
+  maxEffectiveCharsPerEvent: number;
+  /** A 类 · 硬保险丝：单事件 raw 全量字符按 1 字符 ≈ 1 token 换算达到则强制闭合。默认 50000。（v1.4 新增） */
+  fuseRawChars: number;
   /** 摘要硬上限字数。默认 600。 */
   summaryMaxChars: number;
   /** 孤立记录观察窗（天）。默认 7。 */
@@ -54,17 +60,43 @@ export interface EventParams {
   minSimilarity: number;
   /** 单次模型调用硬超时（毫秒）。默认 60000。 */
   closureCallTimeoutMs: number;
+  /**
+   * 任务闭环信号是否**激活**。默认 false（dormant）。
+   *
+   * 定案稿 §5.2 机械信号表把任务闭环标为 `dormant`，并写明唤醒路径是
+   * 「阶段 0 类型化 + 作用域级判据落地并经用例验证后，**才把该信号从
+   * `dormant` 改为 `active`**」；原文强调「**休眠是显式状态，不是一句注释**」。
+   *
+   * 因此本字段是这条信号**唯一的开关**：作用域级判据（inFlightCallIds +
+   * 准入门槛 + 交付轮）始终照常维护，但只有本字段为 true 时它才参与闭合判定。
+   * 关闭时（默认值）任务闭环**恒不产生** `task-closure` 闭合原因。
+   *
+   * 激活与否由**设计口径变更**决定，不由实现方自行打开 —— 实现方只负责把
+   * 门控修好，让「dormant」成为可执行的状态而非注释。
+   */
+  taskClosureActive: boolean;
 }
 
-/** 默认参数。 */
+/**
+ * 默认参数。
+ *
+ * v1.4：**`maxRecordsPerEvent`（20 条硬上限）已退役** —— 从本接口移除。
+ * 条数上限是在对机器载荷计数（工具轮占全库 67.1% 字符却只占 14% 条数），
+ * 于是「20 条 7 分钟攒满、边界总落在 JSON 中间」。定案稿 §9 明确
+ * 「不做 20 条记录硬上限（退役，`max-records` 仅保留兼容读取）」。
+ */
 export const DEFAULT_EVENT_PARAMS: EventParams = {
   silenceGapMinutes: 30,
-  maxRecordsPerEvent: 20,
+  maxEffectiveCharsPerEvent: 7000,
+  fuseRawChars: 50000,
   summaryMaxChars: SUMMARY_MAX_CHARS,
   orphanWindowDays: 7,
   recentWindow: 10,
   minSimilarity: 0.7,
   closureCallTimeoutMs: DEFAULT_CLOSURE_CALL_TIMEOUT_MS,
+  // 任务闭环信号休眠（定案稿 §5.2）—— 默认不激活。
+  // 激活需经显式口径变更（dormant → active），实现方不得自行打开。
+  taskClosureActive: false,
 };
 
 /**
@@ -94,9 +126,40 @@ export function silenceGapMsOf(params: EventParams): number {
   return params.silenceGapMinutes * MS_PER_MINUTE;
 }
 
-/** 单事件记录数上限。 */
-export function maxRecordsOf(params: EventParams): number {
-  return params.maxRecordsPerEvent;
+/**
+ * 硬保险丝阈值 —— raw 全量字符换算成 token 后的闭合线（v1.4 新增）。
+ *
+ * 与 `maxEffectiveCharsOf` 量纲不同（全量含工具 JSON vs 非工具轮正文），不可合并；
+ * 判定顺序钉死为**先保险丝、再有效对话字数**（定案稿 §5.2.1）。
+ */
+export function fuseLimitOf(params: EventParams): number {
+  return params.fuseRawChars;
+}
+
+/** 单事件有效对话字数上限（v1.4 新增）。 */
+export function maxEffectiveCharsOf(params: EventParams): number {
+  return params.maxEffectiveCharsPerEvent;
+}
+
+/**
+ * 任务闭环信号是否激活（定案稿 §5.2 的 `dormant` / `active` 开关）。
+ *
+ * 函数名刻意避开字段名（纪律 6：字段名只允许出现在本文件，
+ * 其他模块一律经换算函数取值）。
+ */
+export function taskScopeActiveOf(params: EventParams): boolean {
+  return params.taskClosureActive;
+}
+
+/**
+ * 字符 → token 换算（v1.4 钉死：**1 raw 字符 ≈ 1 token**，定案稿 §5.2）。
+ *
+ * 恒等换算的纯函数：无副作用、无外部依赖、不引 tokenizer（纪律 5）。
+ * 该取值对 CJK 近似准确，对 ASCII/JSON 高估令牌（实际 token 更少）→ 只会更早触发，
+ * 属保守侧。常量只在本文件出现（纪律 6）。
+ */
+export function charsToTokens(rawChars: number): number {
+  return rawChars;
 }
 
 /** 孤立记录观察窗（毫秒）。 */

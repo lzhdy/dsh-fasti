@@ -23,9 +23,14 @@ import type { RawTurnInput } from './raw-turn.ts';
  *    recorded_at=ingested_at（原文进入真源的时刻），一律覆盖会让系统轴失真。
  *    落盘后永不改写（定案稿 §5：系统轴「永不」）。
  *  - `tick` 始终由 A 分配（摄入序号），调用方不得指定 —— 否则会破坏单调性。
+ *  - `char_count`（v1.4 加法字段）**由摄入路径计算**（C2b：raw_text 全量码点长度），
+ *    调用方不提供 —— 把它列入本入参会逼每个调用点手写一个数字，正是「派生值当输入」
+ *    的典型错位。故从 `Omit` 里一并豁免，缺省按 null（= 未统计）处理。
  */
-export type AppendExperienceInput = Omit<Experience, 'recorded_at' | 'tick'> & {
+export type AppendExperienceInput = Omit<Experience, 'recorded_at' | 'tick' | 'char_count'> & {
   recorded_at?: string;
+  /** 可选：仅供内部/离线路径显式回填；常规摄入路径由 C2b 计算。 */
+  char_count?: number | null;
 };
 
 /**

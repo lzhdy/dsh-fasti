@@ -49,6 +49,8 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
     created_at: BASE_TIME,
     channel: 'dsh',
     boundary_candidates: [],
+    effective_chars: null,
+    raw_chars: null,
   };
   return { ...base, ...overrides };
 }

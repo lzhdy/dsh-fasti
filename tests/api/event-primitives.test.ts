@@ -47,6 +47,8 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
     created_at: BASE_TIME,
     channel: 'dsh',
     boundary_candidates: [],
+    effective_chars: null,
+    raw_chars: null,
   };
   return { ...base, ...overrides };
 }
@@ -420,6 +422,52 @@ test('drainClosure：单轮总时长到限即返回（条数没到上限也返�
       assert.ok(elapsedMs < 3_000, `不该拖成一整轮（实际 ${elapsedMs}ms）`);
       // 没处理完的任务不会丢：真源仍是 pending，下一轮还会被摘。
       assert.ok((await fasti.pendingSummaryCount()) >= 1);
+    } finally {
+      await fasti.close();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+// ── 时钟静默（A6b：无 LLM 端口时闭合照常，摘要保持 pending）─────────────
+
+test('门面 · 无 LLM 端口时，时钟静默照常闭合事件，摘要保持 pending', async () => {
+  const root = makeTempRoot();
+  try {
+    // **不传 llmPort** —— 端口为 null 的场景（宿主没配模型）。
+    const fasti = await Fasti.open({ dataRoot: root });
+    try {
+      // 投一条原文（系统轴 ingested_at 固定在基准时刻）。
+      await fasti.ingestRawTurn('dsh', {
+        event_id: 'evt-raw-1',
+        session_id: 's-1',
+        speaker: 'user',
+        raw_text: '她打开了一篇论文',
+        asserted_at: BASE_TIME,
+        ingested_at: BASE_TIME,
+      });
+
+      const before = await fasti.queryEvents({});
+      assert.equal(before.length, 1);
+      assert.equal(before[0]?.status, 'open', '此刻还是 open');
+
+      // 推进假时钟跨过 30 分钟 → 时钟检查应闭合（与端口无关）。
+      const closed = fasti.checkSilenceClock(Date.parse(BASE_TIME) + 31 * 60_000);
+      assert.equal(closed, 1, '无端口也应闭合 1 个事件');
+
+      const after = await fasti.queryEvents({});
+      assert.equal(after.length, 1, '只闭合，不新建');
+      assert.equal(after[0]?.status, 'closed');
+      assert.equal(after[0]?.closed_reason, 'silence');
+      // 摘要保持 pending —— 没有端口就没有摘要，但闭合本身照常发生。
+      assert.equal(after[0]?.summary_quality, 'pending', '无端口时摘要保持 pending');
+      assert.equal(after[0]?.summary, null);
+
+      // 幂等：重复 tick 不再闭合、不产生新版本。
+      assert.equal(fasti.checkSilenceClock(Date.parse(BASE_TIME) + 31 * 60_000), 0, '重复 tick 是 no-op');
+      const versionAfter = after[0]?.version;
+      assert.equal((await fasti.queryEvents({}))[0]?.version, versionAfter, '不产生新版本');
     } finally {
       await fasti.close();
     }

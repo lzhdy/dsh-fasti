@@ -48,12 +48,19 @@ export type EventStatus = (typeof EVENT_STATUSES)[number];
  * 闭合原因 —— 边界的机械事实（不是重要性，无分数/权重/置信度）。
  *
  * `null` = 未被 A 类机械信号闭合（事件仍 open，或由她的修正产生/重开）。
+ *
+ * v1.4（定案稿 §5.2）：新增 `max-dialogue-chars`（有效对话字数上限，替代条数上限的
+ * 量纲）与 `max-chars`（硬保险丝，raw 全量字符 ≈ token 驱动）；`max-records`
+ * **保留为兼容值**——写模式仍接受旧数据里的取值，新代码不再产生（定案稿 §16.1：
+ * 纯加法、不升 schema_version）。
  */
 export const EVENT_CLOSED_REASONS = [
   'silence', // 静默 ≥ 阈值
-  'max-records', // 记录数达上限
+  'max-records', // 记录数达上限（v1.4 起退役：仅兼容旧数据读取，新代码不再产生）
   'task-closure', // 任务闭环
   'channel-switch', // 场景切换（通道变了）
+  'max-dialogue-chars', // 有效对话字数达上限（v1.4：非工具轮 char_count 累计）
+  'max-chars', // 硬保险丝（v1.4：raw 全量字符按 1 字符 ≈ 1 token 达 50000）
 ] as const;
 export type EventClosedReason = (typeof EVENT_CLOSED_REASONS)[number];
 
@@ -159,6 +166,21 @@ export interface EventRecord {
    */
   summary_model: string | null;
 
+  /**
+   * 有效对话字数累计（v1.4 新增，**可空加法字段**）。
+   *
+   * 只累加**非工具轮**的 `char_count`（工具轮 JSON 不计）；`null` = 旧数据/未统计。
+   * 切分器 restore 时**直接读本字段**，不从 pointers 重算（定案稿 §3.2）。
+   */
+  effective_chars: number | null;
+  /**
+   * 原文全量字符累计（v1.4 新增，**可空加法字段**）。
+   *
+   * 对**所有**记录累加 `char_count`（含工具 JSON）；硬保险丝（`max-chars`）的
+   * 唯一数据源；restore 直接读本字段，不从 pointers 重算。`null` = 旧数据/未统计。
+   */
+  raw_chars: number | null;
+
   /** 合并退役指针（status='merged' 时有值）。 */
   merged_into?: string;
   /** 拆分退役指针（status='split' 时有值）。 */
@@ -223,6 +245,8 @@ export const EVENT_FIELDS = [
   'summary_source',
   'summary_prompt_version',
   'summary_model',
+  'effective_chars',
+  'raw_chars',
   'merged_into',
   'split_into',
   'created_by',
@@ -283,6 +307,26 @@ function nullableString(value: unknown, at: string): string | null {
     return null;
   }
   return requireString(value, at);
+}
+
+/**
+ * 可空非负数取值 —— `null` 与「字段缺失」都归一为 `null`（v1.4 新增）。
+ *
+ * 只服务 `effective_chars` / `raw_chars` 两个加法字段：仅允许**非负 number 或 null**。
+ * 负数、非数字值在两种模式下都报错 —— 计数器没有合法的负值，「脏数据读成 0」
+ * 会让保险丝静默失效；`null` 语义 = 旧数据/未统计（定案稿 §3.2）。
+ */
+function nullableNonNegativeNumber(value: unknown, at: string): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    fail(`${at} 必须是非负数或 null`);
+  }
+  if (value < 0) {
+    fail(`${at} 不得为负数`);
+  }
+  return value;
 }
 
 function requirePositiveInteger(value: unknown, at: string): number {
@@ -469,6 +513,9 @@ export function parseEvent(raw: unknown, mode: EventParseMode = 'read'): EventRe
       'event.summary_prompt_version',
     ),
     summary_model: nullableString(obj['summary_model'], 'event.summary_model'),
+    // v1.4 加法计数器：缺失/null → null（旧数据/未统计）；负数与非数字当场拒收。
+    effective_chars: nullableNonNegativeNumber(obj['effective_chars'], 'event.effective_chars'),
+    raw_chars: nullableNonNegativeNumber(obj['raw_chars'], 'event.raw_chars'),
     created_by: requireEnum(obj['created_by'], EVENT_CREATED_BY, 'event.created_by', mode),
     created_at: requireString(obj['created_at'], 'event.created_at'),
     channel: requireString(obj['channel'], 'event.channel'),

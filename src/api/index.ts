@@ -40,6 +40,7 @@ import type {
 import { readJsonlFile } from '../core/jsonl.ts';
 import { parseExperience } from '../contract/validate-experience.ts';
 import type { Experience, Pointer } from '../contract/experience.ts';
+import type { Action, Outcome } from '../contract/experience.ts';
 import type {
   AppendExperienceInput,
   ChannelVerification,
@@ -65,6 +66,8 @@ import { defaultUlid } from '../core/ulid.ts';
 import { IngestStageRegistry } from '../event/ingest-stage.ts';
 import type { IngestStage, IngestStageContext, IngestStageFailure } from '../event/ingest-stage.ts';
 import { EventSegmenter } from '../event/segmenter.ts';
+import { typeToolTurn } from '../event/tool-typing.ts';
+import type { ToolTurnTyping } from '../event/tool-typing.ts';
 import { EventCorrector } from '../event/correction.ts';
 import type { CorrectionRerunner } from '../event/correction.ts';
 import { InMemoryBacklog } from '../event/backlog.ts';
@@ -439,6 +442,11 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
       const location = log.append({ ...input, ingested_at: ingestedAt });
 
       // 构造经历 —— tick 由 A 分配，调用方不传。
+      //
+      // 阶段 0 类型化映射（定案稿 §5.0.2 / 任务书 C2c）：按**载荷形状**判工具轮，
+      // 只补 action/outcome，raw_text 与原文指针不动。
+      // **不引用宿主 speaker** —— 契约层没有 speaker 字段，工具轮判定只认载荷。
+      const typing = typeToolTurn(input.raw_text);
       const experience: AppendExperienceInput = {
         id: defaultUlid.next(),
         schema_version: 1,
@@ -458,6 +466,15 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
         },
         occurred_at: input.occurred_at ?? input.asserted_at ?? ingestedAt,
         recorded_at: ingestedAt,
+        // 逐记录计数：**全量** raw_text 码点长度（含工具轮，§5.0.2 约束 5）。
+        // 与时间轴同口径（Array.from 计数码点，不是 UTF-16 长度），不引新依赖。
+        char_count: Array.from(input.raw_text).length,
+        ...typingFieldsOf(typing, {
+          id: input.event_id,
+          channel,
+          shard: location.shard,
+          seq: location.seq,
+        }),
       };
 
       const written = await this.appendExperienceUnlocked(experience);
@@ -565,6 +582,35 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
   }
 
   // ── T8/T9 区块：闭合管线（异步摘要）──────────────────────────────────────
+
+  /**
+   * 时钟静默检查 —— 闭合「已经安静够久」的 open 事件（定案稿 C6）。
+   *
+   * 由宿主的后台 worker 周期调用（与摘要 drain 同一条 worker 链路）。
+   *
+   * **独立于 LLM 端口**：本方法只负责闭合 + 入队，不碰摘要 ——
+   * 没有模型端口时事件照常闭合，摘要保持 pending（A6b）。
+   *
+   * 与摄入期静默补判是**两条独立路径**、共用同一张优先级表：
+   * worker 不可用期间靠补判兜底，worker 可用时靠时钟（补判仍保留）。
+   *
+   * @returns 本次因静默而闭合的事件数
+   */
+  checkSilenceClock(nowMs: number = Date.now()): number {
+    if (this.closed) {
+      return 0;
+    }
+    const closedCount = this.t5Segmenter.closeExpiredEvents(nowMs);
+    if (closedCount === 0) {
+      return 0;
+    }
+    // 闭合 → 后台队列：与摄入路径同一入口，否则事件会停在 closed+pending、摘要永远不出。
+    for (const closed of this.t5Segmenter.drainClosedEvents()) {
+      this.t8Closure.enqueue(closed.id);
+    }
+    this.refreshPendingEvents();
+    return closedCount;
+  }
 
   /** 后台队列（进程内；持久真相是事件真源的 summary_quality='pending'）。 */
   private readonly t8Backlog: InMemoryBacklog;
@@ -1477,6 +1523,61 @@ export function initiationOf(speaker: string): string {
     default:
       return speaker;
   }
+}
+
+/**
+ * 工具轮类型化产物 → Experience 的 action / out字段（定案稿 §5.0.2）。
+ *
+ * **args / 结果正文走原文指针，不内联**（§5.0.2 约束 1、§5.0.3）：
+ * 载荷正文可能很长，内联进经历会把真源体积翻一倍；指针只记「在哪」，正文回原文取。
+ *
+ * `callId` **不提升为顶层字段**（约束 2）—— 它只在载荷 JSON 里，
+ * 事件层要用它配对请求与结果时，从 action/outcome 的对应位置读（见 C5）。
+ *
+ * 对话轮返回空对象 → 不产生 action/outcome（保持 `kind='dialogue'`）。
+ */
+function typingFieldsOf(
+  typing: ToolTurnTyping,
+  ref: { id: string; channel: string; shard: string; seq: number },
+): { action?: Action; outcome?: Outcome } {
+  if (typing.kind === 'dialogue') {
+    return {};
+  }
+
+  if (typing.kind === 'call-step') {
+    return {
+      action: {
+        type: 'tool-call',
+        tool: typing.tool,
+        // 载荷正文走指针：args 指向本条原文行。
+        args: { id: ref.id, channel: ref.channel, shard: ref.shard, seq: ref.seq },
+        // 配对标识：请求与结果靠它对上（定案稿 §5.0.3 任务作用域判据）。
+        call_id: typing.callId,
+      },
+    };
+  }
+
+  // 结果轮：正文走指针；status/error_type/duration_ms/tokens 按载荷原样记录。
+  const outcome: Outcome = {
+    text: { id: ref.id, channel: ref.channel, shard: ref.shard, seq: ref.seq },
+    status: typing.status,
+  };
+  if (typing.callId !== undefined) {
+    outcome.call_id = typing.callId;
+  }
+  if (typing.errorType !== undefined) {
+    outcome.error_type = typing.errorType;
+  }
+  if (typing.durationMs !== undefined) {
+    outcome.duration_ms = typing.durationMs;
+  }
+  if (typing.inputTokens !== undefined || typing.outputTokens !== undefined) {
+    outcome.tokens = {
+      ...(typing.inputTokens === undefined ? {} : { input: typing.inputTokens }),
+      ...(typing.outputTokens === undefined ? {} : { output: typing.outputTokens }),
+    };
+  }
+  return { outcome };
 }
 
 // ── G08 区块：指针解析失败的通道回退判定 ──

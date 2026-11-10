@@ -44,6 +44,9 @@ export interface StoredEventRow {
   split_into: string;
   created_by: string;
   created_at_ms: number;
+  /** v1.4 双计数器（可空）：老行读出为 null = 未统计。 */
+  effective_chars: number | null;
+  raw_chars: number | null;
 }
 
 /** 事件记录 → 投影行（三档唯一实现，保证逐字段一致）。 */
@@ -70,6 +73,9 @@ export function toEventProjection(event: EventRecord): EventProjection {
     split_into: [...(event.split_into ?? [])],
     created_by: event.created_by,
     created_at_ms: isoToMs(event.created_at),
+    // v1.4 双计数器：直接取事件行的值（不从 pointers 重算 —— 定案稿 §3.2）。
+    effective_chars: event.effective_chars,
+    raw_chars: event.raw_chars,
   };
 }
 
@@ -206,6 +212,8 @@ export function encodeEventRow(row: EventProjection): StoredEventRow {
     split_into: JSON.stringify(row.split_into),
     created_by: row.created_by,
     created_at_ms: row.created_at_ms,
+    effective_chars: row.effective_chars,
+    raw_chars: row.raw_chars,
   };
 }
 
@@ -238,7 +246,23 @@ export function decodeEventRow(raw: unknown): EventProjection {
     split_into: decodeStringArray(obj['split_into']),
     created_by: String(obj['created_by']),
     created_at_ms: Number(obj['created_at_ms']),
+    // v1.4 双计数器：老库补列后为 NULL、缺失也归一为 null（= 未统计）。
+    effective_chars: decodeNullableInteger(obj['effective_chars']),
+    raw_chars: decodeNullableInteger(obj['raw_chars']),
   };
+}
+
+/**
+ * 可空整数列解码 —— 缺失 / null 归一为 null（非负计数，不做猜测性补值）。
+ *
+ * 与 `decodeNullableString` 同构：老行读出必须是 null，不能读成 0 ——
+ * 0 与 null 语义不同（0 = 确实零字，null = 没统计）。
+ */
+function decodeNullableInteger(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  return Number(value);
 }
 
 /** JSON 文本 → 字符串数组（缺失/空值归一为 []，避免三档出现 undefined 与 [] 的差异）。 */

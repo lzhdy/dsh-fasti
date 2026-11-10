@@ -119,6 +119,16 @@ export interface Action {
   tool?: string;
   args?: Pointer | string;
   thought?: Pointer | string;
+  /**
+   * 工具调用标识（v1.4 新增，可空）—— 请求与结果靠它配对。
+   *
+   * 取自**载荷 JSON**（调用步载荷的 `callId`），**不是 RawTurn 顶层字段**
+   * （定案稿 §5.0.2 约束 2：RawTurn 八字段是冻结面，callId 不提升上去）。
+   *
+   * 存在的理由：定案稿 §5.0.3 的任务作用域判据要求「见到 `action.type='tool-call'`
+   * 加入其 callId，见到对应 callId 的 `outcome` 移除」—— 没有这个字段就无从配对。
+   */
+  call_id?: string;
 }
 
 /** 结果如何。 */
@@ -128,6 +138,13 @@ export interface Outcome {
   error_type?: string;
   duration_ms?: number;
   tokens?: { input?: number; output?: number };
+  /**
+   * 工具调用标识（v1.4 新增，可空）—— 与对应请求的 `action.call_id` 配对。
+   *
+   * 取自**结果载荷**的 `message.toolCallId`（定案稿 §5.0.2 约束 2）。
+   * 无 callId 的结果（无结果正文 / 未知形态）→ 不设置此字段。
+   */
+  call_id?: string;
 }
 
 /** 经历条目 —— 定案稿 §4.2 全字段。 */
@@ -157,6 +174,15 @@ export interface Experience {
   recorded_at: string;
   /** 节拍轴：她的主观节拍序号，单调递增。 */
   tick: number;
+
+  /**
+   * 全量原文码点长度（v1.4 新增，**可空加法字段**）。
+   *
+   * 记该条 raw_text 的全量码点长度 —— **所有轮含工具轮都记实际字符数**（定案稿 §3.2 注）；
+   * `null`/缺失 = 旧数据/未统计/原文端口读不到（不猜、不补算）。
+   * 事件层经 `is_tool` 分离后：`effective_chars` 只加非工具轮、`raw_chars` 加全部。
+   */
+  char_count: number | null;
 
   /** 规则层机械标记（只贴标签不否决）。 */
   marks?: Mark[];
@@ -256,6 +282,7 @@ export const EXPERIENCE_FIELDS = [
   'occurred_at',
   'recorded_at',
   'tick',
+  'char_count',
   'marks',
   'pointers',
 ] as const;
@@ -267,10 +294,10 @@ export const SCENE_FIELDS = ['channel', 'ref', 'detail'] as const;
 export const OBSERVATION_FIELDS = ['text', 'media', 'cue'] as const;
 
 /** 动作槽位字段名全集。 */
-export const ACTION_FIELDS = ['type', 'tool', 'args', 'thought'] as const;
+export const ACTION_FIELDS = ['type', 'tool', 'args', 'thought', 'call_id'] as const;
 
 /** 结果槽位字段名全集。 */
-export const OUTCOME_FIELDS = ['text', 'status', 'error_type', 'duration_ms', 'tokens'] as const;
+export const OUTCOME_FIELDS = ['text', 'status', 'error_type', 'duration_ms', 'tokens', 'call_id'] as const;
 
 /** 指针字段名全集。 */
 export const POINTER_FIELDS = ['id', 'channel', 'shard', 'seq'] as const;

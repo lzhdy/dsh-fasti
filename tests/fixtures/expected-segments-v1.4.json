@@ -1,0 +1,1356 @@
+{
+ "basis": "定案稿 v1.4（occurred_at 世界轴，与 backfill-events.ts 对齐）",
+ "segment_count": 8,
+ "cap_hits": [],
+ "freeze": {
+  "frozen": true,
+  "frozen_at": "2026-11-10",
+  "authority": "审计方对齐复核结论（2026-11-10，数据基准冻结）",
+  "data_fingerprints": {
+   "expected-segments-v1.4.json（冻结时数据本体）": "d76480e41748e6859f117c2f14abc2df989a6a963aa1b230ee8223f35788a653",
+   "expected-segments-v1.4.md（冻结时数据本体）": "11179135a0eba02ba95f7afad7fa591feeda9d69e36d009103a213232e63f6ad",
+   "make-fixture.py（权威副本）": "0f94452dc82effe87de86405cffac8a457aa1ab451e968678bf573d980da9dad"
+  },
+  "note": "上述指纹对应冻结登记前的数据本体；本 freeze 块为登记信封。segments 内容自冻结起不得修改，实现方按指纹校验。"
+ },
+ "segments": [
+  {
+   "segment": 1,
+   "status": "closed",
+   "channel": "dsh",
+   "closed_reason": "silence",
+   "started_at": "2026-11-02T16:08:36.820Z",
+   "pointers": [
+    {
+     "tick": 163,
+     "experience_id": "01M6XMQYA6WNB5HVA79AHC0EQN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 164,
+     "experience_id": "01M6XMQYC20GHX5B7X15MNBHPQ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 165,
+     "experience_id": "01M6XMQYD4VNXKKVDYBMCVWDBF",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 166,
+     "experience_id": "01M6XMQYE20DBXSGGMF1ZA6B0V",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 167,
+     "experience_id": "01M6XMQYEZ7KWH7YSQQ7214WZT",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 168,
+     "experience_id": "01M6XMQYFZSF1XWS0JB1RVEE2C",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 169,
+     "experience_id": "01M6XMQYGYKX084D4P80GTYNK6",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 170,
+     "experience_id": "01M6XMQYHYWVXQNNV0Y50M9K4Q",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 171,
+     "experience_id": "01M6XMQYJZ0J59EZ61RPBWH3MZ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 172,
+     "experience_id": "01M6XMQYM18408HR6TFAGG5VZW",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 173,
+     "experience_id": "01M6XMQYN0Z7DNDYVP4CG442VT",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 174,
+     "experience_id": "01M6XMQYNY57D120HGFH0HPKJC",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 175,
+     "experience_id": "01M6XMQYPWZHB0KTDDRTG22MV7",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 176,
+     "experience_id": "01M6XMQYQWW0AGQHVY9XZ90242",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 177,
+     "experience_id": "01M6XMQYRR19B7ZD8TY9PZMJKY",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 178,
+     "experience_id": "01M6XMQYSRFGKCR94HHPJ6ZXAH",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 179,
+     "experience_id": "01M6XMQYTRTT48VKGRFYQC9TG8",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 180,
+     "experience_id": "01M6XMQYVNNVCRN9MM0XCFETBY",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 181,
+     "experience_id": "01M6XMQYWKN9DACA4CKRAFJ893",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 182,
+     "experience_id": "01M6XMQYX9M6C6BQ7CSQQDPZHT",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 183,
+     "experience_id": "01M6XMQYY9T480AHGDJV21SQC1",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 184,
+     "experience_id": "01M6XMQYZ5ZC5W0T2Q4HJV4FCY",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 185,
+     "experience_id": "01M6XMQZ0A2WAWSPWSZ146VNAY",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 186,
+     "experience_id": "01M6XMQZ1AWD5R07NN3K09SAQV",
+     "kind": "dialogue"
+    }
+   ],
+   "effective_chars": 5170,
+   "raw_chars": 5170,
+   "ended_at": "2026-11-02T16:39:30.122Z",
+   "ended_tick": 186
+  },
+  {
+   "segment": 2,
+   "status": "closed",
+   "channel": "dsh",
+   "closed_reason": "silence",
+   "started_at": "2026-11-03T12:13:53.749Z",
+   "pointers": [
+    {
+     "tick": 187,
+     "experience_id": "01M6XMQZ2DWKNAQBNHJJZJBE8H",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 188,
+     "experience_id": "01M6XMQZ3F4K2W2SGNHRXDRHWF",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 189,
+     "experience_id": "01M6XMQZ4EHGXKG7KA80BQ8T9F",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 190,
+     "experience_id": "01M6XMQZ5NXCEE0Y31JQJM0KEA",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 191,
+     "experience_id": "01M6XMQZ6NDTM20G53WN4EVTQN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 192,
+     "experience_id": "01M6XMQZ7M1ETV1VN9Z502MW74",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 193,
+     "experience_id": "01M6XMQZ8HAHXBDN264CD7147G",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 194,
+     "experience_id": "01M6XMQZ9DC8V211Q95VV0WZEV",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 195,
+     "experience_id": "01M6XMQZAJQZJ4VP0FRQPTC58C",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 196,
+     "experience_id": "01M6XMQZBJHMN1BF7Q9YXQN071",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 197,
+     "experience_id": "01M6XMQZCJ6A6ZNP0XGW8ZA1H7",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 198,
+     "experience_id": "01M6XMQZDH17ZBYHD7STD2DBTH",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 199,
+     "experience_id": "01M6XMQZEEWK83PXKWE0389EHP",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 200,
+     "experience_id": "01M6XMQZFA5R3DF4XQEWS06166",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 201,
+     "experience_id": "01M6XMQZG6VSB8KP3DG4RHS485",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 202,
+     "experience_id": "01M6XMQZGZTBN4DGG70W1NY560",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 203,
+     "experience_id": "01M6XMQZHZ0RV35PX165SF9BZM",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 204,
+     "experience_id": "01M6XMQZJWAXY0K3Y4X5P2BT7N",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 205,
+     "experience_id": "01M6XMQZKVDPWYFPSB7JESGV9B",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 206,
+     "experience_id": "01M6XMQZMQ99EAGC6SAAVYP2P0",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 207,
+     "experience_id": "01M6XMQZNFK79768342D5Q3M3P",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 208,
+     "experience_id": "01M6XMQZPDYJWX6VYR96J0DZEF",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 209,
+     "experience_id": "01M6XMQZQES6JNMF3N9XVQ9TJV",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 210,
+     "experience_id": "01M6XMQZREFMSRNM8KQVGG6AAW",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 211,
+     "experience_id": "01M6XMQZSGSF8ZJYEP924GJPKW",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 212,
+     "experience_id": "01M6XMQZTFKPKDVY8W7HK4Q5MN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 213,
+     "experience_id": "01M6XMQZVHEN9X2G7DH090QCWE",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 214,
+     "experience_id": "01M6XMQZWNMRTRMFK3NNFPGPBX",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 215,
+     "experience_id": "01M6XMQZXMN3DWDSX3SN02VE87",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 216,
+     "experience_id": "01M6XMQZYF0BNS2Y6DNNYPJK6F",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 217,
+     "experience_id": "01M6XMQZZ89SBYDFRRBRAEVYJS",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 218,
+     "experience_id": "01M6XMR008AY7C23THM5TTHHYH",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 219,
+     "experience_id": "01M6XMR015QHNWZ9WH0XD0488F",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 220,
+     "experience_id": "01M6XMR021EJEX0Z4FSH8PSQ20",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 221,
+     "experience_id": "01M6XMR02ZTPVXK7BEDT2RYP14",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 222,
+     "experience_id": "01M6XMR03VKQHJFEA0P0QS6W66",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 223,
+     "experience_id": "01M6XMR04YJE1BKT6GW231FZM0",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 224,
+     "experience_id": "01M6XMR05WQRWN5AYK04HTJCD8",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 225,
+     "experience_id": "01M6XMR06TDPAJ4138W76RS0YA",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 226,
+     "experience_id": "01M6XMR07SYFZA4XPA4KATKS4Z",
+     "kind": "dialogue"
+    }
+   ],
+   "effective_chars": 3627,
+   "raw_chars": 3627,
+   "ended_at": "2026-11-03T13:14:46.557Z",
+   "ended_tick": 226
+  },
+  {
+   "segment": 3,
+   "status": "closed",
+   "channel": "dsh",
+   "closed_reason": "silence",
+   "started_at": "2026-11-04T11:17:27.270Z",
+   "pointers": [
+    {
+     "tick": 227,
+     "experience_id": "01M6XMR08ZRN9M8AD9K1VD83YC",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 228,
+     "experience_id": "01M6XMR09NSGKQ2DJHC6WM5TVB",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 229,
+     "experience_id": "01M6XMR0AK7K2VBKK5P7XHPQBW",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 230,
+     "experience_id": "01M6XMR0B94MSE162QEH9K2XH7",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 231,
+     "experience_id": "01M6XMR0C677FC415NS4HQ3ACJ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 232,
+     "experience_id": "01M6XMR0CYQCYRGMCHMQE2E8AS",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 233,
+     "experience_id": "01M6XMR0E2ABHWWAF6R75RE9ZY",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 234,
+     "experience_id": "01M6XMR0ER565MJ8T2RJV44N63",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 235,
+     "experience_id": "01M6XMR0FT5Q163PXKDDC24GH6",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 236,
+     "experience_id": "01M6XMR0GGE1T6WVBAP9D820NJ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 237,
+     "experience_id": "01M6XMR0HCF42PKVZ91PMR1GYY",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 238,
+     "experience_id": "01M6XMR0J1JKMD0X43DN1YJJ09",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 239,
+     "experience_id": "01M6XMR0JYVJKAVF8RV9XVKMS0",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 240,
+     "experience_id": "01M6XMR0KK5S40MM6K2QCJDTCW",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 241,
+     "experience_id": "01M6XMR0MG9MNXFR3QWFSG0A00",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 242,
+     "experience_id": "01M6XMR0NJ56K8DQ19SP8VH826",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 243,
+     "experience_id": "01M6XMR0PGNDHEAHM6BWZYKC32",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 244,
+     "experience_id": "01M6XMR0Q5Z7SSF2RB79WQ1NMW",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 245,
+     "experience_id": "01M6XMR0R6TNAC9H5T9VNKSS6X",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 246,
+     "experience_id": "01M6XMR0S3PPTYHQH5A9X12SP3",
+     "kind": "dialogue"
+    }
+   ],
+   "effective_chars": 1049,
+   "raw_chars": 1049,
+   "ended_at": "2026-11-04T11:44:59.745Z",
+   "ended_tick": 246
+  },
+  {
+   "segment": 4,
+   "status": "closed",
+   "channel": "dsh",
+   "closed_reason": "silence",
+   "started_at": "2026-11-05T10:17:46.763Z",
+   "pointers": [
+    {
+     "tick": 0,
+     "experience_id": "01M6XFHBFZT9TQT9S324G5WDB5",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 1,
+     "experience_id": "01M6XFHBJ6VVEVRX88M72WCT9J",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 2,
+     "experience_id": "01M6XFHBJYG0Y7X0AF29SWGFT8",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 3,
+     "experience_id": "01M6XFHBKVEWCTY5TZJK3MPX25",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 4,
+     "experience_id": "01M6XFHBMQAWHW776F9WJBC1HB",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 5,
+     "experience_id": "01M6XFHBNNXV2478Y3MJK4303J",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 6,
+     "experience_id": "01M6XFHBPKM9127S9D0XHC1ZGW",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 7,
+     "experience_id": "01M6XFHBQCR98FSBBJZNA2T9JS",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 8,
+     "experience_id": "01M6XFHBR6Z9M8PS6M7ECSHRB4",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 9,
+     "experience_id": "01M6XFHBRWSXZRA2E1HEPWKC3K",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 10,
+     "experience_id": "01M6XFHBSSA9T91A4KXSASN6JY",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 11,
+     "experience_id": "01M6XFHBTP90XV1CDTY25HRV0D",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 12,
+     "experience_id": "01M6XFHBVBVK60FB0M1R6CQ9CC",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 13,
+     "experience_id": "01M6XFHBW8Y7WKT31R6Z4YZJ7H",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 14,
+     "experience_id": "01M6XFHBWYZGFKKVCB3Y9FJ8MJ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 15,
+     "experience_id": "01M6XFHBXVXK41E5216PBJAD0G",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 16,
+     "experience_id": "01M6XFHBYRQCW88HWZDH5D5AQ1",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 17,
+     "experience_id": "01M6XFHBZM32ZYB6ZYY2DGD51K",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 18,
+     "experience_id": "01M6XFHC0G9E3B59Y6H9NVKBQ1",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 19,
+     "experience_id": "01M6XFHC1B1S6K7X1EW1ZK61EE",
+     "kind": "dialogue"
+    }
+   ],
+   "effective_chars": 532,
+   "raw_chars": 532,
+   "ended_at": "2026-11-05T10:24:36.641Z",
+   "ended_tick": 19
+  },
+  {
+   "segment": 5,
+   "status": "closed",
+   "channel": "dsh",
+   "closed_reason": "silence",
+   "started_at": "2026-11-05T11:49:20.941Z",
+   "pointers": [
+    {
+     "tick": 20,
+     "experience_id": "01M6XFHC2BW4HZERVSKVF4WDX0",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 21,
+     "experience_id": "01M6XFHC371CKGNHTGBGGB7480",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 22,
+     "experience_id": "01M6XFHC461C6CVG6C7DW48THQ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 23,
+     "experience_id": "01M6XFHC54HP928BVZTDNDS83X",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 24,
+     "experience_id": "01M6XFHC61902GF38T52PYD69K",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 25,
+     "experience_id": "01M6XFHC6XJNXN5HA1QN7198F5",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 26,
+     "experience_id": "01M6XFHC7QKFW1RFEKCMYARCK2",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 27,
+     "experience_id": "01M6XFHC8HCMT0T7MS9GVJPZ78",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 28,
+     "experience_id": "01M6XFHC9CQPZ1Q7F5E1R0SXHN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 29,
+     "experience_id": "01M6XFHCA8THS3WFA8H2JQP5NG",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 30,
+     "experience_id": "01M6XFHCB5K0MXSPH42ZS0KHJN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 31,
+     "experience_id": "01M6XFHCC5HGP7Q9HWK36F4GCD",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 32,
+     "experience_id": "01M6XFHCD09WKNNNQZ121KH62X",
+     "kind": "call-step"
+    },
+    {
+     "tick": 33,
+     "experience_id": "01M6XFHCDZPNBJ4N4FVFWEQZQH",
+     "kind": "result"
+    },
+    {
+     "tick": 34,
+     "experience_id": "01M6XFHCF1R5386D3Q4QHVYGK6",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 35,
+     "experience_id": "01M6XFHCGC4G177Z1M0PBG448M",
+     "kind": "call-step"
+    },
+    {
+     "tick": 36,
+     "experience_id": "01M6XFHCH9FNDVFC7Y63F8YHBZ",
+     "kind": "result"
+    },
+    {
+     "tick": 37,
+     "experience_id": "01M6XFHCJ8YWYSFARKCX5YM1F2",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 38,
+     "experience_id": "01M6XFHCK4ED740ZP2YWK8N8N4",
+     "kind": "call-step"
+    },
+    {
+     "tick": 39,
+     "experience_id": "01M6XFHCM00204S7M6G93VRQ31",
+     "kind": "result"
+    },
+    {
+     "tick": 40,
+     "experience_id": "01M6XFHCMW2KD1H21QJ9A07XW8",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 41,
+     "experience_id": "01M6XFHCNSJ38FTMN77EA6QGRN",
+     "kind": "call-step"
+    },
+    {
+     "tick": 42,
+     "experience_id": "01M6XFHCPQFDA1VX0WZ4C4HWTF",
+     "kind": "result"
+    },
+    {
+     "tick": 43,
+     "experience_id": "01M6XFHCQQ1MHEKT6JM0QCNH0K",
+     "kind": "call-step"
+    },
+    {
+     "tick": 44,
+     "experience_id": "01M6XFHCRJ0T2A4PVNCM4ZP56B",
+     "kind": "result"
+    },
+    {
+     "tick": 45,
+     "experience_id": "01M6XFHCSNXW6S038PFRBN47WP",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 46,
+     "experience_id": "01M6XFHCTWC73BR7K4KWQZKJP3",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 47,
+     "experience_id": "01M6XFHCVXFJZ8YVJ8GYFZNQ6F",
+     "kind": "dialogue"
+    }
+   ],
+   "effective_chars": 564,
+   "raw_chars": 4456,
+   "ended_at": "2026-11-05T11:59:06.841Z",
+   "ended_tick": 47
+  },
+  {
+   "segment": 6,
+   "status": "closed",
+   "channel": "dsh",
+   "closed_reason": "silence",
+   "started_at": "2026-11-05T12:59:38.340Z",
+   "pointers": [
+    {
+     "tick": 48,
+     "experience_id": "01M6XFHCWVNE7QM5QSF2GV66MY",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 49,
+     "experience_id": "01M6XFHCXS03HMS30M36Z86SXC",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 50,
+     "experience_id": "01M6XFHCYP6P57PMZR5S3RM9CV",
+     "kind": "call-step"
+    },
+    {
+     "tick": 51,
+     "experience_id": "01M6XFHCZJFPHDN06CB93HZ7K9",
+     "kind": "result"
+    },
+    {
+     "tick": 52,
+     "experience_id": "01M6XFHD0D2VKN9PHX8YZ0KETS",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 53,
+     "experience_id": "01M6XFHD18RWNXPXFYVHVDNYDP",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 54,
+     "experience_id": "01M6XFHD256XB7M4FG0A4X7RRX",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 55,
+     "experience_id": "01M6XFHD2Y4NDHRXAVPRS6PPMH",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 56,
+     "experience_id": "01M6XFHD3SSD6T2ANYKS3NCN0N",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 57,
+     "experience_id": "01M6XFHD4MWN5X02TRZ7F5F76M",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 58,
+     "experience_id": "01M6XFHD5K455QWXNF3VVTMRQM",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 59,
+     "experience_id": "01M6XFHD6FXZMYPJEHEJSQ34PR",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 60,
+     "experience_id": "01M6XFHD7FQ9WAVP0WMA5PDVAQ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 61,
+     "experience_id": "01M6XFHD8BXQ50FN6WN20GB34Q",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 62,
+     "experience_id": "01M6XFHD92TTW7AMKF2MP14SWR",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 63,
+     "experience_id": "01M6XFHDA1ZMP917QX2XMGZEK9",
+     "kind": "call-step"
+    },
+    {
+     "tick": 64,
+     "experience_id": "01M6XFHDAVHQ59TE63VTZJE8VV",
+     "kind": "result"
+    },
+    {
+     "tick": 65,
+     "experience_id": "01M6XFHDBSXTWS16Z66PPB168Y",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 66,
+     "experience_id": "01M6XFHDCQ57CJQ6RCJ3N1KS34",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 67,
+     "experience_id": "01M6XFHDDPA9W46KBMEXDCB4RR",
+     "kind": "call-step"
+    },
+    {
+     "tick": 68,
+     "experience_id": "01M6XFHDEBSPM0CJDMKDFMQ7XK",
+     "kind": "result"
+    },
+    {
+     "tick": 69,
+     "experience_id": "01M6XFHDF6VSPWG6GH8Z5DQ8X0",
+     "kind": "call-step"
+    },
+    {
+     "tick": 70,
+     "experience_id": "01M6XFHDG3W5ER1E0QWMD5M33F",
+     "kind": "result"
+    },
+    {
+     "tick": 71,
+     "experience_id": "01M6XFHDH1B644Y50P6KFK8Q8D",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 72,
+     "experience_id": "01M6XFHDHX4WBPG46QCYAKGJ59",
+     "kind": "call-step"
+    },
+    {
+     "tick": 73,
+     "experience_id": "01M6XFHDJMQA8NGWWANBYSB2AW",
+     "kind": "result"
+    },
+    {
+     "tick": 74,
+     "experience_id": "01M6XFHDKG4Z92J4T3WC20VZX5",
+     "kind": "call-step"
+    },
+    {
+     "tick": 75,
+     "experience_id": "01M6XFHDM9Y3372YS97NYK6AQ2",
+     "kind": "result"
+    },
+    {
+     "tick": 76,
+     "experience_id": "01M6XFHDN3D6N8BCZC8PHSC6Y1",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 77,
+     "experience_id": "01M6XFHDNZDYK1DP1GC13ZDN4K",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 78,
+     "experience_id": "01M6XFHDPX7ZFY5B8C43ARJ105",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 79,
+     "experience_id": "01M6XFHDQX7PC7DXRHJGQ9HEJJ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 80,
+     "experience_id": "01M6XFHDRQJRGBPQ8T0PZXKRZ6",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 81,
+     "experience_id": "01M6XFHDSFNST67A3JTRHX3XTG",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 82,
+     "experience_id": "01M6XFHDT8CD1A3PZW6NPC30D8",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 83,
+     "experience_id": "01M6XFHDV47Q7EGS2SBZBWW7FS",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 84,
+     "experience_id": "01M6XFHDW2YF02V3JMRDRP4EAR",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 85,
+     "experience_id": "01M6XFHDWY8DGRZ63W845BT0VM",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 86,
+     "experience_id": "01M6XFHDXZSHHJXX7KY1YT63SD",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 87,
+     "experience_id": "01M6XFHDYQXMB4W004K11R9RNT",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 88,
+     "experience_id": "01M6XFHDZNW3FY21AR1S5BAEXT",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 89,
+     "experience_id": "01M6XFHE0NFXEN1F0WZW091AZE",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 90,
+     "experience_id": "01M6XFHE1JWH14T6FVZR13C56D",
+     "kind": "dialogue"
+    }
+   ],
+   "effective_chars": 2896,
+   "raw_chars": 13477,
+   "ended_at": "2026-11-05T13:47:25.766Z",
+   "ended_tick": 90
+  },
+  {
+   "segment": 7,
+   "status": "closed",
+   "channel": "dsh",
+   "closed_reason": "silence",
+   "started_at": "2026-11-06T01:13:27.464Z",
+   "pointers": [
+    {
+     "tick": 91,
+     "experience_id": "01M6XFHE2FGQJQCNJ1CX4D1DH8",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 92,
+     "experience_id": "01M6XFHE38YGZ8MV3DC2P6HWVJ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 93,
+     "experience_id": "01M6XFHE45K8ZY99TPAQTZ518K",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 94,
+     "experience_id": "01M6XFHE53PWHDX8HC2S5G9ZP9",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 95,
+     "experience_id": "01M6XFHE5ZGJ2TYFBN86G10G3F",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 96,
+     "experience_id": "01M6XFHE6S48Y4V1M4BZV5BVFJ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 97,
+     "experience_id": "01M6XFHE7J2GCB1XGBCSWZYMWX",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 98,
+     "experience_id": "01M6XFHE8HWWZWD2MC965APQ8F",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 99,
+     "experience_id": "01M6XFHE9CM28FD08E4HZ7SGQX",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 100,
+     "experience_id": "01M6XFHEAA605VHY4R3D3ET6QQ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 101,
+     "experience_id": "01M6XFHEB51NR2708DV8TSMQFM",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 102,
+     "experience_id": "01M6XFHEC0G34XMX58YEW7YZBP",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 103,
+     "experience_id": "01M6XFHED0WJWHR0195P1BJPVD",
+     "kind": "call-step"
+    },
+    {
+     "tick": 104,
+     "experience_id": "01M6XFHEDXKF4KGW9AJ6X8XSH1",
+     "kind": "result"
+    },
+    {
+     "tick": 105,
+     "experience_id": "01M6XFHEEW6BT52ST9E566TJZN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 106,
+     "experience_id": "01M6XFHEFW58103AY8WQME8WQV",
+     "kind": "call-step"
+    },
+    {
+     "tick": 107,
+     "experience_id": "01M6XFHEGTY07F4JB7JJ5TQEXM",
+     "kind": "result"
+    },
+    {
+     "tick": 108,
+     "experience_id": "01M6XFHEHS8EAVDH3PYF67R08B",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 109,
+     "experience_id": "01M6XFHEJRNBQA9CRNHB0T7DHX",
+     "kind": "call-step"
+    },
+    {
+     "tick": 110,
+     "experience_id": "01M6XFHEKM472G7D28T58SXTHA",
+     "kind": "result"
+    },
+    {
+     "tick": 111,
+     "experience_id": "01M6XFHEMBXJWTGGQ2ACQPA9PP",
+     "kind": "dialogue"
+    }
+   ],
+   "effective_chars": 454,
+   "raw_chars": 10294,
+   "ended_at": "2026-11-06T01:20:40.029Z",
+   "ended_tick": 111
+  },
+  {
+   "segment": 8,
+   "status": "open",
+   "channel": "dsh",
+   "closed_reason": null,
+   "started_at": "2026-11-06T07:51:25.805Z",
+   "pointers": [
+    {
+     "tick": 112,
+     "experience_id": "01M6XFHENA77SCYJ3SEFFR5DQW",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 113,
+     "experience_id": "01M6XFHEPA4FJRP5GPGG59JTHP",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 114,
+     "experience_id": "01M6XFHEQ6TZ1MYK31HXQCYSBC",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 115,
+     "experience_id": "01M6XFHER328W7FE9RBWFECVK9",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 116,
+     "experience_id": "01M6XFHES7XCG3SV87354GQY2H",
+     "kind": "call-step"
+    },
+    {
+     "tick": 117,
+     "experience_id": "01M6XFHET8PQX26BKTBSZM2627",
+     "kind": "result"
+    },
+    {
+     "tick": 118,
+     "experience_id": "01M6XFHEV6VES725H5VPKCQ66G",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 119,
+     "experience_id": "01M6XFHEW11MN9XP9AY8R7W4TC",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 120,
+     "experience_id": "01M6XFHEX04PTC378WTEBNS4ZN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 121,
+     "experience_id": "01M6XFHEXVGT7R0D8VFECA0W53",
+     "kind": "call-step"
+    },
+    {
+     "tick": 122,
+     "experience_id": "01M6XFHEYQ4JF160HE9CYP2X00",
+     "kind": "result"
+    },
+    {
+     "tick": 123,
+     "experience_id": "01M6XFHEZP8JW79BW9MRH77CGQ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 124,
+     "experience_id": "01M6XFHF0JZBF5V12MZFA0VB31",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 125,
+     "experience_id": "01M6XFHF17HXB0DW6VZA1V1B9P",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 126,
+     "experience_id": "01M6XFHF23VYW7K6H3D2DWRCTK",
+     "kind": "call-step"
+    },
+    {
+     "tick": 127,
+     "experience_id": "01M6XFHF327WAJ7AD2NW6MQG7N",
+     "kind": "result"
+    },
+    {
+     "tick": 128,
+     "experience_id": "01M6XFHF40YGY6GDYJDJD7FBV3",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 129,
+     "experience_id": "01M6XFHF4ZDJSFF4K1C3TR3HK3",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 130,
+     "experience_id": "01M6XFHF615SXED1ED2F66W93Q",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 131,
+     "experience_id": "01M6XFHF6VM0TJ1YFH1H0KZNDB",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 132,
+     "experience_id": "01M6XFHF7S210FDRG9105JJYZM",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 133,
+     "experience_id": "01M6XFHF8RMJ0D2N2GG5M4QPY2",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 134,
+     "experience_id": "01M6XFHF9PZ3VYJ0NP0TM79KRC",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 135,
+     "experience_id": "01M6XFHFAK88TK0HPD8EMYQ8J3",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 136,
+     "experience_id": "01M6XFHFBGBVAC740WW4YWBHM9",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 137,
+     "experience_id": "01M6XFHFCDDEJQYF3Y80EQ82PN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 138,
+     "experience_id": "01M6XFHFDB1KHT7GYCA7Y2P1JT",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 139,
+     "experience_id": "01M6XFHFDV7EXX475JSXQ6TH5F",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 140,
+     "experience_id": "01M6XFHFEFE1NYJQ3QC3NM79EN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 141,
+     "experience_id": "01M6XFHFF4W5J7HQ9JHMVDWTVJ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 142,
+     "experience_id": "01M6XFHFG043ZRHWBRN2QXT725",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 143,
+     "experience_id": "01M6XFHFH1PHPV0C1F62C42T30",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 144,
+     "experience_id": "01M6XFHFHZSNPCPRRRHMJ9V2MN",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 145,
+     "experience_id": "01M6XFHFJXAH060PWABXR6XP42",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 146,
+     "experience_id": "01M6XFHFKS47XVHAWWJVM0D2T0",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 147,
+     "experience_id": "01M6XFHFMP1KW5MA645XKYWG79",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 148,
+     "experience_id": "01M6XFHFNHK03XRG840A11R4KM",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 149,
+     "experience_id": "01M6XFHFPG8Y9BK80V0KYZ42NP",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 150,
+     "experience_id": "01M6XFHFQE6MGBQAPNFAN60TCB",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 151,
+     "experience_id": "01M6XFHFR7AE7J1G14ZET475VZ",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 152,
+     "experience_id": "01M6XFHFS6HY89MM1AJGSN6E5K",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 153,
+     "experience_id": "01M6XFHFT30SR8ZEF4N1R0NHVC",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 154,
+     "experience_id": "01M6XFHFV41RHF63WJ4KVHEK6Q",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 155,
+     "experience_id": "01M6XFHFVXD9V71993QJRVW25C",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 156,
+     "experience_id": "01M6XFHFWZCV6RZK0FB7XKRXA1",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 157,
+     "experience_id": "01M6XFHFXVX5NB160WDD6YYVBT",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 158,
+     "experience_id": "01M6XFHFYRR8FN0XJ87Y77AFB5",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 159,
+     "experience_id": "01M6XFHFZRX8EN821HEWB2131T",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 160,
+     "experience_id": "01M6XFHG0M2JCZZGWMHA0DWG04",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 161,
+     "experience_id": "01M6XFHG1DQVK0DMTRZVSSB852",
+     "kind": "dialogue"
+    },
+    {
+     "tick": 162,
+     "experience_id": "01M6XFHG2C1H290YT2YG5HRTKQ",
+     "kind": "dialogue"
+    }
+   ],
+   "effective_chars": 1984,
+   "raw_chars": 10852,
+   "ended_at": "2026-11-06T08:20:04.044Z"
+  }
+ ]
+}

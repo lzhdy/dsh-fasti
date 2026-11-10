@@ -38,6 +38,29 @@ function turnInput(eventId: string, occurredAt: string) {
 }
 
 /**
+ * 构造一条**长正文**的原文行输入 —— 用于触发 v1.4 的有效对话字数上限。
+ *
+ * v1.4 设计性改写（定案稿 §9「不做 20 条记录硬上限（退役）」+ 任务书 C3/C4）：
+ * 旧用例靠「摄入 20 条 → 撞条数上限 → 事件闭合」来驱动后续断言；
+ * 条数上限退役后该触发方式失效，改用**有效对话字数上限**（默认 7000）驱动。
+ *
+ * 每条正文固定 350 码点 → 每 20 条累计 7000 字，恰好在第 20 条闭合，
+ * 与旧用例「每 20 条一个事件」的节奏完全一致，后续断言（事件数、待补计数、
+ * 记录条数）无需改动。
+ */
+function longTurnInput(eventId: string, occurredAt: string) {
+  return {
+    event_id: eventId,
+    session_id: 'session-1',
+    speaker: 'user',
+    // 固定 350 码点：'字'.repeat(350)。
+    raw_text: '字'.repeat(350),
+    asserted_at: occurredAt,
+    occurred_at: occurredAt,
+  };
+}
+
+/**
  * 事件真源的全部版本行。
  *
  * `skipMonths` 用于跳过测试自己塞进去的**故意损坏**的分片 ——
@@ -122,6 +145,7 @@ function makeCtx(): IngestStageContext {
       occurred_at: T0,
       recorded_at: T0,
       tick: 0,
+      char_count: null,
     },
     location: { shard: '2026-11', seq: 0 },
     channel: 'dsh',
@@ -357,7 +381,7 @@ test('诊断 · 待补摘要数读取失败 → 首次告警、之后不刷屏�
   try {
     // 阶段一：一切正常时，摄入 20 条把第一个事件关掉 → 待补计数刷新成功。
     for (let index = 0; index < 20; index += 1) {
-      await fasti.ingestRawTurn('dsh', turnInput(`evt-a-${index}`, T0));
+      await fasti.ingestRawTurn('dsh', longTurnInput(`evt-a-${index}`, T0));
     }
     assert.equal(warnings.length, 0, '正常路径不该有任何告警');
     // 刷新成功过：第一个闭合事件的待补数已经写进检查点（这是后面「没再写进去」的基准）。
@@ -375,7 +399,7 @@ test('诊断 · 待补摘要数读取失败 → 首次告警、之后不刷屏�
 
     // 阶段三：再摄入 20 条 → 第二个事件闭合 → 刷新待补数时读到坏分片。
     for (let index = 0; index < 20; index += 1) {
-      await fasti.ingestRawTurn('dsh', turnInput(`evt-b-${index}`, T0));
+      await fasti.ingestRawTurn('dsh', longTurnInput(`evt-b-${index}`, T0));
     }
     assert.equal(warnings.length, 1, `首次失败必须告警一次（实际 ${warnings.length} 次）`);
     assert.match(warnings[0] ?? '', /待补摘要数读取失败/);
@@ -386,7 +410,7 @@ test('诊断 · 待补摘要数读取失败 → 首次告警、之后不刷屏�
 
     // 阶段四：继续坏 → 不刷屏（第 2 次起不再逐次告警）。
     for (let index = 0; index < 20; index += 1) {
-      await fasti.ingestRawTurn('dsh', turnInput(`evt-c-${index}`, T0));
+      await fasti.ingestRawTurn('dsh', longTurnInput(`evt-c-${index}`, T0));
     }
     assert.equal(warnings.length, 1, '同一故障重复发生时不该逐次刷屏');
     assert.equal(checkpointPendingEvents(root), 1, '第二次失败同样不该写计数');

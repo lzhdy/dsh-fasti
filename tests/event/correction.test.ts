@@ -50,6 +50,7 @@ function makeExperience(id: string, occurredAt: string): Experience {
     occurred_at: occurredAt,
     recorded_at: occurredAt,
     tick: 0,
+    char_count: null,
   };
 }
 
@@ -77,6 +78,8 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
     created_at: at(10),
     channel: 'dsh',
     boundary_candidates: [],
+    effective_chars: null,
+    raw_chars: null,
   };
   return { ...base, ...overrides };
 }

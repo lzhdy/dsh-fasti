@@ -97,6 +97,20 @@ export interface EventProjection {
   split_into: string[];
   created_by: string;
   created_at_ms: number;
+  /**
+   * 有效对话字数累计（v1.4 新增，可空）。
+   *
+   * 只累加非工具轮的 `char_count`；`null` = 旧数据/未统计（老行读出即 NULL，
+   * 不强制回填）。投影只存当前态 —— 与事件真源同版本的计数器值。
+   */
+  effective_chars: number | null;
+  /**
+   * 原文全量字符累计（v1.4 新增，可空）。
+   *
+   * 对所有记录累加 `char_count`（含工具 JSON）；硬保险丝的唯一数据源。
+   * `null` = 旧数据/未统计。
+   */
+  raw_chars: number | null;
 }
 
 /** 事件查询条件（投影层口径；门面另有 `EventQueryFilter` 契约）。 */

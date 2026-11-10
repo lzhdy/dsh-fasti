@@ -20,6 +20,7 @@ import type { Context } from '@deepseek-ai/cordis';
 
 import { withDeadline } from '../../core/deadline.ts';
 import { UnavailableError } from '../../core/errors.ts';
+import type { BoundaryCandidate } from '../../contract/event.ts';
 import type {
   LLMPort,
   LLMSummarizeOptions,
@@ -192,11 +193,51 @@ function parseSummaryPayload(raw: string): LLMSummarizeResponse {
   if (typeof summary !== 'string') {
     throw new UnavailableError('模型返回缺少 summary 字段');
   }
+  // v1.4 · C7：话题跳转候选是**附带输出** —— 解析失败**不抛错**，
+  // 只丢候选，摘要照常落盘（失败降级表第 4 行：不写半成品）。
+  const candidates = parseBoundaryCandidates(obj['boundary_candidates']);
   return {
     summary,
     keyPoints: stringArray(obj['key_points']),
     anchors: stringArray(obj['anchors']),
+    ...(candidates.length === 0 ? {} : { boundary_candidates: candidates }),
   };
+}
+
+/**
+ * 解析话题跳转候选（v1.4 · C7）。
+ *
+ * **绝不抛错** —— 候选是慢路径的附带输出，解析不了就不给：
+ * 摘要照常落盘，候选当没有（失败降级表第 4 行）。
+ *
+ * 每条候选必须有 `at_pointer_id`（指向事件内的哪条记录）与 `marked_at`；
+ * 缺任一 → 丢弃该条（不猜、不补）。
+ *
+ * `kind` 缺省为 '话题跳转'；**没有分数、没有置信度** —— 出现也不采信
+ * （非权威候选带分数就变成了评分，违反「候选不含重要性」的红线）。
+ */
+function parseBoundaryCandidates(value: unknown): BoundaryCandidate[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: BoundaryCandidate[] = [];
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) {
+      continue;
+    }
+    const obj = item as Record<string, unknown>;
+    const atPointerId = obj['at_pointer_id'];
+    const markedAt = obj['marked_at'];
+    if (typeof atPointerId !== 'string' || atPointerId === '') {
+      continue;
+    }
+    if (typeof markedAt !== 'string' || markedAt === '') {
+      continue;
+    }
+    const kind = typeof obj['kind'] === 'string' && obj['kind'] !== '' ? obj['kind'] : '话题跳转';
+    out.push({ kind, at_pointer_id: atPointerId, marked_at: markedAt });
+  }
+  return out;
 }
 
 /** 剥掉模型常见的 ```json 围栏 —— 只剥围栏，不动正文。 */

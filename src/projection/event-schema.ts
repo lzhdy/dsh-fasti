@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS event(
   merged_into TEXT,
   split_into TEXT,
   created_by TEXT NOT NULL,
-  created_at_ms INTEGER NOT NULL);
+  created_at_ms INTEGER NOT NULL,
+  effective_chars INTEGER,
+  raw_chars INTEGER);
 CREATE INDEX IF NOT EXISTS idx_event_time ON event(started_ms);
 CREATE INDEX IF NOT EXISTS idx_event_status ON event(status);
 CREATE INDEX IF NOT EXISTS idx_event_channel ON event(channel, started_ms);
@@ -62,6 +64,9 @@ export const EXPECTED_EVENT_COLUMNS = [
   ['split_into', 'TEXT'],
   ['created_by', 'TEXT'],
   ['created_at_ms', 'INTEGER'],
+  // v1.4 双计数器（纯加法、可空）：老行读出为 NULL = 未统计，不强制回填。
+  ['effective_chars', 'INTEGER'],
+  ['raw_chars', 'INTEGER'],
 ] as const;
 
 /** event 表期望索引名。 */

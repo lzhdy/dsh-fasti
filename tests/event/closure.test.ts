@@ -51,6 +51,8 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
     created_at: BASE_TIME,
     channel: 'dsh',
     boundary_candidates: [],
+    effective_chars: null,
+    raw_chars: null,
   };
   return { ...base, ...overrides };
 }
@@ -902,6 +904,242 @@ test('双流职责：慢路径只追加派生字段 —— 快路径写的事实
       `慢路径改了不该改的字段：${changed.filter((key) => !DERIVED.has(key)).join('、')}`,
     );
     assert.ok(changed.includes('summary'), '摘要本身当然要变（否则这条用例是空过）');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+// ── v1.4 慢路径话题候选（定案稿 §6.4 · 任务书 C7/C9 · A7）─────────────────
+// 旧口径「第一期不产生任何候选」已按 C9 拆为快/慢两条路径：
+// 快路径恒空（见 tests/event/segmenter.test.ts 的 T4 改写），
+// 慢路径（摘要调用）可产 ≤5 条非权威候选 —— 以下逐条验证。
+
+test('A7 · 慢路径：候选与摘要在同一次 appendVersion 写回（≤5 条、kind 封闭、无分数字段）', async () => {
+  const root = makeTempRoot();
+  try {
+    const port = new FakePort();
+    port.response = {
+      summary: '她在读一篇论文。',
+      keyPoints: ['读了论文'],
+      anchors: ['论文'],
+      boundary_candidates: [
+        { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:05:00.000Z' },
+      ],
+    };
+    const { log, pipeline } = makePipeline(root, port);
+    log.appendVersion(makeEvent());
+
+    pipeline.enqueue('evt-1');
+    await pipeline.processOne(0);
+
+    const current = log.currentOf('evt-1');
+    assert.equal(current.version, 2, '候选与摘要在同一个版本里写回');
+    assert.equal(current.summary_quality, 'ready', '摘要照常落盘');
+    assert.equal(current.summary, '她在读一篇论文。');
+    assert.equal(current.boundary_candidates.length, 1, '候选写进了 boundary_candidates');
+    assert.equal(current.boundary_candidates[0]?.kind, '话题跳转', 'kind 封闭为「话题跳转」');
+    assert.equal(current.boundary_candidates[0]?.at_pointer_id, 'exp-1');
+    assert.equal(current.boundary_candidates[0]?.marked_at, '2026-11-08T10:05:00.000Z');
+    // 无分数、无置信度：候选只有三个字段。
+    assert.deepEqual(
+      Object.keys(current.boundary_candidates[0] ?? {}).sort(),
+      ['at_pointer_id', 'kind', 'marked_at'],
+      '候选不含分数字段',
+    );
+    assert.equal(current.summary_prompt_version, 'v2', '提示词版本随本次 bump 到 v2');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('A7 · 慢路径：候选非权威 —— 不改 pointers / status / time_range', async () => {
+  const root = makeTempRoot();
+  try {
+    const port = new FakePort();
+    port.response = {
+      summary: '她在读一篇论文。',
+      keyPoints: [],
+      anchors: [],
+      boundary_candidates: [
+        { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:01:00.000Z' },
+        { kind: '话题跳转', at_pointer_id: 'exp-2', marked_at: '2026-11-08T10:02:00.000Z' },
+      ],
+    };
+    const { log, pipeline } = makePipeline(root, port);
+    const before = makeEvent({
+      pointers: [
+        { id: 'exp-1', channel: 'dsh', shard: '2026-11', seq: 0 },
+        { id: 'exp-2', channel: 'dsh', shard: '2026-11', seq: 1 },
+      ],
+    });
+    log.appendVersion(before);
+
+    pipeline.enqueue('evt-1');
+    await pipeline.processOne(0);
+
+    const after = log.currentOf('evt-1');
+    assert.deepEqual(after.pointers, before.pointers, '候选不改 pointers');
+    assert.equal(after.status, before.status, '候选不改 status');
+    assert.deepEqual(after.time_range, before.time_range, '候选不改 time_range');
+    assert.equal(after.closed_reason, before.closed_reason, '候选不改闭合原因');
+    assert.equal(after.boundary_candidates.length, 2, '两条候选都写下了');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('A7 · 慢路径：候选最多 5 条（超出截断，不多写）', async () => {
+  const root = makeTempRoot();
+  try {
+    const port = new FakePort();
+    port.response = {
+      summary: '她在读一篇论文。',
+      keyPoints: [],
+      anchors: [],
+      boundary_candidates: Array.from({ length: 9 }, () => ({
+        kind: '话题跳转',
+        at_pointer_id: 'exp-1',
+        marked_at: '2026-11-08T10:00:00.000Z',
+      })),
+    };
+    const { log, pipeline } = makePipeline(root, port);
+    // 9 条候选全部指向本事件的唯一指针（exp-1）→ 都合法，只受条数上限约束。
+    log.appendVersion(makeEvent());
+
+    pipeline.enqueue('evt-1');
+    await pipeline.processOne(0);
+
+    const current = log.currentOf('evt-1');
+    assert.equal(current.boundary_candidates.length, 5, '最多 5 条，超出截断');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('A7 · 慢路径：候选解析失败 → 丢弃候选，摘要照常落盘（不写半成品）', async () => {
+  const root = makeTempRoot();
+  try {
+    const port = new FakePort();
+    // 候选形态不对（不是数组 / 缺 at_pointer_id）→ 解析失败。
+    port.response = {
+      summary: '她在读一篇论文。',
+      keyPoints: [],
+      anchors: [],
+      boundary_candidates: [{ kind: '话题跳转' } as never],
+    };
+    const { log, pipeline } = makePipeline(root, port);
+    log.appendVersion(makeEvent());
+
+    pipeline.enqueue('evt-1');
+    const processed = await pipeline.processOne(0);
+
+    assert.equal(processed, true, '候选坏掉不该让整次调用失败');
+    const current = log.currentOf('evt-1');
+    assert.equal(current.summary_quality, 'ready', '摘要照常落盘');
+    assert.equal(current.summary, '她在读一篇论文。');
+    assert.deepEqual(current.boundary_candidates, [], '坏候选被丢弃');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('A7 · 慢路径：边界快照不一致 → 摘要与候选一起作废（不写半份）', async () => {
+  const root = makeTempRoot();
+  try {
+    const port = new FakePort();
+    port.response = {
+      summary: '她在读一篇论文。',
+      keyPoints: [],
+      anchors: [],
+      boundary_candidates: [
+        { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:01:00.000Z' },
+      ],
+    };
+    const { log, pipeline } = makePipeline(root, port);
+    log.appendVersion(makeEvent());
+
+    // 模型在途期间她改了边界 → 快照不一致。
+    const original = port.summarize.bind(port);
+    port.summarize = async (request) => {
+      const result = await original(request);
+      log.appendVersion({
+        ...log.currentOf('evt-1'),
+        version: log.currentOf('evt-1').version + 1,
+        pointers: [{ id: 'exp-9', channel: 'dsh', shard: '2026-11', seq: 9 }],
+      });
+      return result;
+    };
+
+    pipeline.enqueue('evt-1');
+    await pipeline.processOne(0);
+
+    const current = log.currentOf('evt-1');
+    assert.equal(current.summary_quality, 'pending', '摘要作废（事件保持 pending）');
+    assert.equal(current.summary, null, '没有半份摘要');
+    assert.deepEqual(current.boundary_candidates, [], '候选与摘要一起作废');
+    assert.equal(current.pointers.length, 1, '她改的边界原样保留');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+// ── v1.4 评审 P2 · 候选指针必须属于本事件 ────────────────────────────────
+// 模型可能指向本事件之外的记录（幻觉 / 串轮 / 抄了别的事件的 id）。
+// 这样的候选指向一个不存在于本事件的边界 —— 代码过滤掉，不写。
+
+test('P2 · 慢路径：at_pointer_id 不属于本事件指针 → 代码过滤掉（不写）', async () => {
+  const root = makeTempRoot();
+  try {
+    const port = new FakePort();
+    port.response = {
+      summary: '她在读一篇论文。',
+      keyPoints: [],
+      anchors: [],
+      boundary_candidates: [
+        { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:01:00.000Z' },
+        { kind: '话题跳转', at_pointer_id: 'exp-999', marked_at: '2026-11-08T10:02:00.000Z' },
+        { kind: '话题跳转', at_pointer_id: 'other-event-exp', marked_at: '2026-11-08T10:03:00.000Z' },
+      ],
+    };
+    const { log, pipeline } = makePipeline(root, port);
+    log.appendVersion(makeEvent()); // 事件只有一个指针 exp-1
+
+    pipeline.enqueue('evt-1');
+    const processed = await pipeline.processOne(0);
+
+    assert.equal(processed, true, '坏候选不该让整次调用失败');
+    const current = log.currentOf('evt-1');
+    assert.equal(current.boundary_candidates.length, 1, '只有本事件的指针那条留下');
+    assert.equal(current.boundary_candidates[0]?.at_pointer_id, 'exp-1');
+    assert.equal(current.summary_quality, 'ready', '摘要照常落盘');
+    assert.equal(current.summary, '她在读一篇论文。');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('P2 · 慢路径：全部候选都越界 → 候选为空，摘要照常落盘（不写半成品）', async () => {
+  const root = makeTempRoot();
+  try {
+    const port = new FakePort();
+    port.response = {
+      summary: '她在读一篇论文。',
+      keyPoints: [],
+      anchors: [],
+      boundary_candidates: [
+        { kind: '话题跳转', at_pointer_id: 'exp-999', marked_at: '2026-11-08T10:01:00.000Z' },
+      ],
+    };
+    const { log, pipeline } = makePipeline(root, port);
+    log.appendVersion(makeEvent());
+
+    pipeline.enqueue('evt-1');
+    await pipeline.processOne(0);
+
+    const current = log.currentOf('evt-1');
+    assert.deepEqual(current.boundary_candidates, [], '越界候选全被过滤');
+    assert.equal(current.summary_quality, 'ready', '摘要照常落盘');
+    assert.equal(current.summary, '她在读一篇论文。');
   } finally {
     cleanupTempRoot(root);
   }

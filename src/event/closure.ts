@@ -30,6 +30,7 @@ import { UnavailableError } from '../core/errors.ts';
 import { nowIso } from '../core/time.ts';
 import { SUMMARY_MAX_CHARS, summaryLengthOf } from '../contract/event.ts';
 import type { EventRecord } from '../contract/event.ts';
+import type { BoundaryCandidate } from '../contract/event.ts';
 import type { EventLog } from '../source/event-log.ts';
 import { RETRY_MAX_ATTEMPTS } from './backlog.ts';
 import type { Backlog, BacklogTask } from './backlog.ts';
@@ -44,6 +45,14 @@ import type { EventParams } from './params.ts';
 
 /** 失败明细条数上限（环形缓冲，与摄入 stage 失败同口径）。 */
 const FAILURE_BUFFER_LIMIT = 100;
+
+/**
+ * 单次摘要调用可带回的话题跳转候选条数上限（v1.4 · C7）。
+ *
+ * 定案稿 §6.4 钉死「最多 5 条」—— 多给也不写（候选是**非权威**的提示，
+ * 不是决策输入；给太多既没用又稀释信号）。
+ */
+const MAX_BOUNDARY_CANDIDATES = 5;
 
 /**
  * 失败后的处置 —— 三态区分（机器可判，别靠文案猜）。
@@ -346,12 +355,29 @@ export class ClosurePipeline {
     summary: string,
     regenerate: boolean,
   ): void {
+    // v1.4 · C7：话题跳转候选与摘要在**同一次 appendVersion** 写回。
+    //
+    // 候选来自摘要调用的附带输出（慢路径），**非权威**：只写 boundary_candidates，
+    // 绝不改 pointers / time_range / status（定案稿 §5.2.1 第 4 条）。
+    // 边界快照不一致时（`sameBoundary` 为假）调用方已提前 return ——
+    // 摘要与候选**一起作废**，不写半份（失败降级表第 3 行）。
+    const candidates = regenerate
+      ? normalizeCandidates(
+          response.boundary_candidates,
+          new Set(current.pointers.map((pointer) => pointer.id)),
+        )
+      : [];
     const next: EventRecord = {
       ...current,
       version: current.version + 1,
       summary: regenerate ? summary : current.summary,
       key_points: regenerate ? [...response.keyPoints] : current.key_points,
       anchors: [...response.anchors],
+      // 候选只追加到既有候选之后（历史候选不丢）；她手写的摘要不重跑 → 不带候选。
+      boundary_candidates:
+        candidates.length === 0
+          ? current.boundary_candidates
+          : [...current.boundary_candidates, ...candidates],
       // 她写的摘要即便重跑完也仍是「基于旧边界」→ quality 保持原值（§5.6/§7.3）。
       summary_quality: regenerate ? 'ready' : current.summary_quality,
       summary_source: regenerate ? 'llm' : 'her',
@@ -430,17 +456,35 @@ function systemPrompt(limit: number): string {
     `按实际信息量自然写，能短则短（不设字数下限，但不得超过 ${limit} 字）。`,
     '事件内有多个话题转折时，按「先做什么、后做什么」顺叙，不展开对话细节。',
     '输出前自检一次：是否说清了「谁 / 做了什么 / 结果如何」（自检即可，不要输出自检过程）。',
-    '只输出 JSON：{"summary": string, "key_points": string[], "anchors": string[]}',
+    '只输出 JSON：{"summary": string, "key_points": string[], "anchors": string[], "boundary_candidates": [{"kind": string, "at_pointer_id": string, "marked_at": string}]}',
+    '',
+    // ── v1.4 · C7：话题跳转候选（慢路径附带输出）──
+    '可选字段 boundary_candidates：若你认为事件内部出现了「话题跳转」，可标出候选。',
+    'at_pointer_id 只能填**本次事件内**记录的 id（见 user 提示里的编号与 id 对照），不得引用事件外的任何 id。',
+    '最多 5 条；没有话题跳转就不给这个字段（空数组亦可）。',
+    '候选是**非权威提示**，只供她复盘时参考；不要因为标了候选就改变摘要的写法或分段。',
+    '候选**不含分数、不含置信度**：只给 kind / at_pointer_id / marked_at 三个字段。',
+    'kind 固定用「话题跳转」。',
   ].join('\n');
 }
 
-/** 摘要 user 提示（形态冻结，§6.3）：事件时间范围 + 按时间顺序的原文。 */
+/**
+ * 摘要 user 提示（形态冻结，§6.3）：事件时间范围 + 按时间顺序的原文。
+ *
+ * v1.4 · C7：补上「序号 → 记录 id」对照 —— 候选的 `at_pointer_id` 必须指向
+ * **本事件实际记录**的 id（不得按全量 raw 推断事件外的内容）。
+ */
 function userPrompt(event: EventRecord, texts: readonly string[]): string {
   const lines = texts.map((text, index) => `${index + 1}. ${text}`);
+  const idLines = event.pointers.map(
+    (pointer, index) => `${index + 1}. ${pointer.id}`,
+  );
   return [
     `事件时间范围：${event.time_range.started_at} ~ ${event.time_range.ended_at}`,
     '事件内记录（按时间顺序）：',
     ...lines,
+    '记录 id（话题跳转候选的 at_pointer_id 只能取这里的值）：',
+    ...idLines,
   ].join('\n');
 }
 
@@ -474,4 +518,60 @@ function sameBoundary(snapshot: BoundarySnapshot, current: EventRecord): boolean
     return false;
   }
   return current.pointers.every((pointer, index) => pointer.id === snapshot.pointerIds[index]);
+}
+
+/**
+ * 话题跳转候选的归一（v1.4 · C7 慢路径）。
+ *
+ * 五条硬约束逐条落地：
+ *  1. **最多 5 条**（超出截断 —— 多给也不写）；
+ *  2. `kind` 固定为 `'话题跳转'`（开放枚举的已知子集；未知 kind 原样保留的前提是
+ *     这是**契约层**的读侧宽容，而本函数只产出本轮已知的合法值）；
+ *  3. **无分数、无置信度** —— 候选只有 `kind`/`at_pointer_id`/`marked_at` 三个字段；
+ *  4. 缺 `at_pointer_id` 或 `marked_at` 的条目**丢弃**（不猜、不补）；
+ *  5. 整个解析失败（不是数组、元素形态不对）→ **丢弃候选、摘要照常落盘**
+ *     （失败降级表第 4 行：不写半成品）。
+ *
+ * 第六条（v1.4 评审 P2）：**`at_pointer_id` 必须属于本事件的指针集合** ——
+ * 模型可能指向本事件之外的记录（幻觉、串轮、或把别的事件的 id 抄进来）。
+ * 这样的候选指向一个不存在于本事件的边界，写下去会让下游按它去拆分时
+ * 找不到对应记录。**代码过滤掉，不写**（不是标记、不是警告）。
+ *
+ * 候选**非权威**：这里只产出候选本身，改边界由她用 §7.1 拆分落地。
+ *
+ * @param raw 模型给出的候选原始数组
+ * @param eventPointerIds 本事件当前的指针 id 集合（用于第 6 条过滤）
+ */
+function normalizeCandidates(
+  raw: unknown,
+  eventPointerIds: ReadonlySet<string>,
+): BoundaryCandidate[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out: BoundaryCandidate[] = [];
+  for (const item of raw) {
+    if (out.length >= MAX_BOUNDARY_CANDIDATES) {
+      break;
+    }
+    if (typeof item !== 'object' || item === null) {
+      continue;
+    }
+    const obj = item as Record<string, unknown>;
+    const atPointerId = obj['at_pointer_id'];
+    const markedAt = obj['marked_at'];
+    if (typeof atPointerId !== 'string' || atPointerId === '') {
+      continue;
+    }
+    if (typeof markedAt !== 'string' || markedAt === '') {
+      continue;
+    }
+    // 第 6 条：指向本事件之外的指针 → 丢弃（模型幻觉 / 串轮）。
+    if (!eventPointerIds.has(atPointerId)) {
+      continue;
+    }
+    const kind = typeof obj['kind'] === 'string' && obj['kind'] !== '' ? obj['kind'] : '话题跳转';
+    out.push({ kind, at_pointer_id: atPointerId, marked_at: markedAt });
+  }
+  return out;
 }

@@ -225,21 +225,27 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   // 没有它就「事件照切、摘要永远不出」——闭合管线必须有人周期性地推。
   // 独立注册（不嵌在下面的 open effect 里）：两类生命周期互不依赖，
   // 卸载时无论谁先释放都不会碰到未初始化/已关闭的实例。
-  if (port !== null) {
-    startClosureWorker(
-      ctx,
-      async () => {
-        const fasti = await ready;
-        if (fasti === null || state.closed) {
-          // worker 是周期性的：门面没打开时不必告警（事件路径那侧已经记过账），
-          // 只需安静返回 0，别在日志里每 5 秒刷一条。
-          return 0;
-        }
-        return fasti.drainClosure();
-      },
-      config.closureIntervalMs === undefined ? {} : { intervalMs: config.closureIntervalMs },
-    );
-  }
+  //
+  // **无条件启动**（不再要求 port !== null）：时钟静默检查（定案稿 C6）必须
+  // 独立于 LLM 端口 —— 没有模型端口时，安静够久的 open 事件照样该闭合，
+  // 只是摘要保持 pending。若把 worker 挂在 port 条件下，A6b 直接不成立：
+  // 无端口 → 无 worker → 永不闭合。
+  startClosureWorker(
+    ctx,
+    async () => {
+      const fasti = await ready;
+      if (fasti === null || state.closed) {
+        // worker 是周期性的：门面没打开时不必告警（事件路径那侧已经记过账），
+        // 只需安静返回 0，别在日志里每 5 秒刷一条。
+        return 0;
+      }
+      // ① 时钟静默：与摘要无关，先跑 —— 闭合是「切」的事，摘要是「写」的事。
+      fasti.checkSilenceClock();
+      // ② 摘要 drain：端口为 null 时管线自己会记 permanent 失败并保持 pending。
+      return fasti.drainClosure();
+    },
+    config.closureIntervalMs === undefined ? {} : { intervalMs: config.closureIntervalMs },
+  );
 
   // 生命周期：装载时 open，卸载时 close（释放 SQLite 句柄）。
   ctx.effect(async () => {

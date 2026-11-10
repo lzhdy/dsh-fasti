@@ -321,6 +321,12 @@ export function parseAction(raw: unknown, at = 'action', mode: ParseMode = 'read
     action.thought = typeof thought === 'string' ? thought : parsePointer(thought, `${at}.thought`, mode);
   }
 
+  // v1.4 加法字段 call_id：请求与结果的配对标识（取自载荷 JSON，非 RawTurn 顶层）。
+  const callId = optionalString(obj['call_id'], `${at}.call_id`);
+  if (callId !== undefined) {
+    action.call_id = callId;
+  }
+
   carryUnknownFields(obj, action, mode);
 
   return action;
@@ -367,6 +373,12 @@ export function parseOutcome(raw: unknown, at = 'outcome', mode: ParseMode = 're
     }
     carryUnknownFields(tokenObj, out, mode);
     outcome.tokens = out;
+  }
+
+  // v1.4 加法字段 call_id：与对应请求的 action.call_id 配对。
+  const outcomeCallId = optionalString(obj['call_id'], `${at}.call_id`);
+  if (outcomeCallId !== undefined) {
+    outcome.call_id = outcomeCallId;
   }
 
   carryUnknownFields(obj, outcome, mode);
@@ -416,6 +428,21 @@ export function parseExperience(raw: unknown, mode: ParseMode = 'read'): Experie
       }
       if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
         fail('experience.tick 必须是非负整数');
+      }
+      return value;
+    })(),
+    // v1.4 加法字段 char_count：全量 raw_text 码点长度（含工具轮）。
+    // **恒赋值**（缺失归一为 null）—— 它是「可空加法字段」而非「可选字段」：
+    // null = 旧数据/未统计/原文端口读不到，两种语义都落在同一个 null 上，
+    // 调用方不必区分「键不存在」与「键为 null」（对齐 event.effective_chars/raw_chars）。
+    // 仅允许非负 number 或 null；负数与非数字当场拒收。
+    char_count: (() => {
+      const value = obj['char_count'];
+      if (value === undefined || value === null) {
+        return null;
+      }
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        fail('experience.char_count 必须是非负数或 null');
       }
       return value;
     })(),
@@ -474,6 +501,7 @@ export function parseExperience(raw: unknown, mode: ParseMode = 'read'): Experie
     'occurred_at',
     'recorded_at',
     'tick',
+    'char_count',
     'marks',
     'pointers',
   ]);

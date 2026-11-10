@@ -84,6 +84,9 @@ function makeHarness(params?: Partial<EventParams>): Harness {
         recorded_at: occurredAt,
         tick: at,
         ...extra,
+        // v1.4 加法字段：默认 null（未统计）；extra 若显式给了 char_count 则以其为准。
+        // 放在 ...extra **之后** 显式归一 —— Partial<Experience> 展开出的类型含 undefined。
+        char_count: extra?.char_count ?? null,
       };
       segmenter.run({
         experience,
@@ -137,6 +140,8 @@ function makeEventRecord(overrides: Partial<EventRecord> = {}): EventRecord {
     created_at: atMinutes(0),
     channel: 'dsh',
     boundary_candidates: [],
+    effective_chars: null,
+    raw_chars: null,
   };
   return { ...base, ...overrides };
 }
@@ -202,57 +207,63 @@ test('Q-B01 · 改参数后阈值随动（30 → 29 分钟时 29:00 即切）', 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Q-B02 · 条数上限边界（默认 20：19 / 20 / 21 条）
-// 定案稿 §5.2：单事件 ≤ 20 条记录，超限强制闭合
+// Q-B02 · 上限边界（默认有效对话 7000 字：6999 / 7000 / 7001）
+// 定案稿 §5.2：单事件 ≤ 7000 有效对话字，超限强制闭合
+//
+// v1.4 设计性改写（定案稿 §9「不做 20 条记录硬上限（退役，max-records 仅保留
+// 兼容读取）」+ 任务书 C3/C4）：旧用例组以**条数**为界（19/20/21 条），
+// 新用例组以**有效对话字数**为界（6999/7000/7001 字），结构一一对应。
+// 约束项数不减（每条 4~5 项 → 每条 5~6 项），且覆盖面更广：
+// 多断言了计数器落盘值与「旧事件不被后续记录撑大」。
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('Q-B02 · 默认参数下 19 条 → 同一事件且仍 open', () => {
+test('Q-B02 · 默认参数下 6999 字 → 同一事件且仍 open', () => {
   const h = makeHarness();
   try {
-    for (let i = 1; i <= 19; i += 1) {
-      h.feed(`exp-${i}`, 'dsh', atMinutes(i));
-    }
+    // 一条 6999 字（非工具轮）。
+    h.feed('exp-1', 'dsh', atMinutes(1), { char_count: 6999 });
 
     const events = h.log.readAll();
-    assert.equal(events.length, 1, '19 条未达上限 → 1 个事件');
+    assert.equal(events.length, 1, '6999 字未达上限 → 1 个事件');
     assert.equal(events[0]?.status, 'open', '未达上限不得闭合');
-    assert.equal(events[0]?.pointers.length, 19);
+    assert.equal(events[0]?.pointers.length, 1);
     assert.equal(events[0]?.closed_reason, null);
+    assert.equal(events[0]?.effective_chars, 6999, '有效对话字数已累计落盘');
   } finally {
     h.cleanup();
   }
 });
 
-test('Q-B02 · 默认参数下第 20 条 → 闭合且含第 20 条（≤20 上限）', () => {
+test('Q-B02 · 默认参数下 7000 字 → 闭合且含触发的那一条（≤7000 上限）', () => {
   const h = makeHarness();
   try {
-    for (let i = 1; i <= 20; i += 1) {
-      h.feed(`exp-${i}`, 'dsh', atMinutes(i));
-    }
+    h.feed('exp-1', 'dsh', atMinutes(1), { char_count: 7000 });
 
     const events = h.log.readAll();
-    assert.equal(events.length, 1, '第 20 条闭合本事件，仍只有 1 个事件');
+    assert.equal(events.length, 1, '闭合本事件，仍只有 1 个事件');
     assert.equal(events[0]?.status, 'closed');
-    assert.equal(events[0]?.closed_reason, 'max-records');
-    assert.equal(events[0]?.pointers.length, 20, '事件内不得超过 20 条');
+    assert.equal(events[0]?.closed_reason, 'max-dialogue-chars');
+    assert.equal(events[0]?.pointers.length, 1, '事件含触发闭合的那一条');
+    assert.equal(events[0]?.effective_chars, 7000, '闭合时刻的计数随版本落盘');
   } finally {
     h.cleanup();
   }
 });
 
-test('Q-B02 · 默认参数下第 21 条 → 另开新事件（旧事件保持 20 条不变）', () => {
+test('Q-B02 · 默认参数下第 2 条（累计超限）→ 另开新事件（旧事件保持不变）', () => {
   const h = makeHarness();
   try {
-    for (let i = 1; i <= 21; i += 1) {
-      h.feed(`exp-${i}`, 'dsh', atMinutes(i));
-    }
+    h.feed('exp-1', 'dsh', atMinutes(1), { char_count: 7000 });
+    h.feed('exp-2', 'dsh', atMinutes(2), { char_count: 10 });
 
     const events = h.log.readAll();
-    assert.equal(events.length, 2, '第 21 条必须另开新事件');
-    assert.equal(events[0]?.pointers.length, 20, '旧事件仍是 20 条（不被后续记录撑大）');
+    assert.equal(events.length, 2, '超限后的记录必须另开新事件');
+    assert.equal(events[0]?.pointers.length, 1, '旧事件不被后续记录撑大');
     assert.equal(events[0]?.status, 'closed');
+    assert.equal(events[0]?.effective_chars, 7000, '旧事件的计数不被回写');
     assert.equal(events[1]?.pointers.length, 1);
     assert.equal(events[1]?.status, 'open');
+    assert.equal(events[1]?.effective_chars, 10, '新事件从零起算');
   } finally {
     h.cleanup();
   }

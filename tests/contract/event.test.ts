@@ -80,6 +80,8 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
     created_at: '2026-11-08T10:30:00.000Z',
     channel: 'dsh',
     boundary_candidates: [],
+    effective_chars: null,
+    raw_chars: null,
   };
   return { ...base, ...overrides };
 }
@@ -415,7 +417,16 @@ test('红线自检：topic_lines 第一期恒空、anchors 无消费者（src/ �
 test('闭合原因：封闭枚举取值为全集，null 表示未被机械信号闭合', () => {
   assert.deepEqual(
     [...EVENT_CLOSED_REASONS],
-    ['silence', 'max-records', 'task-closure', 'channel-switch'],
+    [
+      'silence',
+      // v1.4：条数上限退役 → 仅保留为兼容值（新代码不再产生，写模式仍接受旧数据）。
+      'max-records',
+      'task-closure',
+      'channel-switch',
+      // v1.4 新增：有效对话字数上限 / 硬保险丝（定案稿 §5.2）。
+      'max-dialogue-chars',
+      'max-chars',
+    ],
     '闭合原因是封闭枚举：边界的机械事实，不含分数/权重/置信度',
   );
 

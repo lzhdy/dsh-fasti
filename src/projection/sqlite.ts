@@ -359,8 +359,9 @@ export class SqliteProjection implements ProjectionEngine {
          id, version, status, channel, started_ms, ended_ms, assembled_ms,
          summary, summary_quality, summary_source, summary_prompt_version, summary_model,
          key_points, anchors, topic_lines, boundary_candidates,
-         pointer_count, merged_into, split_into, created_by, created_at_ms)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         pointer_count, merged_into, split_into, created_by, created_at_ms,
+         effective_chars, raw_chars)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          version=excluded.version, status=excluded.status, channel=excluded.channel,
          started_ms=excluded.started_ms, ended_ms=excluded.ended_ms, assembled_ms=excluded.assembled_ms,
@@ -371,7 +372,8 @@ export class SqliteProjection implements ProjectionEngine {
          key_points=excluded.key_points, anchors=excluded.anchors, topic_lines=excluded.topic_lines,
          boundary_candidates=excluded.boundary_candidates, pointer_count=excluded.pointer_count,
          merged_into=excluded.merged_into, split_into=excluded.split_into,
-         created_by=excluded.created_by, created_at_ms=excluded.created_at_ms
+         created_by=excluded.created_by, created_at_ms=excluded.created_at_ms,
+         effective_chars=excluded.effective_chars, raw_chars=excluded.raw_chars
        WHERE excluded.version > event.version`,
     ).run(
       stored.id,
@@ -395,6 +397,8 @@ export class SqliteProjection implements ProjectionEngine {
       stored.split_into,
       stored.created_by,
       stored.created_at_ms,
+      stored.effective_chars,
+      stored.raw_chars,
     );
   }
 
@@ -414,7 +418,8 @@ export class SqliteProjection implements ProjectionEngine {
       `SELECT id, version, status, channel, started_ms, ended_ms, assembled_ms,` +
       ` summary, summary_quality, summary_source, summary_prompt_version, summary_model,` +
       ` key_points, anchors, topic_lines,` +
-      ` boundary_candidates, pointer_count, merged_into, split_into, created_by, created_at_ms` +
+      ` boundary_candidates, pointer_count, merged_into, split_into, created_by, created_at_ms,` +
+      ` effective_chars, raw_chars` +
       ` FROM event${where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''}` +
       ` ORDER BY started_ms ASC, id ASC`;
 

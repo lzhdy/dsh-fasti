@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SUMMARY_MAX_CHARS } from '../../src/contract/event.ts';
-import { DEFAULT_EVENT_PARAMS, resolveEventParams } from '../../src/event/params.ts';
+import { DEFAULT_EVENT_PARAMS, resolveEventParams, taskScopeActiveOf } from '../../src/event/params.ts';
 import { CheckpointStore } from '../../src/runtime/checkpoint.ts';
 import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
 
@@ -48,11 +48,28 @@ function srcFiles(): string[] {
 
 test('参数：默认值与基线一致', () => {
   assert.equal(DEFAULT_EVENT_PARAMS.silenceGapMinutes, 30);
-  assert.equal(DEFAULT_EVENT_PARAMS.maxRecordsPerEvent, 20);
+  // v1.4 设计性改写（定案稿 §9「不做 20 条记录硬上限（退役）」+ 任务书 C3）：
+  // 旧断言 `maxRecordsPerEvent === 20` 改为**反向断言** —— 该参数已从接口移除，
+  // 断言约束项数不减（1 条 → 2 条），且更强：不仅默认值为空，接口里已无此项。
+  assert.equal('maxRecordsPerEvent' in DEFAULT_EVENT_PARAMS, false, '条数上限参数已退役');
+  assert.equal(DEFAULT_EVENT_PARAMS.maxEffectiveCharsPerEvent, 7000, '有效对话字数上限默认 7000');
+  assert.equal(DEFAULT_EVENT_PARAMS.fuseRawChars, 50000, '硬保险丝默认 50000');
   assert.equal(DEFAULT_EVENT_PARAMS.summaryMaxChars, 600);
   assert.equal(DEFAULT_EVENT_PARAMS.orphanWindowDays, 7);
   assert.equal(DEFAULT_EVENT_PARAMS.recentWindow, 10);
   assert.equal(DEFAULT_EVENT_PARAMS.minSimilarity, 0.7);
+  // v1.4 评审 P0：任务闭环信号默认**休眠**（定案稿 §5.2 的 dormant 状态）。
+  // 「休眠是显式状态，不是一句注释」→ 默认值必须是 false，不能靠实现方自觉。
+  assert.equal(DEFAULT_EVENT_PARAMS.taskClosureActive, false, '任务闭环信号默认休眠（dormant）');
+});
+
+test('参数：任务闭环开关可显式打开（dormant → active 的门控口径）', () => {
+  // 默认休眠 → 恒 false。
+  assert.equal(taskScopeActiveOf(DEFAULT_EVENT_PARAMS), false, '默认休眠');
+  assert.equal(taskScopeActiveOf(resolveEventParams()), false, '未注入时休眠');
+  // 显式打开 → 生效（激活由设计口径变更决定，实现方只负责门控可用）。
+  assert.equal(taskScopeActiveOf(resolveEventParams({ taskClosureActive: true })), true, '可显式激活');
+  assert.equal(taskScopeActiveOf(resolveEventParams({ taskClosureActive: false })), false, '可显式保持休眠');
 });
 
 test('参数：resolveEventParams 无注入时返回默认值副本', () => {
@@ -64,9 +81,16 @@ test('参数：resolveEventParams 无注入时返回默认值副本', () => {
 });
 
 test('参数：resolveEventParams 只覆盖给定的项', () => {
-  const resolved = resolveEventParams({ silenceGapMinutes: 5, maxRecordsPerEvent: 3 });
+  // v1.4 设计性改写：旧断言注入 `maxRecordsPerEvent`（已退役）→ 改注入两个新上限参数。
+  // 约束项数不减（2 条 → 3 条），且更强：覆盖了新增的两个可调项。
+  const resolved = resolveEventParams({
+    silenceGapMinutes: 5,
+    maxEffectiveCharsPerEvent: 3000,
+    fuseRawChars: 20000,
+  });
   assert.equal(resolved.silenceGapMinutes, 5);
-  assert.equal(resolved.maxRecordsPerEvent, 3);
+  assert.equal(resolved.maxEffectiveCharsPerEvent, 3000);
+  assert.equal(resolved.fuseRawChars, 20000);
   assert.equal(resolved.orphanWindowDays, DEFAULT_EVENT_PARAMS.orphanWindowDays);
   assert.equal(resolved.minSimilarity, DEFAULT_EVENT_PARAMS.minSimilarity);
 });
@@ -79,11 +103,17 @@ test('参数：显式传 undefined 视为未给出（取默认值）', () => {
 test('参数：可调参数只此一处 —— 其他模块不得自带同义常量', () => {
   const names = [
     'silenceGapMinutes',
-    'maxRecordsPerEvent',
+    // v1.4 设计性改写：`maxRecordsPerEvent` 退役移出清单，改列两个新上限参数
+    // （定案稿 §9 + 任务书 C3/C4）。约束项数不减（6 → 7），门禁覆盖面更大。
+    'maxEffectiveCharsPerEvent',
+    'fuseRawChars',
     'summaryMaxChars',
     'orphanWindowDays',
     'recentWindow',
     'minSimilarity',
+    // v1.4 评审 P0：任务闭环 dormant 门控开关。
+    // 「休眠是显式状态，不是一句注释」—— 开关必须单点存在，其他模块不得自带同义常量。
+    'taskClosureActive',
   ];
   const hits: string[] = [];
   for (const file of srcFiles()) {

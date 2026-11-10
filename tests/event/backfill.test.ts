@@ -42,6 +42,7 @@ function experience(
     occurred_at: occurredAt,
     recorded_at: occurredAt,
     tick,
+    char_count: null,
   };
 }
 
@@ -85,8 +86,65 @@ function seedExperiences(root: string, rows: Experience[]): void {
   );
 }
 
-/** 把事件写进事件真源（原始 JSONL + manifest，不另开 EventLog 实例）。 */
-function seedEvents(root: string, rows: EventRecord[]): void {
+/**
+ * 造一份**带原文层**的样例（供 v1.4 的历史计数补齐用例）。
+ *
+ * 经历带 `observation.text` 指针（指向原文行 id），原文层按通道写 JSONL。
+ * 原文正文刻意长短不一：一条普通对话 + 一条工具调用步载荷（JSON）。
+ */
+function seedWithRawTurns(
+  root: string,
+  rows: Experience[],
+  rawTexts: ReadonlyMap<string, string>,
+): void {
+  // 经历：补上原文指针。
+  const withPointer = rows.map((row) => ({
+    ...row,
+    observation: {
+      ...row.observation,
+      text: { id: row.id, channel: row.scene.channel },
+    },
+  }));
+  seedExperiences(root, withPointer);
+
+  // 原文层：按通道写。
+  const byChannel = new Map<string, Array<{ event_id: string; raw_text: string }>>();
+  for (const row of rows) {
+    const text = rawTexts.get(row.id) ?? `原文 ${row.id}`;
+    const list = byChannel.get(row.scene.channel) ?? [];
+    list.push({ event_id: row.id, raw_text: text });
+    byChannel.set(row.scene.channel, list);
+  }
+  for (const [channel, turns] of byChannel) {
+    const dir = channel === 'dsh' ? layoutOf(root).rawTurns : path.join(layoutOf(root).raw, channel);
+    fs.mkdirSync(dir, { recursive: true });
+    const shard = '2026-11';
+    fs.writeFileSync(
+      path.join(dir, `${shard}.jsonl`),
+      `${turns
+        .map((turn) =>
+          JSON.stringify({
+            event_id: turn.event_id,
+            session_id: 'session-1',
+            turn_id: turn.event_id,
+            speaker: 'user',
+            raw_text: turn.raw_text,
+            asserted_at: '2026-11-01T10:00:00.000Z',
+            ingested_at: '2026-11-01T10:00:00.000Z',
+          }),
+        )
+        .join('\n')}\n`,
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(dir, 'manifest.json'),
+      `${JSON.stringify({ version: 1, months: [shard] }, null, 2)}\n`,
+      'utf8',
+    );
+  }
+}
+
+/** 把事件写进事件真源（原始 JSONL + manifest，不另开 EventLog 实例）。 */function seedEvents(root: string, rows: EventRecord[]): void {
   const dir = layoutOf(root).events;
   fs.mkdirSync(dir, { recursive: true });
   const byShard = new Map<string, EventRecord[]>();
@@ -427,6 +485,161 @@ test('回填 · CLI：--help / --json / --apply 三条路径都通', () => {
     assert.equal(applyReport.mode, 'apply');
     assert.equal(applyReport.created.events, 4);
     assert.ok(eventRows(root).length > 0, 'apply 后事件真源有行');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+// ── v1.4 · C11：两计数器预演 + reason 统计 + 历史补齐（显式可选）─────────
+
+test('C11 · dry-run 报告含两计数器预演值与各 closed_reason 命中统计（全程无写盘）', () => {
+  const root = makeTempRoot('fasti-backfill-caps-');
+  try {
+    seedExperiences(root, TIMELINE);
+
+    const report = backfillEvents({ dataRoot: root });
+
+    // 两计数器预演统计位在报告里（默认未开启历史补齐 → 值为 null）。
+    assert.ok(report.caps !== undefined, '报告含 caps 统计');
+    assert.equal(report.caps.max_dialogue_chars, 0, '有效对话字数上限命中数');
+    assert.equal(report.caps.max_chars, 0, '硬保险丝命中数');
+    assert.equal(report.caps.max_effective_chars, null, '未开启补齐 → 未统计');
+    assert.equal(report.caps.max_raw_chars, null, '未开启补齐 → 未统计');
+
+    // reason 统计：回填是批处理，末段也以 silence 收尾（批次有终点）。
+    assert.ok(report.reason_stats !== undefined, '报告含 reason 统计');
+    assert.ok((report.reason_stats['silence'] ?? 0) >= 1, 'silence 有命中');
+    assert.equal(
+      Object.values(report.reason_stats).reduce((sum, n) => sum + n, 0),
+      report.segments.length,
+      'reason 统计覆盖全部段（一次只写一个原因）',
+    );
+
+    // 逐段明细带上两计数器字段。
+    for (const segment of report.segments) {
+      assert.ok('effective_chars' in segment, '逐段明细含 effective_chars');
+      assert.ok('raw_chars' in segment, '逐段明细含 raw_chars');
+    }
+
+    // 试运行全程无写盘。
+    assert.equal(report.mode, 'dry-run');
+    assert.equal(fs.existsSync(layoutOf(root).events), false, '试运行不建事件目录');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('C11 · 历史计数补齐默认关闭（不开选项 → 计数器仍未统计）', () => {
+  const root = makeTempRoot('fasti-backfill-off-');
+  try {
+    seedExperiences(root, TIMELINE);
+    const report = backfillEvents({ dataRoot: root });
+    assert.equal(report.caps.max_effective_chars, null, '默认不补齐');
+    assert.equal(report.caps.max_raw_chars, null, '默认不补齐');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('C11 · 开启历史计数补齐 → 两计数器有预演值，且真源记录一个字节都不改', () => {
+  const root = makeTempRoot('fasti-backfill-on-');
+  try {
+    // 带原文层的样例：正文长短不一，其中一条是工具调用步载荷。
+    seedWithRawTurns(
+      root,
+      TIMELINE,
+      new Map([
+        ['exp-a', '她问今天吃什么'],
+        ['exp-b', '我列了三个选项'],
+        ['exp-c', JSON.stringify({ name: 'web_fetch', arguments: { url: 'x' }, callId: 'c1' })],
+        ['exp-d', '她打开了一篇论文'],
+        ['exp-e', '她读完了第一页'],
+        ['exp-f', '她合上了论文'],
+      ]),
+    );
+    const before = fs.readFileSync(
+      path.join(layoutOf(root).experiences, '2026-11.jsonl'),
+      'utf8',
+    );
+
+    const report = backfillEvents({ dataRoot: root, backfillCounts: true });
+
+    // 补齐后两计数器有值（历史记录本来没有 char_count）。
+    assert.ok((report.caps.max_effective_chars ?? 0) > 0, '补齐后有有效对话字数');
+    assert.ok((report.caps.max_raw_chars ?? 0) > 0, '补齐后有 raw 全量字符');
+    // 工具轮只进 raw_chars、不进 effective_chars → raw 明显更大。
+    assert.ok(
+      (report.caps.max_raw_chars ?? 0) > (report.caps.max_effective_chars ?? 0),
+      '工具轮计入 raw_chars 但不进 effective_chars',
+    );
+    // 两个上限仍零触发（这批样例很小）。
+    assert.equal(report.caps.max_dialogue_chars, 0);
+    assert.equal(report.caps.max_chars, 0);
+
+    // 真源记录一个字节都不改（补齐只喂沙箱）。
+    const after = fs.readFileSync(
+      path.join(layoutOf(root).experiences, '2026-11.jsonl'),
+      'utf8',
+    );
+    assert.equal(after, before, 'experiences 一个字节都不改');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('C11 · 新阈值只作用于新切出的事件 —— 既有事件不重切、不重算', () => {
+  const root = makeTempRoot('fasti-backfill-existing-');
+  try {
+    seedExperiences(root, TIMELINE);
+
+    // 第一轮：补齐出事件。
+    const first = backfillEvents({ dataRoot: root, apply: true });
+    assert.ok(first.created.events > 0, '第一轮补出了事件');
+
+    // 记下既有事件真源的分片内容。
+    const eventsDir = layoutOf(root).events;
+    const shardFiles = fs
+      .readdirSync(eventsDir)
+      .filter((name) => name.endsWith('.jsonl'))
+      .map((name) => fs.readFileSync(path.join(eventsDir, name), 'utf8'));
+    assert.ok(shardFiles.length > 0, '事件真源有分片');
+
+    // 第二轮：既有事件全覆盖 → 不重切、不重算（不新增任何事件）。
+    const second = backfillEvents({ dataRoot: root, apply: true, backfillCounts: true });
+    assert.equal(second.created.events, 0, '既有事件不重切（不产生新事件）');
+    assert.equal(second.existing.untouched, true, '既有事件字节级未变');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('C11 · CLI：--backfill-counts 选项存在且默认关闭（帮助文本写明）', () => {
+  const root = makeTempRoot('fasti-backfill-cli2-');
+  try {
+    seedWithRawTurns(
+      root,
+      TIMELINE,
+      new Map(TIMELINE.map((row) => [row.id, `原文 ${row.id}`])),
+    );
+    const help = execFileSync(process.execPath, [SCRIPT, '--help'], { encoding: 'utf8' });
+    assert.match(help, /--backfill-counts/, '帮助里有这个选项');
+    assert.match(help, /默认关闭/, '帮助里写明默认关闭');
+
+    // 不传该选项 → 计数器未统计。
+    const dry = JSON.parse(
+      execFileSync(process.execPath, [SCRIPT, '--data-root', root, '--json'], { encoding: 'utf8' }),
+    ) as { caps: { max_effective_chars: number | null } };
+    assert.equal(dry.caps.max_effective_chars, null, '默认关闭');
+
+    // 传该选项 → 计数器有值。
+    const withCounts = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [SCRIPT, '--data-root', root, '--json', '--backfill-counts'],
+        { encoding: 'utf8' },
+      ),
+    ) as { caps: { max_effective_chars: number | null } };
+    assert.ok((withCounts.caps.max_effective_chars ?? 0) > 0, '开启后有预演值');
   } finally {
     cleanupTempRoot(root);
   }
