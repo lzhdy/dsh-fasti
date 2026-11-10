@@ -1,0 +1,19 @@
+# dsh-fasti 宿主胶水包的 bundle patch。
+# 与 dsh-fasti-accept 薄封装同一 insert id（fasti），在 web profile 的
+# bundle 清单中二者互替：本包接上宿主 LLM，accept 包保持无路由降级形态。
+#
+# 需要让事件摘要与聊天默认模型分流时，在 config 下加 summaryRoute，例如：
+#   config:
+#     dataRoot: '/home/user/.dsh/fasti'
+#     channel: 'dsh'
+#     summaryRoute:
+#       provider: 'deepseek-account'
+#       model: 'deepseek-flash'
+#       reasoningEffort: 'off'
+# 三个键都可选；整段不写则摘要跟随当前默认模型选择。
+- insert:
+    - id: fasti
+      name: 'dsh-fasti-dsh-glue'
+      config:
+        dataRoot: '/home/user/.dsh/fasti'
+        channel: 'dsh'

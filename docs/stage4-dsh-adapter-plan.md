@@ -582,3 +582,69 @@ dsh 有两条 deepseek 接入：`dsh-llm-deepseek-api-key`（PROVIDER `deepseek-
 
 - 非 text 块（图片/文件附件）路径：真机上未构造该场景，仅由单元测试覆盖；
 - 多通道（qq / browser / camera）：阶段 6 验证。
+
+## 14. 宿主 LLM 胶水落地（2026-11-10）
+
+### 14.1 背景：真机确认的「无路由即降级」
+
+真机 web profile 运行时确认：profile 组合从未注入 `modelRoute`，`plugin.ts`
+据此把摘要端口置为 `null`，闭合管线清道夫不给 pending 事件入队（`closure.ts`
+端口判空分支），8 个回填闭合事件长期 `pending` 且零报错。这是 §13.3 ① 预期的
+如实降级，不是故障；接通真实模型需要一层宿主胶水。
+
+### 14.2 仓库内改动（内核零新依赖）
+
+- 新增 `src/adapters/dsh/host-model-route.ts`，导出工厂
+  `createDshHostModelRoute(ctx, options?)`：把 `DshModelRoute.complete()` 翻译成
+  宿主标准范式 `ctx.llm.prepareCall → stream → BlockAssembler`（与宿主内置
+  `dsh-session-title-llm` 同一装配纪律），只拼 `text` 块，reasoning 块不进正文；
+  流正常结束但零文本抛 `UnavailableError`，其余上游错误原样上抛交端口层重试。
+- 路由来源两级：`options` 显式固定（provider/model/reasoningEffort 三键可选）
+  则恒定走固定路由；缺省每次现读 `ctx.agentDefaultModel.currentSelection()`
+  跟随当前默认模型。内核传入的 `model` 优先级最高。
+- `@deepseek-ai/dsh-llm` 以 peerDependency 引入（与 cordis 同层），
+  `dependencies` 仍为空，A 内核零生产依赖不变；常量不新增，超时仍走 params 单点。
+- 新增 `tests/adapters/dsh/host-model-route.test.ts` 8 条单测（桩 ctx + 真实
+  StreamChunk 形状），全量 502 测试通过。
+
+### 14.3 部署包：integrations/dsh-host-glue
+
+与 `dsh-fasti-accept` 同构的薄封装包（package.json / index.js /
+cordis.patch.yml），对象插件声明 `inject: ['llm', 'agentDefaultModel']`，
+在服务就绪后构造路由并装载适配器；引用仓库编译产物绝对路径的约定不变。
+web profile 的 bundle 清单以本包替换 accept 包即接通；headless profile 不动，
+继续无凭据降级。回滚 = 换回 accept 条目，真源数据零接触。
+
+### 14.4 提供方无关与聊天/摘要分流
+
+工厂不识别任何具体提供方：dsh-base 已挂载的云端账号（`deepseek-account`）、
+API key（`dsh-llm-deepseek-api-key`，支持自定义 baseURL）、多提供方适配器
+（`dsh-llm-pi-ai`，支持 openai-completions / openai-responses /
+anthropic-messages 与本地自托管端点）均靠路由中的 provider 名分发，多个适配器
+可同时注册。故「聊天本地、摘要云端」与反向分流都只需在胶水包 patch 配
+`summaryRoute`，不改代码、不重启聊天链路；固定路由不可用时摘要按既有退避重试
+pending，聊天主链路不受影响。
+
+### 14.5 事件投影的新鲜度修复（真机反向暴露的既有缺口）
+
+**现象（与胶水无关）**：胶水接通后真源 9 个事件全部 `summary_quality=ready`，
+但 `projection/fasti.sqlite` 的 event 表 9 行仍是 `pending`、`summary` 为 NULL，
+且逐事件比对恰比真源滞后一个版本。
+
+**根因**：事件投影原先只作为摄入流水线的 `event-projection` stage 运行，
+靠内存 `t14ProjectedVersions` 跳过未变事件。而静默时钟闭合与摘要装配都发生在
+宿主后台 worker（`checkSilenceClock` / `drainClosure`），这两个写点只更新事件真源、
+不触发投影同步，于是投影要等下一次摄入（或手动 rebuild）才追平。长会话里几小时
+不摄入一次，投影就会长期陈旧。
+
+**修法**（两处，均只调既有 `syncEventProjection()`，不改真源逻辑）：
+- `checkSilenceClock` 是同步契约，闭合入队后点火即走（`void ... .catch(() => {})`）；
+  内部已吞错并置 `needs_rebuild`，最坏结果是投影陈旧，不阻断闭合；
+- `drainClosure` 是异步，摘要出完后 `await` 一次，保证 ready 版本当轮折进投影。
+
+**验证**：新增 `tests/api/event-projection-sync.test.ts` 两条回归（临时撤掉修复可
+稳定复现「等待超时」，恢复后 32ms 内通过）；全量 504 测试通过。真机上重启后
+投影即时追平，真源与投影零差异。
+
+**纪律不变**：真源是唯一权威，投影只是可重建的缓存；同步失败只标记重建，不回滚、
+不改写真源。

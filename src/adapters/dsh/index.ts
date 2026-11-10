@@ -39,4 +39,11 @@ export {
   type DshModelRoute,
 } from './llm.ts';
 
+export {
+  createDshHostModelRoute,
+  type DshHostModelContext,
+  type DshHostRouteOptions,
+  type HostModelSelection,
+} from './host-model-route.ts';
+
 export { default } from './plugin.ts';

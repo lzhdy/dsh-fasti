@@ -609,6 +609,11 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
       this.t8Closure.enqueue(closed.id);
     }
     this.refreshPendingEvents();
+    // 闭合写的是事件真源的新版本；投影跟进不能只靠下一轮摄入
+    // （长会话里可能几小时不摄入一次，SQLite 会一直停在旧版本）。
+    // 本条路径是同步契约，故点火即走：内部已吞错并标记 needs_rebuild，
+    // 失败最多是投影陈旧，不阻断闭合也不回滚真源。
+    void this.syncEventProjection().catch(() => {});
     return closedCount;
   }
 
@@ -662,6 +667,10 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
     if (processed > 0) {
       // 摘要出完后待补数会变小 —— 同步回检查点，别让运维看到一个只增不减的数。
       this.refreshPendingEvents();
+      // 摘要装配写的是事件真源的新版本。这一步若不做，投影只能等下一轮摄入
+      // 才追平 —— 真机实测表现为「jsonl 已 ready，SQLite 仍 pending 且版本差 1」。
+      // 真源始终权威，这里的失败只让投影陈旧，不影响摘要结果。
+      await this.syncEventProjection();
     }
     return processed;
   }
