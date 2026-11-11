@@ -17,8 +17,8 @@
 import { ConflictError, CorruptedError, NotFoundError, SchemaError } from '../core/errors.ts';
 import { isoToMs, msToIso } from '../core/time.ts';
 import { defaultUlid } from '../core/ulid.ts';
-import { EVENT_FIELDS, EVENT_SCHEMA_VERSION, parseEvent } from '../contract/event.ts';
-import type { EventPointer, EventRecord, EventTimeRange } from '../contract/event.ts';
+import { EVENT_FIELDS, EVENT_SCHEMA_VERSION, EventOpenConflictError, parseEvent } from '../contract/event.ts';
+import type { EventOpenConflictBlocking, EventPointer, EventRecord, EventTimeRange } from '../contract/event.ts';
 import type { Experience } from '../contract/experience.ts';
 import type { EventLog } from '../source/event-log.ts';
 
@@ -76,6 +76,21 @@ export interface ReviseBoundaryResult {
 export interface ReopenInput {
   /** 事件 id。 */
   readonly eventId: string;
+}
+
+/**
+ * 组合入参：先手动闭合进行中的 `closeId`（A），再重开同通道已闭合的 `reopenId`（B）。
+ * 两个 id 不得相同，且必须落在同一通道。
+ */
+export interface CloseAndReopenInput {
+  readonly closeId: string;
+  readonly reopenId: string;
+}
+
+/** 组合结果：被她手动闭合的 A 与被重开的 B 的新版本当前态。 */
+export interface CloseAndReopenResult {
+  readonly closed: EventRecord;
+  readonly reopened: EventRecord;
 }
 
 /** 重写摘要入参：她手写摘要。 */
@@ -437,12 +452,18 @@ export class EventCorrector {
     return { event: this.log.currentOf(current.id) };
   }
 
-  /** 重开：closed → open，写新版本；不重跑（摘要仍覆盖原指针）。 */
+  /**
+   * 重开：closed → open，写新版本；不重跑（摘要仍覆盖原指针）。
+   *
+   * 前置闸（#36）：同通道若已有另一个进行中的 open 事件，抛 EventOpenConflictError
+   * 且不写任何版本 —— 系统不替她闭合那个事件，由她显式选择下一步（见 closeAndReopen）。
+   */
   reopen(input: ReopenInput): EventRecord {
     const current = this.log.currentOf(input.eventId);
     if (current.status !== 'closed') {
       throw new ConflictError(`只有 closed 事件可以重开：${input.eventId}（当前 ${current.status}）`);
     }
+    this.assertNoOpenBlocker(current);
 
     const next: EventRecord = {
       ...current,
@@ -455,6 +476,95 @@ export class EventCorrector {
     };
     this.log.appendVersion(next);
     return this.log.currentOf(current.id);
+  }
+
+  /**
+   * 手动闭合一个 open 事件（**内部能力**，本期不开放独立门面原语）。
+   *
+   * 与切分器机械闭合的区别：closed_reason='manual'、created_by='her'，记录这是她显式
+   * 结束一件事，而非 silence/channel-switch 等机械信号。闭合后请求派生字段重跑兜底摘要。
+   *
+   * 留痕（#36 评审）：未来若要开门面「仅手动闭合」原语，须走独立评审 —— 它会让
+   * 「闭合 → 重开」的通道冲突循环重新出现，需要先想清楚独立 UX 与冲突处理，不能顺手暴露。
+   */
+  closeOpen(eventId: string): EventRecord {
+    const current = this.log.currentOf(eventId);
+    if (current.status !== 'open') {
+      throw new ConflictError(`只有 open 事件可以手动闭合：${eventId}（当前 ${current.status}）`);
+    }
+    const next: EventRecord = {
+      ...current,
+      version: current.version + 1,
+      status: 'closed',
+      // manual = 人显式操作闭合（非机械信号）；是谁操作看 created_by。
+      closed_reason: 'manual',
+      created_by: 'her',
+      created_at: msToIso(this.now()),
+    };
+    const saved = this.log.appendVersion(next).record;
+    this.requestRerun(saved.id);
+    return saved;
+  }
+
+  /**
+   * 她显式授权的一键组合：先手动闭合 A，再重开 B。
+   *
+   * 原子性：**先全部校验、再顺序写入**，任一前提不满足即抛错且不写任何版本，杜绝
+   * 「A 已闭合、B 却重开失败」的半程态。门面所有写原语经同一个串行 WriterQueue，
+   * 两个并发组合任务不会交错（单写者；跨进程锁归 E 块，本期 local-first 单实例）。
+   */
+  closeAndReopen(input: CloseAndReopenInput): CloseAndReopenResult {
+    if (input.closeId === input.reopenId) {
+      throw new SchemaError(`closeId 与 reopenId 不能是同一事件：${input.closeId}`);
+    }
+    const closeTarget = this.log.currentOf(input.closeId);
+    const reopenTarget = this.log.currentOf(input.reopenId);
+    if (closeTarget.status !== 'open') {
+      throw new ConflictError(`待闭合事件必须是 open：${input.closeId}（当前 ${closeTarget.status}）`);
+    }
+    if (reopenTarget.status !== 'closed') {
+      throw new ConflictError(`待重开事件必须是 closed：${input.reopenId}（当前 ${reopenTarget.status}）`);
+    }
+    if (closeTarget.channel !== reopenTarget.channel) {
+      throw new ConflictError(
+        `闭合与重开事件必须同通道：${input.closeId}@${closeTarget.channel} 与 ${input.reopenId}@${reopenTarget.channel}`,
+      );
+    }
+
+    // 校验通过后才写入：先闭合 A（通道随即没有进行中的 open），再重开 B，其前置闸放行。
+    const closed = this.closeOpen(input.closeId);
+    const reopened = this.reopen({ eventId: input.reopenId });
+    return { closed, reopened };
+  }
+
+  /** 重开前置闸：同通道若另有 open 事件，交付带选项的结构化冲突；target 自身当前是 closed。 */
+  private assertNoOpenBlocker(target: EventRecord): void {
+    const blocker = this.otherOpenOnChannel(target.channel, target.id);
+    if (blocker) {
+      throw new EventOpenConflictError(target.id, this.blockingView(blocker));
+    }
+  }
+
+  /** 找同通道另一个仍 open 的事件；无则 null。真出现多个说明「每通道唯一 open」不变量已被破坏。 */
+  private otherOpenOnChannel(channel: string, selfId: string): EventRecord | null {
+    const opens = this.log.listByStatus('open').filter((e) => e.channel === channel && e.id !== selfId);
+    if (opens.length > 1) {
+      throw new CorruptedError(`通道 ${channel} 同时存在 ${opens.length} 个 open 事件，无法唯一判定重开阻塞方`);
+    }
+    return opens[0] ?? null;
+  }
+
+  /** 从事件当前态投影出 UI 渲染冲突提示所需的客观事实（内核不拼文案）。 */
+  private blockingView(e: EventRecord): EventOpenConflictBlocking {
+    return {
+      eventId: e.id,
+      channel: e.channel,
+      startedAt: e.time_range.started_at,
+      endedAt: e.time_range.ended_at,
+      pointerCount: e.pointers.length,
+      summary: e.summary,
+      summaryReady: e.summary_quality === 'ready',
+    };
   }
 
   /** 重写摘要：她手写摘要 → 新版本、summary_source='her'；旧摘要留版本，不重跑。 */

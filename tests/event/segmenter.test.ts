@@ -1203,3 +1203,87 @@ test('A5c · 工具作用域闭合后紧接 50 轮纯对话 → toolCallSeen 已
     h.cleanup();
   }
 });
+
+// ── 修正后状态接线（落地分析 P1-A / P1-B）────────────────────────────────
+
+test('修正接线：持有非 open 事件时再摄入响亮报错；resyncAfterCorrection 后内存与真源重归一致', () => {
+  const h = makeHarness();
+  try {
+    h.feed('exp-1', 'dsh', atMinutes(0));
+    const openBefore = h.log.listByStatus('open');
+    assert.equal(openBefore.length, 1);
+    const current = openBefore[0]!;
+
+    // 模拟「修正版本已落盘、但切分器尚未接线重算」的脱节态：直接把该事件追加成 merged。
+    h.log.appendVersion({
+      ...current,
+      version: current.version + 1,
+      status: 'merged',
+      merged_into: 'evt-ghost',
+      split_into: undefined,
+      created_by: 'her',
+      created_at: atMinutes(1),
+    });
+
+    // 切分器内存仍持旧 open id —— 守卫必须抢在任何 appendVersion 之前抛错，不复活退役事件。
+    assert.throws(
+      () => h.feed('exp-2', 'dsh', atMinutes(2)),
+      CorruptedError,
+      '在非 open 事件上续写必须响亮失败',
+    );
+
+    // 门面接线动作：按真源当前态重算。该通道已无 open（merged 被排除）。
+    h.segmenter.resyncAfterCorrection();
+
+    // 重算后同通道再摄入按规则 2 另起一个新 open，而退役事件版本数停住、不被复活。
+    h.feed('exp-2', 'dsh', atMinutes(2));
+    const retired = h.log.readAll().find((event) => event.id === current.id);
+    assert.equal(retired?.status, 'merged');
+    const openNow = h.log.readAll().filter((event) => event.status === 'open');
+    assert.equal(openNow.length, 1, '重算后只新建唯一一个新 open 事件');
+    assert.notEqual(openNow[0]?.id, current.id, '新事件不得复用退役 id');
+    assert.deepEqual(pointerIds(openNow[0]), ['exp-2']);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('修正接线：reopen 后 resyncAfterCorrection 让切分器重新接管该通道 open 事件', () => {
+  const h = makeHarness();
+  try {
+    h.feed('exp-1', 'dsh', atMinutes(0));
+    const openBefore = h.log.listByStatus('open');
+    const current = openBefore[0]!;
+
+    // 闭合（模拟静默闭合）后再重开：真源当前态为 open，但切分器内存条目已在闭合时删除。
+    h.log.appendVersion({
+      ...current,
+      version: current.version + 1,
+      status: 'closed',
+      closed_reason: 'silence',
+      created_by: 'system',
+      created_at: atMinutes(1),
+    });
+    h.log.appendVersion({
+      ...h.log.currentOf(current.id),
+      version: current.version + 2,
+      status: 'open',
+      closed_reason: null,
+      created_by: 'her',
+      created_at: atMinutes(2),
+    });
+
+    // 重算前切分器不知道事件已重开；重算后接管，同通道静默窗内再摄入并入而非另起。
+    h.segmenter.resyncAfterCorrection();
+    h.feed('exp-2', 'dsh', atMinutes(3));
+
+    const events = h.log.readAll();
+    assert.equal(events.length, 1, '不得新建第二个 open 事件');
+    const reopened = events[0]!;
+    assert.equal(reopened.id, current.id);
+    assert.equal(reopened.status, 'open');
+    assert.deepEqual(pointerIds(reopened), ['exp-1', 'exp-2'], '新记录并入被重开事件');
+  } finally {
+    h.cleanup();
+  }
+});

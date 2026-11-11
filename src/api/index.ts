@@ -26,6 +26,8 @@ import type { ChannelDescriptor } from '../contract/channel.ts';
 import { parseEvent } from '../contract/event.ts';
 import type { EventDerivedMarks, EventRecord, EventView } from '../contract/event.ts';
 import type {
+  CloseAndReopenEventInput,
+  CloseAndReopenEventResult,
   EventPrimitives,
   EventQueryFilter,
   MergeEventsInput,
@@ -990,6 +992,9 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
         sourceIds: input.sourceIds,
         targetId: input.targetId,
       });
+      // 修正改变了事件当前态（来源退役、新目标 closed）→ 重算切分器内存 open 映射，
+      // 避免它继续持有已退役事件的陈旧 id。五种修正入口统一接这条接线。
+      this.t5Segmenter.resyncAfterCorrection();
       await this.syncEventProjection();
       return { target: result.target, retired: result.retired };
     });
@@ -999,6 +1004,7 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
   async splitEvent(input: SplitEventInput): Promise<SplitEventsResult> {
     return this.queue.run(async () => {
       const result = this.t14Corrector.split({ sourceId: input.sourceId, groups: input.groups });
+      this.t5Segmenter.resyncAfterCorrection();
       await this.syncEventProjection();
       return { retired: result.retired, children: result.children };
     });
@@ -1012,17 +1018,40 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
         removePointerIds: input.removePointerIds,
         addPointerIds: input.addPointerIds,
       });
+      this.t5Segmenter.resyncAfterCorrection();
       await this.syncEventProjection();
       return { event: result.event };
     });
   }
 
-  /** 重开：closed → open，写新版本。 */
+  /**
+   * 重开：closed → open，写新版本。
+   * 同通道已有进行中事件时抛 EventOpenConflictError（不写版本、不自动闭合），
+   * 由她显式改调 closeAndReopenEvent 或 mergeEvents。
+   */
   async reopenEvent(input: ReopenEventInput): Promise<EventRecord> {
     return this.queue.run(async () => {
       const event = this.t14Corrector.reopen({ eventId: input.eventId });
+      this.t5Segmenter.resyncAfterCorrection();
       await this.syncEventProjection();
       return event;
+    });
+  }
+
+  /**
+   * 显式组合原语：先手动闭合同通道进行中的 A（closed_reason='manual'），再重开 B。
+   * 仅在 reopenEvent 报 EventOpenConflictError、她看清提示显式授权后调用；系统从不自动闭合。
+   * 经单写者串行队列（并发组合不交错），成功后重算切分器 open 映射并同步投影。
+   */
+  async closeAndReopenEvent(input: CloseAndReopenEventInput): Promise<CloseAndReopenEventResult> {
+    return this.queue.run(async () => {
+      const result = this.t14Corrector.closeAndReopen({
+        closeId: input.closeId,
+        reopenId: input.reopenId,
+      });
+      this.t5Segmenter.resyncAfterCorrection();
+      await this.syncEventProjection();
+      return { closed: result.closed, reopened: result.reopened };
     });
   }
 
@@ -1033,6 +1062,7 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
         eventId: input.eventId,
         summary: input.summary,
       });
+      this.t5Segmenter.resyncAfterCorrection();
       await this.syncEventProjection();
       return event;
     });

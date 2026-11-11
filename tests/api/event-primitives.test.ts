@@ -254,9 +254,15 @@ test('写原语：改边界换指针并写新版本；重开 closed → open；�
     try {
       await seedExperiences(fasti);
       const log = EventLog.open(layoutOf(root).events);
+      // 手工事件走独立通道 browser：seedExperiences 经门面已让切分器在 dsh 持有一个 open
+      // 事件（含 A/B/C）。若本事件也挂 dsh，下面 reopen 后真源会同通道出现两个 open ——
+      // 那种重复归属只能由绕过门面的旁路直写制造（公开原语有唯一归属闸），现实不发生；
+      // 这里只想验证三个写原语的版本推进，故用通道隔离把无关的双 open 校验撇开。
+      // （reopen 缺「同通道 open 唯一性」前置防线是独立待决项，见落地分析 P1 修复说明。）
       log.appendVersion(
         makeEvent({
           id: 'evt-x',
+          channel: 'browser',
           pointers: [
             { id: EXP_IDS[0], channel: 'dsh' },
             { id: EXP_IDS[1], channel: 'dsh' },

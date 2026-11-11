@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 import { ConflictError, NotFoundError, SchemaError } from '../../src/core/errors.ts';
-import { EVENT_FIELDS, EVENT_SCHEMA_VERSION } from '../../src/contract/event.ts';
+import { EVENT_FIELDS, EVENT_SCHEMA_VERSION, EventOpenConflictError } from '../../src/contract/event.ts';
 import type { EventPointer, EventRecord } from '../../src/contract/event.ts';
 import type { Experience } from '../../src/contract/experience.ts';
 import { EventCorrector, resolveMemoryPointer } from '../../src/event/correction.ts';
@@ -1001,5 +1001,178 @@ test('溯源：改边界 / 她重写摘要 / 新建事件 都清空（或置空�
     assert.equal(merged.target.summary_model, null);
   } finally {
     h.cleanup();
+  }
+});
+
+// ── #36 重开同通道冲突：带选项的拒绝 + 显式组合原语 ────────────────────────
+
+test('#36 reopen：同通道已有 open 事件 → 抛 EventOpenConflictError（结构化载荷）且零写入', () => {
+  const h = makeHarness();
+  try {
+    h.seed({
+      id: 'evt-a',
+      status: 'open',
+      closed_reason: null,
+      pointers: [pointer('r1'), pointer('r2')],
+      summary: null,
+      summary_quality: 'pending',
+      summary_source: null,
+      summary_prompt_version: null,
+      summary_model: null,
+    });
+    h.seed({ id: 'evt-b', status: 'closed', closed_reason: 'silence', pointers: [pointer('r3')] });
+    const before = rowCount(h);
+
+    assert.throws(
+      () => h.corrector.reopen({ eventId: 'evt-b' }),
+      (err: unknown) => {
+        assert.ok(err instanceof EventOpenConflictError, '专用子类，承载结构化选项');
+        assert.ok(err instanceof ConflictError, '错误码路由仍属 CONFLICT（不新增错误码）');
+        assert.equal(err.reopenId, 'evt-b');
+        assert.equal(err.blocking.eventId, 'evt-a');
+        assert.equal(err.blocking.channel, 'dsh');
+        assert.equal(err.blocking.pointerCount, 2, '阻塞事件条数来自其指针长度');
+        assert.equal(err.blocking.summary, null, '后台摘要未生成 → null（UI 显示「摘要未生成」）');
+        assert.equal(err.blocking.summaryReady, false);
+        assert.deepEqual([...err.actions], ['close-then-reopen', 'merge']);
+        return true;
+      },
+    );
+    assert.equal(rowCount(h), before, '带选项的拒绝不写任何版本（行数不变）');
+    assert.equal(h.log.currentOf('evt-a').status, 'open', '系统绝不在重开时自动闭合 A');
+    assert.equal(h.log.currentOf('evt-b').status, 'closed', 'B 维持闭合、未被改动');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('#36 reopen：他通道的 open 事件不构成冲突，本通道重开正常、他通道不受影响', () => {
+  const h = makeHarness();
+  try {
+    h.seed({ id: 'evt-a', status: 'open', closed_reason: null, channel: 'browser', pointers: [pointer('r1')] });
+    h.seed({ id: 'evt-b', status: 'closed', closed_reason: 'silence', channel: 'dsh', pointers: [pointer('r2')] });
+
+    const reopened = h.corrector.reopen({ eventId: 'evt-b' });
+    assert.equal(reopened.status, 'open');
+    assert.equal(h.log.currentOf('evt-a').status, 'open', '他通道 A 原样保持 open');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('#36 closeOpen（内部能力）：open → closed/manual/her 并请求重跑；非 open 拒绝', () => {
+  const h = makeHarness();
+  try {
+    h.seed({ id: 'evt-a', status: 'open', closed_reason: null });
+
+    const closed = h.corrector.closeOpen('evt-a');
+    assert.equal(closed.status, 'closed');
+    assert.equal(closed.closed_reason, 'manual', '人工闭合原因落 manual');
+    assert.equal(closed.created_by, 'her', '显式操作落款为她');
+    assert.equal(closed.version, 2);
+    assert.deepEqual(h.reruns, ['evt-a'], '手动闭合后请求派生字段重跑兜底摘要');
+
+    assert.throws(() => h.corrector.closeOpen('evt-a'), ConflictError, '已闭合不能重复手动闭合');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('#36 closeAndReopen：先手动闭合 A 再重开 B（同通道、两条 her 版本、仅 A 进重跑）', () => {
+  const h = makeHarness();
+  try {
+    h.seed({ id: 'evt-a', status: 'open', closed_reason: null, pointers: [pointer('r1')] });
+    h.seed({ id: 'evt-b', status: 'closed', closed_reason: 'silence', pointers: [pointer('r2')] });
+
+    const result = h.corrector.closeAndReopen({ closeId: 'evt-a', reopenId: 'evt-b' });
+    assert.equal(result.closed.id, 'evt-a');
+    assert.equal(result.closed.status, 'closed');
+    assert.equal(result.closed.closed_reason, 'manual');
+    assert.equal(result.closed.created_by, 'her');
+    assert.equal(result.reopened.id, 'evt-b');
+    assert.equal(result.reopened.status, 'open');
+    assert.equal(result.reopened.closed_reason, null, '重开退回 open、无机械闭合原因');
+    assert.equal(result.reopened.created_by, 'her');
+    assert.deepEqual(h.reruns, ['evt-a'], '只有手动闭合的 A 进重跑，重开 B 不重跑');
+
+    const openIds = h.log
+      .listByStatus('open')
+      .map((e) => e.id)
+      .sort();
+    assert.deepEqual(openIds, ['evt-b'], '组合完成后该通道唯一进行中的事件是 B');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('#36 closeAndReopen：前提不满足即拒绝且零写入（先全量校验、杜绝半程态）', () => {
+  // 同一 id
+  {
+    const h = makeHarness();
+    try {
+      h.seed({ id: 'evt-a', status: 'open', closed_reason: null });
+      const before = rowCount(h);
+      assert.throws(
+        () => h.corrector.closeAndReopen({ closeId: 'evt-a', reopenId: 'evt-a' }),
+        SchemaError,
+      );
+      assert.equal(rowCount(h), before);
+    } finally {
+      h.cleanup();
+    }
+  }
+  // 待闭合的 A 不是 open
+  {
+    const h = makeHarness();
+    try {
+      h.seed({ id: 'evt-a', status: 'closed', closed_reason: 'silence' });
+      h.seed({ id: 'evt-b', status: 'closed', closed_reason: 'silence', pointers: [pointer('r2')] });
+      const before = rowCount(h);
+      assert.throws(
+        () => h.corrector.closeAndReopen({ closeId: 'evt-a', reopenId: 'evt-b' }),
+        ConflictError,
+      );
+      assert.equal(rowCount(h), before);
+    } finally {
+      h.cleanup();
+    }
+  }
+  // 待重开的 B 不是 closed
+  {
+    const h = makeHarness();
+    try {
+      h.seed({ id: 'evt-a', status: 'open', closed_reason: null });
+      h.seed({ id: 'evt-b', status: 'open', closed_reason: null, pointers: [pointer('r2')] });
+      const before = rowCount(h);
+      assert.throws(
+        () => h.corrector.closeAndReopen({ closeId: 'evt-a', reopenId: 'evt-b' }),
+        ConflictError,
+      );
+      assert.equal(rowCount(h), before);
+    } finally {
+      h.cleanup();
+    }
+  }
+  // 跨通道
+  {
+    const h = makeHarness();
+    try {
+      h.seed({ id: 'evt-a', status: 'open', closed_reason: null, channel: 'dsh' });
+      h.seed({
+        id: 'evt-b',
+        status: 'closed',
+        closed_reason: 'silence',
+        channel: 'browser',
+        pointers: [pointer('r2')],
+      });
+      const before = rowCount(h);
+      assert.throws(
+        () => h.corrector.closeAndReopen({ closeId: 'evt-a', reopenId: 'evt-b' }),
+        ConflictError,
+      );
+      assert.equal(rowCount(h), before);
+    } finally {
+      h.cleanup();
+    }
   }
 });

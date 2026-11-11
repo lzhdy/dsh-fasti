@@ -253,7 +253,47 @@ export class EventSegmenter implements IngestStage {
    */
   restore(): void {
     this.log.reindex();
+    const derived = this.deriveOpenStateFromLog();
+    this.openByChannel = derived.openByChannel;
+    this.activeChannel = derived.activeChannel;
+    this.knownPointerIds = derived.knownPointerIds;
+  }
 
+  /**
+   * 人工修正（merge / split / reviseBoundary / reopen / rewriteSummary）后，按事件真源
+   * **当前态**重算内存 open 映射。
+   *
+   * 为什么必须有这条接线：修正器只对事件真源追加新版本，**不认识也不会通知切分器**；
+   * 若不重算，切分器会持有已退役/已闭合事件的陈旧 open 状态 —— 要么在 reopen 后于同通道
+   * 造出第二个 open 事件（重启 restore 即抛 CorruptedError），要么在 merged/split 的退役
+   * 版本链上复活写新版本。
+   *
+   * 口径：
+   *  - 仅供门面在修正成功后、**同一个单写者队列任务内**调用（无并发）；
+   *  - 与 `restore()` 共用 `deriveOpenStateFromLog()`，但运行时同一 EventLog 实例的索引
+   *    已随 appendVersion 实时更新，故**不 reindex()**、也不做启动期孤立标注扫描；
+   *  - 只读真源、只重置进程内派生状态（open 映射 / 活动通道 / 重放防重表），
+   *    **不写任何真源或投影**，不动后台闭合队列 `closedEvents`。
+   */
+  resyncAfterCorrection(): void {
+    const derived = this.deriveOpenStateFromLog();
+    this.openByChannel = derived.openByChannel;
+    this.activeChannel = derived.activeChannel;
+    this.knownPointerIds = derived.knownPointerIds;
+  }
+
+  /**
+   * 从事件真源当前态确定性派生「每通道 open 映射 + 活动通道 + 重放防重表」。
+   *
+   * `restore()`（启动，先 reindex）与 `resyncAfterCorrection()`（运行时修正后）共用这一份
+   * 派生，保证两条路径口径完全一致。同通道出现两个 open 事件仍抛 CorruptedError，
+   * **不静默从零开始**。
+   */
+  private deriveOpenStateFromLog(): {
+    openByChannel: Map<string, OpenEventState>;
+    activeChannel: string | null;
+    knownPointerIds: Set<string>;
+  } {
     const restored = new Map<string, OpenEventState>();
     let activeChannel: string | null = null;
     let activeLastAtMs = Number.NEGATIVE_INFINITY;
@@ -310,9 +350,11 @@ export class EventSegmenter implements IngestStage {
       }
     }
 
-    this.openByChannel = restored;
-    this.activeChannel = activeChannel;
-    this.knownPointerIds = known;
+    return {
+      openByChannel: restored,
+      activeChannel,
+      knownPointerIds: known,
+    };
   }
 
   /**
@@ -513,6 +555,15 @@ export class EventSegmenter implements IngestStage {
     candidates: readonly BoundaryCandidate[],
   ): void {
     const current = this.log.currentOf(state.eventId);
+    // 退役/闭合守卫：openByChannel 只应持有 status='open' 的事件。若它已被人工修正置为
+    // merged/split/archived/closed（正常路径下门面会在修正后 resyncAfterCorrection 清掉
+    // 本条目），说明内存 open 映射已与真源脱节 —— 响亮报错，绝不允许在退役/闭合事件的
+    // 版本链上追加新版本把旧事件「复活」（落地分析 P1-B 兜底闸）。
+    if (current.status !== 'open') {
+      throw new CorruptedError(
+        `切分器仍持有非 open 事件 ${state.eventId}（当前态 ${current.status}），open 映射已与真源脱节`,
+      );
+    }
     const pointer = pointerOf(record, ctx);
     const pointers = [...current.pointers, pointer];
 

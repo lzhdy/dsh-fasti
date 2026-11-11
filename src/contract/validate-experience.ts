@@ -24,7 +24,7 @@ import {
   POINTER_FIELDS,
   SCENE_FIELDS,
   EXPERIENCE_FIELDS,
-  isForbiddenFieldName,
+  findForbiddenFieldKeys,
 } from './experience.ts';
 import type { Action, Edge, Experience, Mark, MediaRef, Observation, Outcome, Pointer, Scene } from './experience.ts';
 
@@ -397,11 +397,17 @@ export function parseExperience(raw: unknown, mode: ParseMode = 'read'): Experie
   const obj = requireObject(raw, 'experience');
 
   if (mode === 'write') {
-    for (const key of Object.keys(obj)) {
-      if (isForbiddenFieldName(key)) {
-        fail(`experience 含有被禁止的字段名 ${key}（红线①/②：不得预设重要性、不得把聊天写成前提）`);
-      }
+    // 红线①/②递归拦截：禁字段无论落在顶层还是任意嵌套（含 scene.detail 开放字典、
+    // media 元素这类不设字段白名单的位置）都要拦下 —— 红线不认你把它埋在第几层。
+    const forbiddenHits = findForbiddenFieldKeys(obj);
+    if (forbiddenHits.length > 0) {
+      fail(
+        `experience 含有被禁止的字段名 ${forbiddenHits.join(', ')}（红线①/②：不得预设重要性、不得把聊天写成前提）`,
+      );
     }
+    // 顶层白名单（改动 A）：write 下任何契约外顶层字段即契约违约，与各嵌套结构的
+    // assertKnownFields 同构；read 模式下该函数 no-op，未知字段仍靠文末循环原样保留。
+    assertKnownFields(obj, EXPERIENCE_FIELDS, 'experience', mode);
   }
 
   const experience: Experience = {

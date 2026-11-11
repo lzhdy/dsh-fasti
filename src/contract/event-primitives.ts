@@ -71,6 +71,23 @@ export interface ReopenEventInput {
   readonly eventId: string;
 }
 
+/**
+ * 「闭合 A 再重开 B」一键组合入参（她在冲突提示上的显式点击）。
+ * closeId 须为同通道当前 open 的事件，reopenId 须为同通道当前 closed 的事件，二者不得相同。
+ */
+export interface CloseAndReopenEventInput {
+  readonly closeId: string;
+  readonly reopenId: string;
+}
+
+/** 「闭合 A 再重开 B」组合结果。 */
+export interface CloseAndReopenEventResult {
+  /** 被手动闭合的 A（status='closed'、closed_reason='manual'、created_by='her'）。 */
+  readonly closed: EventRecord;
+  /** 被重开的 B（status='open'）。 */
+  readonly reopened: EventRecord;
+}
+
 /** 重写摘要入参：她手写摘要（summary_source 置 'her'）。 */
 export interface RewriteSummaryInput {
   readonly eventId: string;
@@ -104,8 +121,20 @@ export interface EventPrimitives {
   splitEvent(input: SplitEventInput): Promise<SplitEventsResult>;
   /** 改边界：换 pointers，写新版本，并触发派生字段重跑。 */
   reviseEventBoundary(input: ReviseBoundaryInput): Promise<ReviseBoundaryResult>;
-  /** 重开：closed → open，写新版本。 */
+  /**
+   * 重开：closed → open，写新版本。
+   *
+   * 同通道已有进行中的 open 事件时，拒绝并抛 `EventOpenConflictError`（结构化携带阻塞事件
+   * 事实与可行下一步），不写任何版本、也不自动闭合任何事件；她看清提示后显式改调
+   * `closeAndReopenEvent`，或用 `mergeEvents` 合并。
+   */
   reopenEvent(input: ReopenEventInput): Promise<EventRecord>;
+  /**
+   * 显式组合：先手动闭合同通道进行中的 closeId（closed_reason='manual'），再重开 reopenId。
+   * 仅在 reopenEvent 冲突、她明确授权后调用；系统从不在 reopenEvent 内自动闭合。
+   * 先全量校验再写入，队列内原子；成功后切分器重算 open 映射。
+   */
+  closeAndReopenEvent(input: CloseAndReopenEventInput): Promise<CloseAndReopenEventResult>;
   /** 重写摘要：summary_source='her'，写新版本。 */
   rewriteEventSummary(input: RewriteSummaryInput): Promise<EventRecord>;
 }

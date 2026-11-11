@@ -268,7 +268,10 @@ export function findForbiddenFieldKeys(value: unknown, path = ''): string[] {
   return hits;
 }
 
-/** 顶层字段名全集 —— 校验器据此判定「未知字段」（未知即原样保留，不报错）。 */
+/**
+ * 顶层字段名全集 —— 校验器据此判定「未知字段」。
+ * 按模式分流：read 原样保留不报错（前向兼容未来版本字段），write 命中未知字段即抛 SchemaError。
+ */
 export const EXPERIENCE_FIELDS = [
   'id',
   'schema_version',

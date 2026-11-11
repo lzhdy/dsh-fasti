@@ -167,3 +167,43 @@ test('G05：write 模式 —— 媒体元素的未知字段维持既有行为（
   >;
   assert.equal(media['extra'], undefined, 'write 模式维持既有行为：媒体未知字段被丢弃');
 });
+
+test('G05：write 模式 —— 顶层未知字段抛错（写边界收紧 A），read 模式仍原样保留', () => {
+  const raw = { ...makeExperience(), future_top_level: '顶层新字段' } as never;
+  assert.throws(() => parseExperience(raw, 'write'), SchemaError, '顶层契约外字段在 write 必须被拒');
+  const parsed = parseExperience(raw, 'read');
+  assert.equal(
+    (parsed as unknown as Record<string, unknown>)['future_top_level'],
+    '顶层新字段',
+    'read 仍前向兼容、保留未知顶层字段',
+  );
+});
+
+test('G05：红线递归 —— 禁字段藏进开放字典 scene.detail，write 仍拦、read 宽容（收紧 B）', () => {
+  const raw = {
+    ...makeExperience(),
+    // detail 是 string→string 开放字典（中文业务键合法），禁字段键名无论值是什么都要被递归拦下。
+    scene: { channel: 'dsh', ref: 's-1', detail: { importance: '高危', 群号: '123' } },
+  } as never;
+  assert.throws(() => parseExperience(raw, 'write'), SchemaError);
+  assert.doesNotThrow(() => parseExperience(raw, 'read'), 'read 不做红线拦截、宽容带过');
+});
+
+test('G05：红线递归 —— 禁字段藏进无白名单的 media 元素，write 仍拦、read 宽容（收紧 B）', () => {
+  const raw = {
+    ...makeExperience(),
+    observation: {
+      media: [
+        {
+          ref_id: '01J0000000000000000000000M',
+          kind: 'image',
+          mime: 'image/png',
+          origin: { channel: 'dsh', host_ref: 'att-1', captured_at: '2026-11-08T10:00:00.000Z' },
+          score: 0.8,
+        },
+      ],
+    },
+  } as never;
+  assert.throws(() => parseExperience(raw, 'write'), SchemaError, '媒体元素里的 score 也不得溜入真源');
+  assert.doesNotThrow(() => parseExperience(raw, 'read'));
+});

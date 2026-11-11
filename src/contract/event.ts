@@ -12,7 +12,7 @@
  * 不写三要素规则检查器 —— 「谁 / 做了什么 / 结果如何」只进 prompt 指引，由 LLM 自检。
  */
 
-import { SchemaError } from '../core/errors.ts';
+import { ConflictError, SchemaError } from '../core/errors.ts';
 import { findForbiddenFieldKeys } from './experience.ts';
 
 /** 事件 schema 版本（本期 = 1）。 */
@@ -49,6 +49,9 @@ export type EventStatus = (typeof EVENT_STATUSES)[number];
  *
  * `null` = 未被 A 类机械信号闭合（事件仍 open，或由她的修正产生/重开）。
  *
+ * v1.5：纯加法新增 `manual` —— 她显式操作闭合（非机械信号），与 `silence` 同层级的
+ * 简短原因短语；「是谁操作」由版本行 `created_by='her'` 记录，reason 不标谁。
+ *
  * v1.4（定案稿 §5.2）：新增 `max-dialogue-chars`（有效对话字数上限，替代条数上限的
  * 量纲）与 `max-chars`（硬保险丝，raw 全量字符 ≈ token 驱动）；`max-records`
  * **保留为兼容值**——写模式仍接受旧数据里的取值，新代码不再产生（定案稿 §16.1：
@@ -61,6 +64,7 @@ export const EVENT_CLOSED_REASONS = [
   'channel-switch', // 场景切换（通道变了）
   'max-dialogue-chars', // 有效对话字数达上限（v1.4：非工具轮 char_count 累计）
   'max-chars', // 硬保险丝（v1.4：raw 全量字符按 1 字符 ≈ 1 token 达 50000）
+  'manual', // 人显式操作闭合（非机械信号；v1.5 纯加法，区别于手工补录）
 ] as const;
 export type EventClosedReason = (typeof EVENT_CLOSED_REASONS)[number];
 
@@ -585,4 +589,60 @@ function parseClosedReason(value: unknown, mode: EventParseMode): EventClosedRea
     return text as EventClosedReason;
   }
   fail(`event.closed_reason 必须是 ${EVENT_CLOSED_REASONS.join(' / ')} 之一或 null`);
+}
+
+// ── 重开同通道冲突：带选项的拒绝（v1.5，#36）──────────────────────────────
+
+/**
+ * 冲突时可行下一步的**稳定机器标识** —— 内核只给标识、不拼中文文案。
+ * 宿主 UI 据此渲染按钮与引导；「取消」是纯客户端放弃、「开新事件挂话题线」是引导
+ * 而非内核动作，故二者都不进这个列表。
+ *
+ * - `close-then-reopen`：她显式授权的组合原语（先手动闭合 A、再重开 B）；
+ * - `merge`：若本想把两件事并成一件，走既有合并原语（跨 gap 合并的判据仍由她把关）。
+ */
+export const EVENT_OPEN_CONFLICT_ACTIONS = ['close-then-reopen', 'merge'] as const;
+export type EventOpenConflictAction = (typeof EVENT_OPEN_CONFLICT_ACTIONS)[number];
+
+/** 阻塞事件（同通道当前仍 open 的 A）的客观事实，供 UI 渲染「时间范围 / 条数 / 摘要」。 */
+export interface EventOpenConflictBlocking {
+  readonly eventId: string;
+  readonly channel: string;
+  readonly startedAt: string;
+  readonly endedAt: string;
+  /** 该事件当前覆盖的指针（记录本条目）条数。 */
+  readonly pointerCount: number;
+  /** 客观摘要；后台尚未生成时为 null（UI 显示「摘要未生成」），内核不代写占位文案。 */
+  readonly summary: string | null;
+  readonly summaryReady: boolean;
+}
+
+/**
+ * 带选项的拒绝：她想重开 B，但 B 所在通道已有进行中的 open 事件 A。
+ *
+ * 纪律（#36，对应「算法不替她切边界」）：系统**绝不**在重开时自动把 A 闭合——
+ * A 的边界只能由机械信号或她的显式操作决定，不能被 B 的重开挤出来。`reopen` 只响亮
+ * 拒绝并交付结构化事实与可行下一步；唯一会闭合 A 的路径，是她随后**显式**调用独立的
+ * 组合原语 `closeAndReopenEvent`（两条版本行均 created_by='her'）。
+ *
+ * 错误码沿用 `CONFLICT`（粗粒度路由不变，不膨胀错误码表）；精确判别靠 instanceof，
+ * 结构化载荷承载 UI 渲染所需事实，metrics 可从 error.name / instanceof 聚合。
+ */
+export class EventOpenConflictError extends ConflictError {
+  /** 她原本想重开的事件 B。 */
+  readonly reopenId: string;
+  /** 挡住重开的进行中事件 A 的客观事实。 */
+  readonly blocking: EventOpenConflictBlocking;
+  /** 可行下一步的稳定标识（内核动作，UI 自行补取消与引导文案）。 */
+  readonly actions: readonly EventOpenConflictAction[];
+
+  constructor(reopenId: string, blocking: EventOpenConflictBlocking, options?: { cause?: unknown }) {
+    super(
+      `通道 ${blocking.channel} 已有进行中的事件 ${blocking.eventId}，重开 ${reopenId} 前须先显式处理该事件`,
+      options,
+    );
+    this.reopenId = reopenId;
+    this.blocking = blocking;
+    this.actions = EVENT_OPEN_CONFLICT_ACTIONS;
+  }
 }
