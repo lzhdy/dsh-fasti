@@ -52,6 +52,7 @@ const PRODUCERS = [
   'src/projection/sqlite.ts', // sqlite 投影引擎物化事件行
   'src/projection/types.ts', // 投影行类型声明
   'src/event/correction.ts', // 修正层物化新事件
+  'src/memory/builder.ts', // 记忆选择索引物化锚点快照（方案 §4.6③：anchor_json 取 event.anchors 快照 + 存在性回查；不做重要性判断、不写 topic_lines）
 ];
 
 const here = path.dirname(fileURLToPath(import.meta.url));

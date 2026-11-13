@@ -1,0 +1,16 @@
+{
+  "probeSetVersion": "v1",
+  "layer": "abstain",
+  "items": [
+    {
+      "query": "合成不可答提问：库里没有这段经历",
+      "goldCardId": null,
+      "kind": "unanswerable"
+    },
+    {
+      "query": "合成噪声提问：宽泛词混多张诱饵",
+      "goldCardId": "syn-mc-0",
+      "kind": "noise"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "probeSetVersion": "v1",
+  "layer": "decoy",
+  "items": [
+    {
+      "pairCardIds": ["syn-mc-0", "syn-mc-1"],
+      "discriminatorQuery": "只应命中合成卡零的判别提问",
+      "goldCardId": "syn-mc-0",
+      "highRiskLabel": "date"
+    }
+  ]
+}

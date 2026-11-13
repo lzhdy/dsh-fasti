@@ -24,12 +24,16 @@
  *    只是等实例就绪后再写入。
  */
 
+import path from 'node:path';
+
 import type { Context } from '@deepseek-ai/cordis';
 
 import { Fasti } from '../../api/index.ts';
+import type { MemoryGateMode } from '../../assembly/memory-tools.ts';
 import { convertSessionEvent } from './convert-event.ts';
 import { createDshLLMPort, startClosureWorker } from './llm.ts';
 import type { DshModelRoute } from './llm.ts';
+import { wireMemoryTools, type DshToolRegistry, type MemoryWiring } from './memory-tool-bridge.ts';
 
 /**
  * dsh-session 广播的事件：会话日志追加（含 user/message / assistant/message）。
@@ -75,6 +79,16 @@ export interface DshAdapterConfig {
    * 调到分钟级以上等于把「一次挂死停掉整条队列」放回来 —— 不许调成无限。
    */
   closureTimeoutMs?: number | undefined;
+  /**
+   * 记忆门三态开关；缺省 'off'。
+   *
+   *  - 'off'（默认）：不注册任何记忆工具，线上召回路径与现状完全一致（零变化）；
+   *  - 'shadow'：注册四工具，但检索主返回仍走旧路，仅旁路落无原文影子观测用于灰度比对；
+   *  - 'on'：门裁决生效，召回以窄柄门结果为准。
+   *
+   * 切到 'shadow'/'on' 属 Q3 显式授权动作，运行期不得自行翻转。
+   */
+  memoryGateMode?: MemoryGateMode | undefined;
 }
 
 /** 日志前缀 —— 便于在 dsh 日志里一眼认出。 */
@@ -159,6 +173,11 @@ export function parseAdapterConfig(raw: unknown): DshAdapterConfig {
     throw new TypeError('dsh-fasti 适配器配置 closureTimeoutMs 必须是正数（毫秒）');
   }
 
+  const memoryGateMode = obj['memoryGateMode'];
+  if (memoryGateMode !== undefined && (typeof memoryGateMode !== 'string' || !isMemoryGateMode(memoryGateMode))) {
+    throw new TypeError('dsh-fasti 适配器配置 memoryGateMode 必须是 off / shadow / on 之一');
+  }
+
   // 只保留显式给出的键 —— 缺省字段不占位（配置对象保持干净）。
   const config: DshAdapterConfig = {};
   if (dataRoot !== undefined) {
@@ -179,7 +198,37 @@ export function parseAdapterConfig(raw: unknown): DshAdapterConfig {
   if (closureTimeoutMs !== undefined) {
     config.closureTimeoutMs = closureTimeoutMs as number;
   }
+  if (memoryGateMode !== undefined) {
+    config.memoryGateMode = memoryGateMode as MemoryGateMode;
+  }
   return config;
+}
+
+/** 记忆门三态字面量集合（手写校验，不引 schemastery）。 */
+const MEMORY_GATE_MODES: readonly MemoryGateMode[] = ['off', 'shadow', 'on'];
+
+function isMemoryGateMode(value: string): value is MemoryGateMode {
+  return (MEMORY_GATE_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * 在**已获 tools 注入授权**的上下文上做结构化探测，取出工具注册服务。
+ *
+ * 调用前提：cordis 4.0.5 对服务访问强制授权，未先 `ctx.inject(['tools'], …)` 就读取
+ * `ctx.tools` 会抛 "cannot get property tools without inject"。因此本函数只允许在该
+ * inject 回调拿到的子上下文上调用；这里仍保留「具备 register 函数才认」的结构化校验，
+ * 防范形态异常/被裁掉 tools 服务的弱宿主，缺失时返回 null 由接线层安全跳过。
+ */
+function resolveToolRegistry(ctx: Context): DshToolRegistry | null {
+  const candidate = (ctx as unknown as { tools?: unknown }).tools;
+  if (
+    candidate !== null &&
+    typeof candidate === 'object' &&
+    typeof (candidate as DshToolRegistry).register === 'function'
+  ) {
+    return candidate as DshToolRegistry;
+  }
+  return null;
 }
 
 /**
@@ -307,9 +356,45 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
     );
     markReady(fasti);
 
+    // ── WP4b 记忆工具接线（默认 off：不打开桥接、不注册任何工具，线上零变化）──
+    // indexDir 固定落在本数据根 projection 下；旧路检索直接复用门面 search（字段天然对齐）。
+    const gateMode = config.memoryGateMode ?? 'off';
+
+    // 真机约束（cordis 4.0.5）：tools 是受 inject 保护的服务，未声明依赖直接读 ctx.tools
+    // 会抛 "cannot get property tools without inject"。故仅在非 off 时用**动态可选注入**取服务：
+    //  - 宿主提供 tools：授权子 fiber 回调内按门模式接线（shadow/on 才真正注册四工具）；
+    //  - 宿主无 tools：该子 fiber 等待依赖、回调静默不触发，主适配器（开库/摄入/影子）照常运行，
+    //    等价既有「弱宿主安全跳过」契约；不使用静态必需注入，以免缺服务时整个插件被挡在门外。
+    let memoryWiring: MemoryWiring | null = null;
+    let wiringClosed = false;
+    if (gateMode !== 'off') {
+      ctx.inject(['tools'], (toolCtx) => {
+        if (wiringClosed) return;
+        const wiring = wireMemoryTools({
+          registry: resolveToolRegistry(toolCtx),
+          mode: gateMode,
+          indexDir: path.join(fasti.paths.projection, 'memory-index'),
+          legacySearch: async (query) => fasti.search(query.text, query.limit),
+          log: (message) => ctx.logger.warn('%s %s', LOG_PREFIX, message),
+        });
+        memoryWiring = wiring;
+        if (wiring.registered) {
+          ctx.logger.info('%s 记忆工具已注册：门模式=%s', LOG_PREFIX, gateMode);
+        }
+        // 子 fiber 卸载兜底；主 cleanup 已显式 dispose，wireMemoryTools 幂等故重复调用安全。
+        toolCtx.effect(() => () => {
+          void memoryWiring?.dispose();
+        });
+      });
+    }
+
     return async () => {
       state.closed = true;
-      ctx.logger.info('%s 适配器卸载：关闭数据根', LOG_PREFIX);
+      wiringClosed = true;
+      ctx.logger.info('%s 适配器卸载：注销记忆工具并关闭数据根', LOG_PREFIX);
+      if (memoryWiring !== null) {
+        await memoryWiring.dispose();
+      }
       await fasti.close();
     };
   }, 'dsh-fasti-adapter');

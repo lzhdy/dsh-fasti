@@ -12,8 +12,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { Context } from '@deepseek-ai/cordis';
+// dsh-session 对 cordis Events 的模块增强把 'session/event' 载荷收严为完整 Session class；
+// 本测试只需要一个带 id 的最小桩，显式断言为 Session 测试双重（test double），不实现其全部私有面。
+import type { Session } from '@deepseek-ai/dsh-session';
 
 import { apply, parseAdapterConfig } from '../../../src/adapters/dsh/plugin.ts';
+import { MEMORY_TOOL_NAMES } from '../../../src/adapters/dsh/memory-tool-bridge.ts';
 import { cleanupTempRoot, makeTempRoot } from '../../helpers.ts';
 
 /** 数某通道的原文行数。 */
@@ -92,7 +96,12 @@ function assistantEvent(id: string, text: string): unknown {
   };
 }
 
-const SESSION = { id: 'session-plugin-1' };
+const SESSION = { id: 'session-plugin-1' } as unknown as Session;
+
+/** 测试收口：事件样例是 unknown 测试桩，在此单点断言为增强后的 SessionEvent 载荷。 */
+function emitSessionEvent(ctx: Context, session: Session, event: unknown): void {
+  ctx.emit('session/event', session, event as never);
+}
 
 /** 等到队列排空（旁路捕获是异步的，测试需等待其落盘）。 */
 async function settle(): Promise<void> {
@@ -116,7 +125,134 @@ test('parseAdapterConfig：坏配置抛错（不带着半截配置跑起来）',
   assert.throws(() => parseAdapterConfig({ channel: '' }), /channel 必须是非空字符串/);
 });
 
+test('parseAdapterConfig：memoryGateMode 仅接受 off/shadow/on，缺省不占位', () => {
+  assert.deepEqual(parseAdapterConfig({ memoryGateMode: 'off' }), { memoryGateMode: 'off' });
+  assert.deepEqual(parseAdapterConfig({ memoryGateMode: 'shadow' }), { memoryGateMode: 'shadow' });
+  assert.deepEqual(parseAdapterConfig({ memoryGateMode: 'on' }), { memoryGateMode: 'on' });
+  assert.throws(() => parseAdapterConfig({ memoryGateMode: 'ON' }), /memoryGateMode/);
+  assert.throws(() => parseAdapterConfig({ memoryGateMode: 1 }), /memoryGateMode/);
+  assert.deepEqual(parseAdapterConfig({}), {});
+});
+
+/** 在 cordis Context 上挂一个假的 tools 服务，捕获记忆工具注册/注销。 */
+function installFakeTools(ctx: Context): { registered: string[]; unregistered: string[] } {
+  const registered: string[] = [];
+  const unregistered: string[] = [];
+  ctx.provide('tools');
+  ctx.set(
+    'tools',
+    {
+      register(def: { name: string }) {
+        registered.push(def.name);
+        return () => {
+          unregistered.push(def.name);
+        };
+      },
+    } as never,
+  );
+  return { registered, unregistered };
+}
+
 // ── 端到端 ────────────────────────────────────────────────────────────────
+
+test('插件：默认 off 即使宿主有 tools 也不注册记忆工具、不侧建 memory-index', async () => {
+  const root = makeTempRoot();
+  const ctx = new Context();
+  const tools = installFakeTools(ctx);
+  const fiber = ctx.plugin({ apply }, { dataRoot: root });
+  try {
+    await fiber;
+    await settle();
+
+    assert.equal(tools.registered.length, 0);
+    assert.ok(!fs.existsSync(path.join(root, 'projection', 'memory-index')));
+  } finally {
+    await fiber.dispose();
+    cleanupTempRoot(root);
+  }
+});
+
+test('插件：shadow 但宿主无 tools 服务时安全跳过，插件仍正常装载/卸载', async () => {
+  const root = makeTempRoot();
+  const ctx = new Context();
+  const fiber = ctx.plugin({ apply }, { dataRoot: root, memoryGateMode: 'shadow' });
+  try {
+    await fiber;
+    await settle();
+  } finally {
+    await fiber.dispose();
+    cleanupTempRoot(root);
+  }
+});
+
+test('插件：memoryGateMode=shadow 时注册恰四个记忆工具，卸载时逐个注销', async () => {
+  const root = makeTempRoot();
+  const ctx = new Context();
+  const tools = installFakeTools(ctx);
+  const fiber = ctx.plugin({ apply }, { dataRoot: root, memoryGateMode: 'shadow' });
+  try {
+    await fiber;
+    await settle();
+
+    assert.deepEqual([...tools.registered].sort(), Object.values(MEMORY_TOOL_NAMES).sort());
+  } finally {
+    await fiber.dispose();
+    assert.deepEqual([...tools.unregistered].sort(), Object.values(MEMORY_TOOL_NAMES).sort());
+    cleanupTempRoot(root);
+  }
+});
+
+/** 包裹 ctx.inject 记录声明的服务依赖（复刻真机：tools 只能经 inject 授权访问）。 */
+function spyInjectDeps(ctx: Context): Array<ReadonlyArray<string>> {
+  const deps: Array<ReadonlyArray<string>> = [];
+  const originalInject = ctx.inject.bind(ctx);
+  ctx.inject = ((nextDeps: ReadonlyArray<string>, callback: (child: Context) => void) => {
+    deps.push([...nextDeps]);
+    return originalInject(nextDeps as never, callback as never);
+  }) as typeof ctx.inject;
+  return deps;
+}
+
+test('插件：shadow 经动态 inject(["tools"]) 授权后才注册四工具（真机 without-inject 防护）', async () => {
+  const root = makeTempRoot();
+  const ctx = new Context();
+  const tools = installFakeTools(ctx);
+  const injectDeps = spyInjectDeps(ctx);
+  const fiber = ctx.plugin({ apply }, { dataRoot: root, memoryGateMode: 'shadow' });
+  try {
+    await fiber;
+    await settle();
+
+    assert.ok(
+      injectDeps.some((entry) => entry.includes('tools')),
+      '真机 cordis 未 inject 时读 ctx.tools 会抛 "cannot get property tools without inject"，必须经 ctx.inject 授权',
+    );
+    assert.deepEqual([...tools.registered].sort(), Object.values(MEMORY_TOOL_NAMES).sort());
+  } finally {
+    await fiber.dispose();
+    assert.deepEqual([...tools.unregistered].sort(), Object.values(MEMORY_TOOL_NAMES).sort());
+    cleanupTempRoot(root);
+  }
+});
+
+test('插件：默认 off 不发起 tools 注入、不注册（零服务依赖、零挂载）', async () => {
+  const root = makeTempRoot();
+  const ctx = new Context();
+  const tools = installFakeTools(ctx);
+  const injectDeps = spyInjectDeps(ctx);
+  const fiber = ctx.plugin({ apply }, { dataRoot: root });
+  try {
+    await fiber;
+    await settle();
+
+    assert.equal(injectDeps.length, 0);
+    assert.equal(tools.registered.length, 0);
+    assert.ok(!fs.existsSync(path.join(root, 'projection', 'memory-index')));
+  } finally {
+    await fiber.dispose();
+    cleanupTempRoot(root);
+  }
+});
 
 test('插件：emit session/event 后原文与经历各写入一条', async () => {
   const root = makeTempRoot();
@@ -124,7 +260,7 @@ test('插件：emit session/event 后原文与经历各写入一条', async () =
   const fiber = ctx.plugin({ apply }, { dataRoot: root });
   await fiber;
 
-  ctx.emit('session/event', SESSION, userEvent('evt-1', '在吗'));
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
   await settle();
 
   assert.equal(rawLineCount(root, 'dsh'), 1);
@@ -145,8 +281,8 @@ test('插件：user + assistant 顺序写入，initiation 分别为 user / her',
   const fiber = ctx.plugin({ apply }, { dataRoot: root });
   await fiber;
 
-  ctx.emit('session/event', SESSION, userEvent('evt-1', '在吗'));
-  ctx.emit('session/event', SESSION, assistantEvent('evt-2', '在呢'));
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
+  emitSessionEvent(ctx, SESSION, assistantEvent('evt-2', '在呢'));
   await settle();
 
   assert.equal(experienceCount(root), 2);
@@ -164,8 +300,8 @@ test('插件：系统注入事件被排除，零新增', async () => {
   const fiber = ctx.plugin({ apply }, { dataRoot: root });
   await fiber;
 
-  ctx.emit('session/event', SESSION, userEvent('evt-1', '系统注入', 'runtime-context'));
-  ctx.emit('session/event', SESSION, { type: 'turn/start', data: {} });
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '系统注入', 'runtime-context'));
+  emitSessionEvent(ctx, SESSION, { type: 'turn/start', data: {} });
   await settle();
 
   assert.equal(rawLineCount(root, 'dsh'), 0);
@@ -181,11 +317,11 @@ test('插件：重放同一事件不产生重复行（幂等）', async () => {
   const fiber = ctx.plugin({ apply }, { dataRoot: root });
   await fiber;
 
-  ctx.emit('session/event', SESSION, userEvent('evt-1', '在吗'));
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
   await settle();
   const afterFirst = experienceCount(root);
 
-  ctx.emit('session/event', SESSION, userEvent('evt-1', '在吗'));
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
   await settle();
 
   assert.equal(experienceCount(root), afterFirst, '重放不得新增经历');
@@ -203,7 +339,7 @@ test('插件：卸载后关闭数据根（Windows 上不残留文件占用）', 
   const fiber = ctx.plugin({ apply }, { dataRoot: root });
   await fiber;
 
-  ctx.emit('session/event', SESSION, userEvent('evt-1', '在吗'));
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
   await settle();
 
   await fiber.dispose();
@@ -220,7 +356,7 @@ test('插件：卸载后不再写入新事件', async () => {
 
   await fiber.dispose();
 
-  ctx.emit('session/event', SESSION, userEvent('evt-after', '卸载后'));
+  emitSessionEvent(ctx, SESSION, userEvent('evt-after', '卸载后'));
   await settle();
 
   assert.equal(experienceCount(root), 0);
@@ -245,7 +381,7 @@ test('插件：通道未注册时不写入（只核对、不自动注册）', as
   const fiber = ctx.plugin({ apply }, { dataRoot: root });
   await fiber;
 
-  ctx.emit('session/event', SESSION, userEvent('evt-1', '在吗'));
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
   await settle();
 
   assert.equal(experienceCount(root), 0, '通道未注册时不得写入');
@@ -313,14 +449,14 @@ test('插件：注入模型路由 → 闭合事件由后台 worker 补上摘要�
   await fiber;
 
   // 两条消息相隔一小时 → 第一条被静默闭合（机械信号），第二条开新事件。
-  ctx.emit('session/event', SESSION, userEvent('evt-1', '在吗'));
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
   await settle();
   const later = {
     type: 'user/message',
     time: Date.parse('2026-11-08T11:00:00.000Z'),
     data: { id: 'evt-2', content: [{ type: 'text', text: '看下排期' }], source: { kind: 'user' } },
   };
-  ctx.emit('session/event', SESSION, later);
+  emitSessionEvent(ctx, SESSION, later);
 
   // 后台 worker 的间隔是 50ms —— 等到摘要落盘（最多约 2 秒）。
   let ready: Record<string, unknown> | undefined;

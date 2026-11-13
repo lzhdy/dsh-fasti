@@ -1,0 +1,12 @@
+{
+  "probeSetVersion": "v1",
+  "layer": "l2",
+  "items": [
+    {
+      "questionExperienceId": "syn-exp-h0",
+      "targetEventId": "syn-ev-1",
+      "initiation": "user",
+      "coldStart": true
+    }
+  ]
+}
