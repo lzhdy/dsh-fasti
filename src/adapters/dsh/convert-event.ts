@@ -7,16 +7,16 @@
  *    由 `ingestRawTurn` 在落盘时分配唯一落盘时刻）；
  *  - **不伪造**：缺 id、缺有效时间、提取不到正文 → 跳过并告警，绝不编造。
  *
- * 口径与阶段 3 迁移脚本 `scripts/migrate-raw-turns.ts` 的 `readHarnessSession`
- * **逐条对齐**（该脚本已逐字复刻旧项目 `dsh-persona-innate` 的
- * `buildRawTurn` / `rawTextOf` / `joinTextBlocks` / `assistantTextFromBlocks`）——
- * 保证「历史转写」与「实时摄入」对同一条事件产出一致的正文。
+ * 口径承接阶段 3 迁移脚本（已于 2026-11-15 空白重启退役，见 11.6 记账）
+ * 原 `readHarnessSession` 的逐条对齐规则——该转换逐字复刻旧项目
+ * `dsh-persona-innate` 的 `buildRawTurn` / `rawTextOf` / `joinTextBlocks` /
+ * `assistantTextFromBlocks`，保证实时摄入与历史转写对同一条事件产出一致的正文。
  *
- * 与阶段 3 的两处**有意差异**：
- *  1. `ingested_at` 留空（迁移是回填历史，必须保留历史时间；
+ * 与阶段 3 转写口径的两处**有意差异**：
+ *  1. `ingested_at` 留空（历史回填必须保留历史时间；
  *     实时摄入应记真实落盘时刻 —— 世界轴与系统轴分离，定案稿 §5）；
  *  2. 只处理 user / assistant 两类事件（任务书 §4.3 明确范围；
- *     迁移脚本额外处理 tool / system 是历史数据的既有形态）。
+ *     历史转写额外处理 tool / system 是旧数据的既有形态）。
  */
 
 import type { RawTurnInput } from '../../contract/raw-turn.ts';

@@ -1,8 +1,9 @@
 /**
  * 事件 → RawTurnInput 纯转换的单元测试。
  *
- * 口径基准：阶段 3 迁移脚本 `scripts/migrate-raw-turns.ts` 的 `readHarnessSession`
- * （该脚本已逐字复刻旧项目 dsh-persona-innate 的 buildRawTurn / rawTextOf）。
+ * 口径基准：阶段 3 转写口径原 readHarnessSession 规则（迁移脚本已于
+ * 2026-11-15 空白重启退役，见 11.6；其规则逐字复刻旧项目 dsh-persona-innate
+ * 的 buildRawTurn / rawTextOf，现由 convert-event 承接）。
  *
  * 纪律：全部用合成事件，**不碰任何真实数据目录**。
  */
