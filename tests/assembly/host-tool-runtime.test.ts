@@ -105,6 +105,7 @@ test('WP4b 装配工厂：索引库不存在时降级 indexReady=false 且不创
       indexDir,
       mode: 'off',
       now: () => FIXED_NOW,
+      missChannel: 'dsh',
     });
     assert.equal(rt.indexReady, false);
     assert.ok(!fs.existsSync(path.join(indexDir, MEMORY_INDEX_FILE)), '降级不得侧建索引文件');
@@ -127,6 +128,7 @@ test('WP4b 装配工厂：off 态门控检索 fail-closed，别名写 deferred�
       indexDir,
       mode: 'off',
       now: () => FIXED_NOW,
+      missChannel: 'dsh',
     });
     await assert.rejects(
       () => rt.tools.gatedSearch({ text: '关键词甲' }),
@@ -150,6 +152,7 @@ test('WP4b 装配工厂：真实库 on 态窄柄命中（indexReady=true，门�
       indexDir,
       mode: 'on',
       now: () => FIXED_NOW,
+      missChannel: 'dsh',
     });
     assert.equal(rt.indexReady, true);
     const view = await rt.tools.gatedSearch({ text: '咖啡馆' });
@@ -170,6 +173,7 @@ test('WP4b 装配工厂：shadow 态对外 observing 空信封且影子落盘字
       indexDir,
       mode: 'shadow',
       now: () => FIXED_NOW,
+      missChannel: 'dsh',
     });
     // 用一个不会命中的词，得到 no-match 影子观测；对外只回定死空信封。
     const view = await rt.tools.gatedSearch({ text: '不存在的冷词XYZ' });
@@ -206,6 +210,7 @@ test('WP4b 装配工厂：缺库时 shadow 回 observing 空信封不抛，不�
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'shadow',
       now: () => FIXED_NOW,
+      missChannel: 'dsh',
     });
     const view = await rt.tools.gatedSearch({ text: '任意' });
     assert.equal(view.status, 'observing');
@@ -275,6 +280,7 @@ test('WP4b 装配工厂：返回对象满足装配面契约（四方法可读、
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'off',
       now: () => FIXED_NOW,
+      missChannel: 'dsh',
     });
     assert.deepEqual(
       Object.keys(rt.tools).sort(),

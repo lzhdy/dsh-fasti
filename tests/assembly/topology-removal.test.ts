@@ -273,6 +273,7 @@ function build(mode: MemoryGateMode, handle: RuntimeMemoryHandle | null) {
     now: fixedNow,
     handle,
     sink: sinkBox.sink,
+    missChannel: 'dsh',
   });
   return { tools, sinkBox };
 }
@@ -366,6 +367,45 @@ test('守卫（今天即绿）：off 态不注册任何工具，靠不注册保�
     registry: { register: () => () => undefined },
     mode: 'off',
     indexDir: '/tmp/unused',
+    channel: 'dsh',
   });
   assert.equal(wiring.registered, false);
+});
+
+// ── #115 红相：通道二接线的常量位置与通道字面量隔离（L5 边界冻结）──────────────
+
+test('#115 T1：两道防爆闸常量冻结在 L5 source-lookup 边界，bridge 不得埋数值字面量', () => {
+  const lookupSrc = read('src/assembly/source-lookup.ts');
+  assert.ok(
+    /export\s+const\s+MAX_RAW_TURNS_PER_LOOKUP\s*=\s*20\b/.test(lookupSrc),
+    '条数闸常量必须显式导出并冻结为 20，语义独立于任何摄入保险丝',
+  );
+  assert.ok(
+    /export\s+const\s+MAX_RAW_LOOKUP_CHARS\s*=\s*50000\b/.test(lookupSrc),
+    '字符闸新立常量 50000（注释须写明数值对齐保险丝、语义独立），禁止直接引用 fuseRawChars 符号',
+  );
+  assert.ok(!/fuseRawChars/.test(lookupSrc), '查找侧不得引用事件摄入保险丝符号，两个语义不能耦合');
+  // 字面量禁令：禁了符号不等于禁了数值——某处写死 50000 会让两个闸在改常量时分叉。
+  const bare = lookupSrc
+    .split('\n')
+    .filter((line) => /\b50000\b/.test(line))
+    .filter((line) => !/MAX_RAW_LOOKUP_CHARS\s*=\s*50000/.test(line));
+  assert.deepEqual(bare, [], 'source-lookup 内除常量定义外不得出现裸 50000，必须引用 MAX_RAW_LOOKUP_CHARS');
+
+  const bridgeSrc = read('src/adapters/dsh/memory-tool-bridge.ts');
+  assert.ok(!/\b50000\b/.test(bridgeSrc), 'bridge 不得内嵌字符上限数值，唯一真值在 L5 常量');
+  assert.ok(!/\b20\b/.test(bridgeSrc), 'bridge 不得内嵌条数上限数值');
+});
+
+test('#115 T2：通道默认值只准留在 L6 plugin 一处，assembly 与 bridge 零通道字面量', () => {
+  for (const rel of [
+    'src/assembly/memory-tools.ts',
+    'src/assembly/host-tool-runtime.ts',
+    'src/adapters/dsh/memory-tool-bridge.ts',
+  ]) {
+    const text = read(rel);
+    assert.ok(!/['"]dsh['"]/.test(text), `${rel} 不得出现通道字面量，miss/回查通道一律经注入透传`);
+  }
+  const pluginSrc = read('src/adapters/dsh/plugin.ts');
+  assert.ok(/config\.channel\s*\?\?\s*['"]dsh['"]/.test(pluginSrc), "缺省通道 'dsh' 只允许存在于 L6 plugin 配置解析一处");
 });

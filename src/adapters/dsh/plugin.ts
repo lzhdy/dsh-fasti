@@ -375,8 +375,11 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           registry: resolveToolRegistry(toolCtx),
           mode: gateMode,
           indexDir: path.join(fasti.paths.projection, 'memory-index'),
-          // L6 注入只读下钻端口（#114 E.4.1）：门面结构满足 SourceLookupFacade，装配层不反向 import 门面。
-          sourceLookup: createSourceLookupPort(fasti),
+          // #115 E.5：落空台账通道名复用上方已做非空校验的同一 channel 变量，全链路唯一默认值在本文件。
+          channel,
+          // L6 注入只读下钻端口（#114 E.4.1／#115 通道闸）：第二参盖章本通道，
+          // 门面结构满足 SourceLookupFacade，装配层不反向 import 门面。
+          sourceLookup: createSourceLookupPort(fasti, { channel }),
           log: (message) => ctx.logger.warn('%s %s', LOG_PREFIX, message),
         });
         memoryWiring = wiring;

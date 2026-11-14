@@ -14,7 +14,8 @@ export type FastiErrorCode =
   | 'CONFLICT'
   | 'UNAVAILABLE'
   | 'NOT_IMPLEMENTED'
-  | 'CORRUPTED';
+  | 'CORRUPTED'
+  | 'CHANNEL_BOUNDARY';
 
 export class FastiError extends Error {
   readonly code: FastiErrorCode;
@@ -30,6 +31,17 @@ export class FastiError extends Error {
 export class SchemaError extends FastiError {
   constructor(message: string, options?: { cause?: unknown }) {
     super('SCHEMA', message, options);
+  }
+}
+
+/**
+ * 通道边界越权（#115 附录 E.5 纵深防御）：只读下钻 Pointer 缺失 channel（等价全库遍历）
+ * 或携带与 L6 注入通道不一致的 channel 时，在端口边界 fail-closed 拒绝，且先于任何门面 IO。
+ * 桥接层翻译为稳定信封码 'channel-boundary'，不回传内部通道细节。
+ */
+export class ChannelBoundaryError extends FastiError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super('CHANNEL_BOUNDARY', message, options);
   }
 }
 

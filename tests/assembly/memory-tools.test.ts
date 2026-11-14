@@ -144,6 +144,7 @@ function build(mode: MemoryGateMode, handle: RuntimeMemoryHandle | null) {
     now: fixedNow,
     handle,
     sink: sinkBox.sink,
+    missChannel: 'dsh',
   });
   return { tools, sinkBox };
 }

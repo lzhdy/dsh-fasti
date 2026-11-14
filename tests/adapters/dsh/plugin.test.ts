@@ -185,7 +185,7 @@ test('插件：shadow 但宿主无 tools 服务时安全跳过，插件仍正常
   }
 });
 
-test('插件：memoryGateMode=shadow 时注册恰四个记忆工具，卸载时逐个注销', async () => {
+test('插件：memoryGateMode=shadow 时注册恰六个记忆工具，卸载时逐个注销', async () => {
   const root = makeTempRoot();
   const ctx = new Context();
   const tools = installFakeTools(ctx);
@@ -213,7 +213,7 @@ function spyInjectDeps(ctx: Context): Array<ReadonlyArray<string>> {
   return deps;
 }
 
-test('插件：shadow 经动态 inject(["tools"]) 授权后才注册四工具（真机 without-inject 防护）', async () => {
+test('插件：shadow 经动态 inject(["tools"]) 授权后才注册六工具（真机 without-inject 防护）', async () => {
   const root = makeTempRoot();
   const ctx = new Context();
   const tools = installFakeTools(ctx);

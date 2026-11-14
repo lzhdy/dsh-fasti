@@ -13,7 +13,7 @@
  * type-only 导入；不直接打开 sqlite/fs（N1）。
  */
 
-import { NotFoundError, UnavailableError } from '../core/errors.ts';
+import { ChannelBoundaryError, NotFoundError, SchemaError, UnavailableError } from '../core/errors.ts';
 import { openMemoryRuntime } from '../memory/runtime.ts';
 import type { RuntimeMemoryHandle } from '../memory/runtime.ts';
 import { isSerialRefusable } from '../memory/serial.ts';
@@ -35,6 +35,11 @@ export interface OpenAssembledMemoryToolsInput {
   readonly mode: MemoryGateMode;
   /** 注入时钟；宿主侧默认 () => Date.now()，测试可固定。 */
   readonly now: () => number;
+  /**
+   * 落空台账通道名（#115 E.5）：L6 传入经配置校验的通道名，装配面只原样透传给工具内核，
+   * 本层不内置任何通道默认值或字面量。
+   */
+  readonly missChannel: string;
   /** L6 注入的只读下钻端口（#114 E.4.1）；拆除批完成前可为缺省，运行面以 null 暴露。 */
   readonly sourceLookup?: SourceLookupPort;
 }
@@ -88,20 +93,36 @@ export function projectCardForHost(card: MemoryCard): HostCardView {
   };
 }
 
-/** 宿主薄壳可据以分支处理的稳定错误码（不暴露内部类名/堆栈/路径）。 */
+/**
+ * 宿主薄壳可据以分支处理的稳定错误码（不暴露内部类名/堆栈/路径）。
+ * 注：'not-found' 由桥接层在端口显式返 null（查无/异通道按未找到）时直接出信封，
+ * classify 不产生该码，但纳入联合以锁死工具信封码的穷尽面。
+ */
 export interface HostMemoryErrorKind {
-  readonly code: 'serial-stale' | 'unavailable' | 'internal';
+  readonly code:
+    | 'serial-stale'
+    | 'unavailable'
+    | 'channel-boundary'
+    | 'schema'
+    | 'not-found'
+    | 'internal';
   readonly message: string;
 }
 
 /**
  * 把内核抛出的未知错误归类为稳定、可对模型回显的安全码与固定文案。
  * 序号错误复用 serial.ts 的 isSerialRefusable（M6 assembly 值白名单内）；
- * 不回传原始 message，避免内部路径/实现细节经工具结果外泄。
+ * 通道越权独立成码（#115），不回传原始 message，避免内部通道/路径细节经工具结果外泄。
  */
 export function classifyHostMemoryError(error: unknown): HostMemoryErrorKind {
   if (isSerialRefusable(error)) {
     return { code: 'serial-stale', message: '候选序号已失效或非法，请重新检索后引用最新序号。' };
+  }
+  if (error instanceof ChannelBoundaryError) {
+    return { code: 'channel-boundary', message: '原文回查被通道边界拦截，请使用本次检索返回的指针重新引用。' };
+  }
+  if (error instanceof SchemaError) {
+    return { code: 'schema', message: '工具参数形状非法，请按工具 schema 修正后重试，不做静默降级。' };
   }
   if (error instanceof UnavailableError) {
     return { code: 'unavailable', message: '记忆门工具当前不可用，请稍后重试或检查门控状态。' };
@@ -156,6 +177,7 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
     now: input.now,
     handle,
     sink,
+    missChannel: input.missChannel,
   });
 
   let closed = false;

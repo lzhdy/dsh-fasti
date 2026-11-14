@@ -103,6 +103,11 @@ export interface CreateMemoryToolsDeps {
   /** 运行期窄柄；索引库未就绪时为 null（门工具显式不可用，shadow 回空信封、off 兜底抛错）。 */
   readonly handle: RuntimeMemoryHandle | null;
   readonly sink: ShadowSink;
+  /**
+   * 落空台账通道名（#115 附录 E.5）：L6 复用 plugin 已校验的 config.channel 原样注入，
+   * 内核不内置任何通道字面量；recordMiss 落账 channel 逐字透传该值。
+   */
+  readonly missChannel: string;
 }
 
 function parseStringArray(json: string): readonly string[] {
@@ -174,6 +179,39 @@ async function runShadowObservation(
   }
 }
 
+/**
+ * #115 附录 E.5 落空台账编排钩子（调用方已判定 outcome 为 abstain／no-match，仅 on 态可达）：
+ * 归一化词面非空时，经窄柄 recordMiss 留一笔客观案底。
+ *  - 空查询（normalizeLexicalText 归一为空串，reason='empty-query'）不登记，空词永不落库；
+ *  - 入参恰白名单六字段：anchors v1 恒 null（#116 窗口接线前的登记缺口）、returnedCount 恒 0；
+ *  - append-only 不去重，同词连续两次落空各记一行（编排层不压重，幂等口径由落盘层测试承接）；
+ *  - 本函数内的 try/catch 是 miss 台账**唯一**的冒泡抑制点：只读降级等失败只入案底，
+ *    绝不阻断 gatedSearch 对话主链路（R7）；除此之外不得再吞错。
+ */
+function recordMissOrSwallow(
+  handle: RuntimeMemoryHandle,
+  missChannel: string,
+  text: string,
+  atMs: number,
+): void {
+  const termNorm = normalizeLexicalText(text);
+  if (termNorm === '') {
+    return;
+  }
+  try {
+    handle.recordMiss({
+      termNorm,
+      channel: missChannel,
+      anchorEventId: null,
+      anchorIds: null,
+      returnedCount: 0,
+      observedMs: atMs,
+    });
+  } catch {
+    // 落空台账是旁路案底：刻意不重抛，门控视图照常返回；宿主侧可观测性由窄柄实现自行记录。
+  }
+}
+
 export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
   const requireHandle = (): RuntimeMemoryHandle => {
     if (deps.handle === null) {
@@ -200,6 +238,10 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
       // on：门控检索是唯一召回路径。
       const handle = requireHandle();
       const outcome = await runGatedSearch(handle, { text: input.text, atMs }, input.limit);
+      // #115 E.5：abstain／no-match 且词面非空即留落空案底；hit 不登记，失败不冒泡。
+      if (outcome.status === 'abstain' || outcome.status === 'no-match') {
+        recordMissOrSwallow(handle, deps.missChannel, input.text, atMs);
+      }
       return toGateView(outcome);
     },
 

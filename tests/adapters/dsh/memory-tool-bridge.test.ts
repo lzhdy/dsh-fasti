@@ -27,7 +27,15 @@ import {
   type DshMemoryBridge,
   type DshToolRegistry,
 } from '../../../src/adapters/dsh/memory-tool-bridge.ts';
-import { cleanupTempRoot, makeTempRoot } from '../../helpers.ts';
+import { ChannelBoundaryError } from '../../../src/core/errors.ts';
+import {
+  projectExperienceSummary,
+  type ExperienceSummaryView,
+  type Pointer,
+  type RawTurnLookupView,
+  type SourceLookupPort,
+} from '../../../src/assembly/source-lookup.ts';
+import { cleanupTempRoot, makeTempRoot, makeExperience } from '../../helpers.ts';
 
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
 const DAY = 24 * 3600 * 1000;
@@ -122,24 +130,27 @@ function byName(bridge: DshMemoryBridge): Map<string, ToolDefinition> {
   return new Map(bridge.definitions.map((d) => [d.name, d]));
 }
 
-test('WP4b 薄壳：恰注册四个记忆工具，命名/参数/字符串输出契约正确', async () => {
+test('WP4b 薄壳：恰注册六个记忆工具（通道一四件套+通道二两件套），命名/参数/字符串输出契约正确', async () => {
   const root = makeTempRoot('wp4b-bridge-shape-');
   try {
     const bridge = openDshMemoryBridge({
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'off',
       now: NOW,
+      channel: 'dsh',
     });
     assert.deepEqual(
       bridge.definitions.map((d) => d.name).sort(),
       [
         MEMORY_TOOL_NAMES.addMissAlias,
         MEMORY_TOOL_NAMES.cardsByAnchor,
+        MEMORY_TOOL_NAMES.experienceSummary,
         MEMORY_TOOL_NAMES.gatedSearch,
+        MEMORY_TOOL_NAMES.rawText,
         MEMORY_TOOL_NAMES.resolvePointer,
       ].sort(),
     );
-    assert.equal(bridge.definitions.length, 4);
+    assert.equal(bridge.definitions.length, 6);
 
     for (const def of bridge.definitions) {
       assert.equal(def.output.schema.type, 'string', `${def.name} 统一字符串输出`);
@@ -183,6 +194,7 @@ test('WP4b 薄壳：缺库 off 态检索 fail-closed 报 unavailable、信封无
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'off',
       now: NOW,
+      channel: 'dsh',
     });
     const tools = byName(bridge);
 
@@ -217,6 +229,7 @@ test('WP4b 薄壳：未检索就解析序号 → fail-closed 提示先检索（�
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'on',
       now: NOW,
+      channel: 'dsh',
     });
     const resolve = byName(bridge).get(MEMORY_TOOL_NAMES.resolvePointer) as ToolDefinition;
     const result = await callTool(resolve, { serials: [1] });
@@ -232,7 +245,7 @@ test('WP4b 薄壳：on 态检索后序号可解析；新检索替换序号表后
   const root = makeTempRoot('wp4b-bridge-serial-');
   try {
     const indexDir = seedOneCard(root);
-    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW });
+    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW, channel: 'dsh' });
     const tools = byName(bridge);
     const search = tools.get(MEMORY_TOOL_NAMES.gatedSearch) as ToolDefinition;
     const resolve = tools.get(MEMORY_TOOL_NAMES.resolvePointer) as ToolDefinition;
@@ -262,7 +275,7 @@ test('WP4b 薄壳：卡详情经 N14 白名单投影，模型侧看不到任何�
   const root = makeTempRoot('wp4b-bridge-n14-');
   try {
     const indexDir = seedOneCard(root);
-    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW });
+    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW, channel: 'dsh' });
     const cards = byName(bridge).get(MEMORY_TOOL_NAMES.cardsByAnchor) as ToolDefinition;
     const result = await callTool(cards, { experienceId: ANCHOR });
     assert.equal(result.ok, true);
@@ -293,7 +306,7 @@ test('WP4b 薄壳：卡详情经 N14 白名单投影，模型侧看不到任何�
   }
 });
 
-test('WP4b 薄壳：register 聚合四个 disposer，注销时每个工具恰好注销一次', () => {
+test('WP4b 薄壳：register 聚合六个 disposer，注销时每个工具恰好注销一次', () => {
   const root = makeTempRoot('wp4b-bridge-reg-');
   try {
     const events: string[] = [];
@@ -307,11 +320,12 @@ test('WP4b 薄壳：register 聚合四个 disposer，注销时每个工具恰好
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'off',
       now: NOW,
+      channel: 'dsh',
     });
     const unregisterAll = registerMemoryToolDefinitions(registry, bridge.definitions);
-    assert.equal(events.filter((e) => e.startsWith('reg:')).length, 4);
+    assert.equal(events.filter((e) => e.startsWith('reg:')).length, 6);
     unregisterAll();
-    assert.equal(events.filter((e) => e.startsWith('unreg:')).length, 4);
+    assert.equal(events.filter((e) => e.startsWith('unreg:')).length, 6);
     void bridge.dispose();
   } finally {
     cleanupTempRoot(root);
@@ -322,7 +336,7 @@ test('WP4b 薄壳：缺库降级不侧建索引文件，dispose 可重复调用�
   const root = makeTempRoot('wp4b-bridge-dispose-');
   try {
     const indexDir = path.join(root, 'projection', 'memory-index');
-    const bridge = openDshMemoryBridge({ indexDir, mode: 'off', now: NOW });
+    const bridge = openDshMemoryBridge({ indexDir, mode: 'off', now: NOW, channel: 'dsh' });
     const { existsSync } = await import('node:fs');
     assert.ok(!existsSync(path.join(indexDir, MEMORY_INDEX_FILE)));
     await bridge.dispose();
@@ -361,6 +375,7 @@ test('WP4b 接线：mode=off 时不打开桥接、不注册任何工具（线上
       mode: 'off',
       indexDir: path.join(root, 'projection', 'memory-index'),
       now: NOW,
+      channel: 'dsh',
     });
     assert.equal(wiring.registered, false);
     assert.equal(fake.definitions.length, 0);
@@ -379,6 +394,7 @@ test('WP4b 接线：宿主无 tools 服务（registry=null）时安全跳过、�
       mode: 'shadow',
       indexDir: path.join(root, 'projection', 'memory-index'),
       now: NOW,
+      channel: 'dsh',
     });
     assert.equal(wiring.registered, false);
     await wiring.dispose();
@@ -388,7 +404,7 @@ test('WP4b 接线：宿主无 tools 服务（registry=null）时安全跳过、�
 });
 
 for (const mode of ['shadow', 'on'] as MemoryGateMode[]) {
-  test(`WP4b 接线：mode=${mode} 注册恰四工具，dispose 全注销且幂等`, async () => {
+  test(`WP4b 接线：mode=${mode} 注册恰六工具，dispose 全注销且幂等`, async () => {
     const root = makeTempRoot(`wp4b-wire-${mode}-`);
     try {
       const fake = makeFakeRegistry();
@@ -397,13 +413,14 @@ for (const mode of ['shadow', 'on'] as MemoryGateMode[]) {
         mode,
         indexDir: path.join(root, 'projection', 'memory-index'),
         now: NOW,
+        channel: 'dsh',
       });
       assert.equal(wiring.registered, true);
-      assert.equal(fake.definitions.length, 4);
+      assert.equal(fake.definitions.length, 6);
       await wiring.dispose();
-      assert.equal(fake.unregisterCount(), 4);
+      assert.equal(fake.unregisterCount(), 6);
       await wiring.dispose();
-      assert.equal(fake.unregisterCount(), 4, '重复 dispose 不得再次注销');
+      assert.equal(fake.unregisterCount(), 6, '重复 dispose 不得再次注销');
     } finally {
       cleanupTempRoot(root);
     }
@@ -419,6 +436,7 @@ test('WP4b 接线：shadow 态检索工具恒定回 observing 空信封（无 so
       mode: 'shadow',
       indexDir: path.join(root, 'projection', 'memory-index'),
       now: NOW,
+      channel: 'dsh',
     });
     assert.equal(wiring.registered, true);
     const search = fake.definitions.find((d) => d.name === MEMORY_TOOL_NAMES.gatedSearch) as ToolDefinition;
@@ -433,6 +451,350 @@ test('WP4b 接线：shadow 态检索工具恒定回 observing 空信封（无 so
     assert.deepEqual(data.cards, []);
     assert.ok(!('source' in data), '空信封不得携带 source 双形态键');
     await wiring.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+// ── #115 红相：通道二两个回查工具（4→6）、显式键白名单、fail-closed 与翻页话术 ──
+//
+// 下列符号绿相才落地：MEMORY_TOOL_NAMES.experienceSummary/rawText、OpenDshMemoryBridgeInput
+// 的 channel 注入、RawTurnLookupView 信封、ChannelBoundaryError 安全码映射。红相 tsc/运行期必红。
+
+function makeSpyPort(poisonSummary = false, rawThrows?: Error) {
+  const summaryCalls: string[] = [];
+  const rawCalls: Pointer[] = [];
+  const validSummary = projectExperienceSummary(makeExperience());
+  const summary: ExperienceSummaryView = poisonSummary
+    ? { ...validSummary, rawText: '走私原文' } as ExperienceSummaryView
+    : validSummary;
+  const envelope: RawTurnLookupView = {
+    turns: [{ channel: 'dsh', shard: '2026-11', seq: 1, eventId: 'e1', rawText: '通道二原文' }],
+    truncated: false,
+    totalTurns: 1,
+    totalChars: 5,
+    midRow: false,
+    nextSeq: null,
+    nextCharOffset: null,
+  };
+  const port: SourceLookupPort = {
+    async summaryByAnchor(anchorId: string) {
+      summaryCalls.push(anchorId);
+      return summary;
+    },
+    async resolveRawText(pointer: Pointer) {
+      rawCalls.push(pointer);
+      if (rawThrows !== undefined) throw rawThrows;
+      return envelope;
+    },
+  };
+  return { port, summaryCalls, rawCalls, validSummary, envelope };
+}
+
+for (const mode of ['shadow', 'on'] as MemoryGateMode[]) {
+  test(`#115 B1（${mode}）：注册面 4→6，两新工具名在册且与 MEMORY_TOOL_NAMES 一一对应`, async () => {
+    const root = makeTempRoot(`wp4b-lookup-six-${mode}-`);
+    try {
+      const bridge = openDshMemoryBridge({
+        indexDir: path.join(root, 'projection', 'memory-index'),
+        mode,
+        now: NOW,
+        channel: 'dsh',
+        sourceLookup: makeSpyPort().port,
+      });
+      const names = bridge.definitions.map((d) => d.name).sort();
+      assert.deepEqual(names, [
+        MEMORY_TOOL_NAMES.addMissAlias,
+        MEMORY_TOOL_NAMES.cardsByAnchor,
+        MEMORY_TOOL_NAMES.experienceSummary,
+        MEMORY_TOOL_NAMES.gatedSearch,
+        MEMORY_TOOL_NAMES.rawText,
+        MEMORY_TOOL_NAMES.resolvePointer,
+      ].sort());
+      assert.equal(bridge.definitions.length, 6, '通道二回查两工具净增，注册面 4→6');
+      await bridge.dispose();
+    } finally {
+      cleanupTempRoot(root);
+    }
+  });
+}
+
+test('#115 B2：两工具 description 标明通道二回查专用；参数 schema 无 channel 键，原文工具含 seq 区间翻页话术', async () => {
+  const root = makeTempRoot('wp4b-lookup-desc-');
+  try {
+    const bridge = openDshMemoryBridge({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'on',
+      now: NOW,
+      channel: 'dsh',
+      sourceLookup: makeSpyPort().port,
+    });
+    const tools = byName(bridge);
+    const summaryDef = tools.get(MEMORY_TOOL_NAMES.experienceSummary) as ToolDefinition;
+    const rawDef = tools.get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition;
+
+    for (const def of [summaryDef, rawDef]) {
+      assert.ok(String(def.description).includes('通道二回查'), `${def.name} 必须写明通道二回查专用、返回正文`);
+    }
+    assert.ok(
+      String(rawDef.description).includes('seq') && String(rawDef.description).includes('区间'),
+      '截断后必须告知她用 Pointer.seq 区间翻页取剩余部分，truncated 不能是死胡同',
+    );
+    assert.ok(
+      String(rawDef.description).includes('charOffset') && String(rawDef.description).includes('midRow'),
+      '单行自身超闸时行内剩余只能用 charOffset 续取，话术必须写明，否则 midRow 是新死胡同',
+    );
+    assert.ok(
+      String(rawDef.description).includes('nextSeq') && String(rawDef.description).includes('nextCharOffset'),
+      '话术必须锁死续取配对：用 nextSeq 起、保留原上界作为 seq 区间、带 nextCharOffset',
+    );
+    assert.ok(
+      String(rawDef.description).includes('首行') && String(rawDef.description).includes('上界'),
+      'charOffset 语义必须写明"作用于本次解析首行"，且续取保留原区间上界以一次取完尾部',
+    );
+    assert.ok(
+      String(rawDef.description).includes('作为下一次调用的 seq')
+        && String(rawDef.description).includes('作为下一次调用的 charOffset'),
+      '续取话术必须写死参数映射：信封 nextSeq 映射为 seq、nextCharOffset 映射为 charOffset；'
+        + 'schema 没有这两个同名参数，让模型直传会被白名单剥掉并重复取同一段',
+    );
+
+    const summaryParams = summaryDef.parameters as { properties: Record<string, unknown>; required: string[] };
+    assert.deepEqual(Object.keys(summaryParams.properties).sort(), ['experienceId']);
+    const rawParams = rawDef.parameters as { properties: Record<string, unknown>; required: string[] };
+    assert.deepEqual(Object.keys(rawParams.properties).sort(), ['charOffset', 'id', 'seq', 'shard']);
+    assert.ok(!('channel' in rawParams.properties), '模型侧 schema 不得出现 channel：通道只能 L6 盖章');
+    assert.ok(!rawParams.required.includes('charOffset'), 'charOffset 只在 midRow 续取时按需传入');
+    await bridge.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#115 B3：摘要/原文 happy path 经端口窄 DTO 返回，入参只透传白名单键', async () => {
+  const root = makeTempRoot('wp4b-lookup-happy-');
+  try {
+    const spy = makeSpyPort();
+    const bridge = openDshMemoryBridge({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'on',
+      now: NOW,
+      channel: 'dsh',
+      sourceLookup: spy.port,
+    });
+    const tools = byName(bridge);
+
+    const summaryResult = await callTool(
+      tools.get(MEMORY_TOOL_NAMES.experienceSummary) as ToolDefinition,
+      { experienceId: spy.validSummary.id },
+    );
+    assert.equal(summaryResult.ok, true);
+    assert.deepEqual(summaryResult.data, spy.validSummary);
+    assert.deepEqual(spy.summaryCalls, [spy.validSummary.id]);
+
+    const rawResult = await callTool(tools.get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition, {
+      id: 'raw_1',
+      shard: '2026-11',
+      seq: 1,
+    });
+    assert.equal(rawResult.ok, true);
+    assert.deepEqual(rawResult.data, spy.envelope);
+    assert.deepEqual(spy.rawCalls[0], { id: 'raw_1', shard: '2026-11', seq: 1, channel: 'dsh' });
+    await bridge.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#115 B4：模型私传 channel/未知键一律显式剥离，执行体永远收不到模型 channel（不依赖框架自动过滤）', async () => {
+  const root = makeTempRoot('wp4b-lookup-whitelist-');
+  try {
+    const spy = makeSpyPort();
+    const bridge = openDshMemoryBridge({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'on',
+      now: NOW,
+      channel: 'dsh',
+      sourceLookup: spy.port,
+    });
+    const rawDef = byName(bridge).get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition;
+
+    const result = await callTool(rawDef, {
+      id: 'raw_1',
+      shard: '2026-11',
+      seq: [1, 3],
+      channel: 'evil-channel',
+      rogue: 'x',
+    });
+    assert.equal(result.ok, true);
+    const received = spy.rawCalls[0]!;
+    assert.equal(received.channel, 'dsh', '模型私传的异通道必须被剥离，盖上 L6 注入通道');
+    assert.deepEqual(Object.keys(received).sort(), ['channel', 'id', 'seq', 'shard'], '显式键白名单：未知键不到执行体');
+    await bridge.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#115 B5：端口未注入（null 缺省）时两工具 fail-closed 返回 unavailable，不吞成空成功', async () => {
+  const root = makeTempRoot('wp4b-lookup-null-');
+  try {
+    const bridge = openDshMemoryBridge({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'on',
+      now: NOW,
+      channel: 'dsh',
+    });
+    const tools = byName(bridge);
+    const summaryResult = await callTool(
+      tools.get(MEMORY_TOOL_NAMES.experienceSummary) as ToolDefinition,
+      { experienceId: 'exp_1' },
+    );
+    const rawResult = await callTool(tools.get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition, {
+      id: 'raw_1',
+      seq: 1,
+    });
+    assert.equal(summaryResult.ok, false);
+    assert.equal(summaryResult.error?.code, 'unavailable');
+    assert.equal(summaryResult.data, undefined);
+    assert.equal(rawResult.ok, false);
+    assert.equal(rawResult.error?.code, 'unavailable');
+    assert.equal(rawResult.data, undefined);
+    await bridge.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#115 B6：端口层 ChannelBoundaryError 翻译成稳定安全码 channel-boundary', async () => {
+  const root = makeTempRoot('wp4b-lookup-boundary-');
+  try {
+    const spy = makeSpyPort(false, new ChannelBoundaryError('Pointer 通道与注入通道不一致，拒绝跨通道读取'));
+    const bridge = openDshMemoryBridge({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'on',
+      now: NOW,
+      channel: 'dsh',
+      sourceLookup: spy.port,
+    });
+    const result = await callTool(byName(bridge).get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition, {
+      id: 'raw_1',
+      seq: 1,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error?.code, 'channel-boundary');
+    assert.equal(result.data, undefined);
+    await bridge.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#115 B7：端口返回污染形状（多余字段）时边界拒收，失败信封不夹带数据', async () => {
+  const root = makeTempRoot('wp4b-lookup-poison-');
+  try {
+    const bridge = openDshMemoryBridge({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'on',
+      now: NOW,
+      channel: 'dsh',
+      sourceLookup: makeSpyPort(true).port,
+    });
+    const result = await callTool(
+      byName(bridge).get(MEMORY_TOOL_NAMES.experienceSummary) as ToolDefinition,
+      { experienceId: 'exp_1' },
+    );
+    assert.equal(result.ok, false, '键集守卫不允许污染 DTO 出桥');
+    assert.equal(result.data, undefined);
+    await bridge.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#115 B8：charOffset/seq 键存在但形状非法时 fail-closed，零端口调用、绝不静默降级', async () => {
+  const root = makeTempRoot('wp4b-lookup-badargs-');
+  // JSON schema 子集表达不了的形状（无 minimum/元组长度约束）：必须由桥接执行体自己拒收，回稳定信封码。
+  const envelopeRejected: ReadonlyArray<Record<string, unknown>> = [
+    { id: 'raw_1', seq: 1, charOffset: -5 },
+    { id: 'raw_1', seq: [1] },
+    { id: 'raw_1', seq: [1, 2, 3] },
+  ];
+  // JSON schema 子集本身即可判死的形状：defineTool 包装层在 userExecute 之前抛 ToolArgsError，
+  // 同样属于 fail-closed（拒绝而非降级），且端口同样零调用。
+  const frameworkRejected: ReadonlyArray<Record<string, unknown>> = [
+    { id: 'raw_1', seq: 1, charOffset: 1.5 },
+    { id: 'raw_1', seq: '1' },
+    { id: 'raw_1', seq: [1, '3'] },
+  ];
+  try {
+    for (const badArgs of envelopeRejected) {
+      const spy = makeSpyPort();
+      const bridge = openDshMemoryBridge({
+        indexDir: path.join(root, 'projection', 'memory-index'),
+        mode: 'on',
+        now: NOW,
+        channel: 'dsh',
+        sourceLookup: spy.port,
+      });
+      const result = await callTool(
+        byName(bridge).get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition,
+        badArgs,
+      );
+      assert.equal(result.ok, false, `非法入参不得被吞成成功：${JSON.stringify(badArgs)}`);
+      assert.equal(result.error?.code, 'schema', '越过框架 schema 的形状由桥接统一稳定码 schema 拒绝');
+      assert.equal(result.data, undefined, '失败信封不夹带数据');
+      assert.equal(spy.rawCalls.length, 0, '拒绝发生在端口调用之前，非法参数零 IO，不存在静默从头读');
+      await bridge.dispose();
+    }
+    for (const badArgs of frameworkRejected) {
+      const spy = makeSpyPort();
+      const bridge = openDshMemoryBridge({
+        indexDir: path.join(root, 'projection', 'memory-index'),
+        mode: 'on',
+        now: NOW,
+        channel: 'dsh',
+        sourceLookup: spy.port,
+      });
+      await assert.rejects(
+        callTool(byName(bridge).get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition, badArgs),
+        /invalid arguments/,
+        `框架 schema 校验必须硬拒：${JSON.stringify(badArgs)}`,
+      );
+      assert.equal(spy.rawCalls.length, 0, '框架层拒收同样不得触达端口');
+      await bridge.dispose();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#115 B9：端口返 null（查无/异通道按未找到）时回 not-found，与 unavailable、成功信封三分形', async () => {
+  const root = makeTempRoot('wp4b-lookup-notfound-');
+  try {
+    const nullPort: SourceLookupPort = {
+      async summaryByAnchor() {
+        return null;
+      },
+      async resolveRawText() {
+        throw new Error('本用例不应触发原文路径');
+      },
+    };
+    const bridge = openDshMemoryBridge({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'on',
+      now: NOW,
+      channel: 'dsh',
+      sourceLookup: nullPort,
+    });
+    const result = await callTool(
+      byName(bridge).get(MEMORY_TOOL_NAMES.experienceSummary) as ToolDefinition,
+      { experienceId: 'missing' },
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.error?.code, 'not-found');
+    assert.equal(result.data, undefined);
+    await bridge.dispose();
   } finally {
     cleanupTempRoot(root);
   }
