@@ -6,8 +6,8 @@
  *  - 每条探针显式暴露 hasGold，构成 hasGold × committed 2×2（N2 分母自证）；
  *  - wc 按 hasGold 拆分 wc_G/wc_NG，杜绝双计：G = cc+wc_G+wa、NG = ca+wc_NG、恒等 N = G+NG；
  *  - 各率分母钉死、零分母显式 N/A（不填 0、不参与达标判定，防造假）；
- *  - 旧 r2 口径（**错误率**：top1≠金标即计错、含正确弃权，与 decoy/metrics 的 r2 同向）逐字并列，
- *    并标注与 falseCommitRate 的口径差（后者不计弃权）；
+ *  - 粗召回基线 r2（**错误率**：top1≠金标即计错、含正确弃权，与 decoy/metrics 的 r2 同向）逐字并列，
+ *    并标注与 falseCommitRate 的口径差（后者不计弃权）；"旧路检索质量"仅作参照，不参与门控验收；
  *  - 第一层只做机制烟测，不报 R1/R2 达标（D4）；不 import 门面/store。
  */
 
@@ -46,7 +46,7 @@ export type NaOrNumber = number | NaEstimate;
 
 const na = (reason: string): NaEstimate => ({ status: 'n-a', reason });
 
-/** N/A 判定类型谓词（供调用方安全窄化 legacyR2 等联合类型）。 */
+/** N/A 判定类型谓词（供调用方安全窄化 coarseR2 等联合类型）。 */
 export function isNaEstimate(
   value: NaOrNumber | { point: number; n: number },
 ): value is NaEstimate {
@@ -92,8 +92,11 @@ export interface FourStateSummary {
   /** 高危五类探针中的 wrong-commit 数（硬约束须为 0；弃权不计）。 */
   highRiskWrongCommits: number;
   rates: FourStateRates;
-  /** 旧口径 r2（错误率：有金标题上 top1≠金标即计错，含弃权），与 falseCommitRate 并列报告。 */
-  legacyR2: { point: number; n: number } | NaEstimate;
+  /**
+   * 粗召回基线 r2（错误率：有金标题上 top1≠金标即计错，含弃权），与 falseCommitRate 并列报告。
+   * 该基线口径与旧路检索同义、与门控口径不同源，是"未过门之前的检索质量"参照，不参与门控验收判定。
+   */
+  coarseR2: { point: number; n: number } | NaEstimate;
 }
 
 /**
@@ -106,16 +109,16 @@ export function summarizeFourState(probes: readonly FourStateProbeInput[]): Four
   let wa = 0;
   let ca = 0;
   let highRiskWrongCommits = 0;
-  let legacyError = 0;
-  let legacyN = 0;
+  let coarseError = 0;
+  let coarseN = 0;
 
   for (const item of probes) {
     const cls = classifyProbe(item);
     if (item.hasGold) {
-      legacyN += 1;
-      // 旧 r2 是错误率：非 correct-commit（含 wrong-commit 与弃权）一律计错（对齐 decoy/metrics 口径）。
+      coarseN += 1;
+      // 粗召回基线 r2 是错误率：非 correct-commit（含 wrong-commit 与弃权）一律计错（对齐 decoy/metrics 口径）。
       if (cls !== 'correct-commit') {
-        legacyError += 1;
+        coarseError += 1;
       }
     }
     if (cls === 'correct-commit') {
@@ -158,6 +161,6 @@ export function summarizeFourState(probes: readonly FourStateProbeInput[]): Four
       correctRejectRate: NG > 0 ? ca / NG : na('no-no-gold-probe'),
       abstainRate: N > 0 ? (ca + wa) / N : na('no-probe'),
     },
-    legacyR2: legacyN > 0 ? { point: legacyError / legacyN, n: legacyN } : na('no-gold-probe'),
+    coarseR2: coarseN > 0 ? { point: coarseError / coarseN, n: coarseN } : na('no-gold-probe'),
   };
 }

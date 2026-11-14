@@ -21,7 +21,8 @@ import {
   openAssembledMemoryTools,
   projectCardForHost,
 } from '../../assembly/host-tool-runtime.ts';
-import type { GatedSearchView, LegacySearch, MemoryGateMode } from '../../assembly/memory-tools.ts';
+import type { GatedSearchView, MemoryGateMode } from '../../assembly/memory-tools.ts';
+import type { SourceLookupPort } from '../../assembly/source-lookup.ts';
 
 /** 四个模型可见记忆工具的注册名（snake_case，统一前缀避免与宿主/其它插件撞名）。 */
 export const MEMORY_TOOL_NAMES = {
@@ -47,7 +48,11 @@ export interface OpenDshMemoryBridgeInput {
   readonly indexDir: string;
   readonly mode: MemoryGateMode;
   readonly now?: () => number;
-  readonly legacySearch: LegacySearch;
+  /**
+   * L6 注入的只读下钻端口（#114 E.4.1）。 additive 可选：通道二工具消费接线前缺省为 null；
+   * 绑定后随装配运行面一同生命周期管理，不持额外资源。
+   */
+  readonly sourceLookup?: SourceLookupPort;
 }
 
 /** 统一成功信封（canonical 为字符串，output.schema=string）。 */
@@ -69,7 +74,7 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
     indexDir: input.indexDir,
     mode: input.mode,
     now: input.now ?? (() => Date.now()),
-    legacySearch: input.legacySearch,
+    ...(input.sourceLookup === undefined ? {} : { sourceLookup: input.sourceLookup }),
   });
 
   // 会话级私有序号表：仅短期闭包持有，不 JSON 化、不落库、不跨会话；每次 gatedSearch 整体替换。
@@ -78,7 +83,8 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
   const gatedSearch = defineTool({
     name: MEMORY_TOOL_NAMES.gatedSearch,
     description:
-      'Search long-term memory with a keyword under the correctness gate. Returns gated candidates with private serial numbers; pass the serials to the resolve tool to pin card ids.',
+      'Search long-term memory with a keyword under the correctness gate. Returns gated candidates with private serial numbers; pass the serials to the resolve tool to pin card ids. '
+      + '观测期检索不可用：影子试运行（shadow）态本工具恒定返回 observing 空信封，不产出任何候选，仅内部记录无原文观测。',
     parameters: {
       text: { type: 'string', required: true, description: 'Search keyword or phrase.' },
       limit: { type: 'number', description: 'Optional maximum number of candidates.' },
@@ -96,10 +102,9 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
         // 每次检索整体替换私有序号表，旧序号立即失效。
         serialMap = view.serialMap;
         return envelopeOk({
-          source: view.source,
           status: view.status,
           ...(view.reason === undefined ? {} : { reason: view.reason }),
-          // GatedCardView 本身已是白名单 DTO，不含 serialMap/敏感列。
+          // GatedCardView 本身已是白名单 DTO，不含 serialMap/敏感列；信封不再携带 source 双形态键。
           cards: view.cards,
         });
       } catch (error) {
@@ -216,7 +221,8 @@ export interface WireMemoryToolsInput {
   readonly registry: DshToolRegistry | null;
   readonly mode: MemoryGateMode;
   readonly indexDir: string;
-  readonly legacySearch: LegacySearch;
+  /** L6 只读下钻端口（#114 E.4.1）；透传至桥接与装配层，缺省 null。 */
+  readonly sourceLookup?: SourceLookupPort;
   readonly now?: () => number;
   readonly log?: (message: string) => void;
 }
@@ -236,8 +242,9 @@ const noopWiringDispose: MemoryWiring['dispose'] = async () => undefined;
  *
  * 安全阶梯：
  *  - mode='off'（默认）：不打开桥接、不注册任何工具，未显式开启时线上行为零变化；
- *  - registry=null（宿主无 tools 服务）：安全跳过并留日志，旧路召回不受影响；
- *  - 'shadow'/'on'：打开桥接并注册四工具；shadow 主返回仍旧路（仅旁路影子观测），on 门才生效。
+ *  - registry=null（宿主无 tools 服务）：安全跳过并留日志，门控工具不接线；
+ *  - 'shadow'/'on'：打开桥接并注册四工具；shadow 对外恒定 observing 空信封（仅旁路影子观测），
+ *    on 态门控召回才真正生效。
  */
 export function wireMemoryTools(input: WireMemoryToolsInput): MemoryWiring {
   if (input.mode === 'off') {
@@ -245,7 +252,7 @@ export function wireMemoryTools(input: WireMemoryToolsInput): MemoryWiring {
   }
   if (input.registry === null) {
     input.log?.(
-      '记忆门已配置开启但宿主未提供 tools 服务，本次跳过记忆工具注册（旧路召回不受影响）',
+      '记忆门已配置开启但宿主未提供 tools 服务，本次跳过记忆工具注册（门控工具不接线）',
     );
     return { registered: false, dispose: noopWiringDispose };
   }
@@ -253,7 +260,7 @@ export function wireMemoryTools(input: WireMemoryToolsInput): MemoryWiring {
   const bridge = openDshMemoryBridge({
     indexDir: input.indexDir,
     mode: input.mode,
-    legacySearch: input.legacySearch,
+    ...(input.sourceLookup === undefined ? {} : { sourceLookup: input.sourceLookup }),
     ...(input.now === undefined ? {} : { now: input.now }),
   });
   const unregisterAll = registerMemoryToolDefinitions(input.registry, bridge.definitions);

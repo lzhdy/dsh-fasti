@@ -213,6 +213,15 @@ export interface ExplainedRankedCard extends RankedCard {
 /** 布尔门裁决状态（#44）：hit=至少一卡过强通道；abstain=有候选但全被拒；no-match=无词面候选/空查询。 */
 export type GatedStatus = 'hit' | 'abstain' | 'no-match';
 
+/**
+ * 影子观测口径标记（#114 附录 E.4.2）：
+ *  - gated-full：更名后新写样本，candidateCount 是门过滤前全集长度，可用于全集统计；
+ *  - legacy-limited：历史旧行读时标注（旧计数经 limit 截断），candidateCount 不可重建为 null，
+ *    Q4 只取同口径段，两段禁止加总。
+ * observing 是对外信封状态、不是门裁决结果，严禁并入本联合或 GatedStatus。
+ */
+export type CountScope = 'gated-full' | 'legacy-limited';
+
 /** 受控原因码（客观、稳定、可观测；不写原始查询、无情绪措辞）。 */
 export type GateReasonCode =
   | 'empty-query'
@@ -234,6 +243,12 @@ export interface GatedRankedCard extends ExplainedRankedCard {
 /** 布尔门一次检索的完整裁决结果（含被拒候选，不静默丢弃，供可解释与漏召统计）。 */
 export interface GatedSearchOutcome {
   status: GatedStatus;
+  /**
+   * 门过滤前的词面候选全集条数（applyGate 入参 candidates.length，#114）。
+   * 与 accepted 不同：accepted 已过门裁决且按 limit 截断；本字段不受 limit 影响，
+   * 供影子观测在不二次检索的前提下记录门控口径（gated-full）全集规模。加字段不删字段。
+   */
+  candidateCount: number;
   /** 过门候选，保持检索 score 排序并已按调用方 limit 截断。 */
   accepted: GatedRankedCard[];
   /** 被拒候选全集（不截断），每张附原因码。 */

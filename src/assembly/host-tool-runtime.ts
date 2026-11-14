@@ -3,8 +3,8 @@
  *
  * 这是 DSH（及其它未来宿主）薄壳与记忆内核之间唯一的编排点，本身不 import 任何
  * `@deepseek-ai/*` 宿主包，离线 node:test 即可完整验证。职责：
- *  1. 打开运行期窄柄；索引库不存在时降级为 handle=null（旧路仍可用），其余错误照常抛出；
- *  2. 把宿主注入的旧路检索、固定时钟与影子 sink 交给 createMemoryTools；
+ *  1. 打开运行期窄柄；索引库不存在时降级为 handle=null（门工具显式不可用），其余错误照常抛出；
+ *  2. 把固定时钟与影子 sink 交给 createMemoryTools（#114 拆除后无旁路检索端口，召回只走门）；
  *  3. 影子 sink 做 ShadowFact→窄柄入参的字段改名（atMs→observedMs），且失败隔离不冒泡；
  *  4. 提供模型回显卡的 N14 白名单投影 projectCardForHost，剥离全部内部/敏感列；
  *  5. 统一、幂等的 dispose。
@@ -20,8 +20,8 @@ import { isSerialRefusable } from '../memory/serial.ts';
 import type { ShadowObservationInput } from '../memory/shadow-write.ts';
 import type { GateReasonCode, MemoryCard } from '../memory/types.ts';
 import { createMemoryTools } from './memory-tools.ts';
+import type { SourceLookupPort } from './source-lookup.ts';
 import type {
-  LegacySearch,
   MemoryGateMode,
   MemoryTools,
   ShadowFact,
@@ -35,15 +35,17 @@ export interface OpenAssembledMemoryToolsInput {
   readonly mode: MemoryGateMode;
   /** 注入时钟；宿主侧默认 () => Date.now()，测试可固定。 */
   readonly now: () => number;
-  /** 宿主旧路检索（如 Fasti.search），字段与 LegacyHit 对齐。 */
-  readonly legacySearch: LegacySearch;
+  /** L6 注入的只读下钻端口（#114 E.4.1）；拆除批完成前可为缺省，运行面以 null 暴露。 */
+  readonly sourceLookup?: SourceLookupPort;
 }
 
 /** 装配产物：四方法工具集 + 窄柄就绪标志 + 幂等关闭。 */
 export interface AssembledMemoryRuntime {
   readonly tools: MemoryTools;
-  /** 窄柄是否成功打开（false 表示已降级为纯旧路，门工具将报不可用）。 */
+  /** 窄柄是否成功打开（false 表示门工具显式报不可用，shadow 仍回 observing 空信封）。 */
   readonly indexReady: boolean;
+  /** L6 只读下钻端口；未注入时为 null。本批只完成绑定，工具消费随通道二接线卡切换。 */
+  readonly sourceLookup: SourceLookupPort | null;
   dispose(): Promise<void>;
 }
 
@@ -102,7 +104,7 @@ export function classifyHostMemoryError(error: unknown): HostMemoryErrorKind {
     return { code: 'serial-stale', message: '候选序号已失效或非法，请重新检索后引用最新序号。' };
   }
   if (error instanceof UnavailableError) {
-    return { code: 'unavailable', message: '记忆门工具当前不可用，普通检索不受影响，可先使用普通检索。' };
+    return { code: 'unavailable', message: '记忆门工具当前不可用，请稍后重试或检查门控状态。' };
   }
   return { code: 'internal', message: '记忆工具调用失败，请重试或改用普通检索。' };
 }
@@ -133,7 +135,8 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
         const observation: ShadowObservationInput = {
           termNorm: fact.termNorm,
           gatedStatus: fact.gatedStatus,
-          legacyCount: fact.legacyCount,
+          candidateCount: fact.candidateCount,
+          countScope: fact.countScope,
           acceptedCount: fact.acceptedCount,
           // ShadowFact 为保持 assembly 对 memory 内部联合的最小耦合而把原因码宽化为 string[]；
           // 这些值唯一来源是内核 gate 输出，本就属 GateReasonCode，在此边界恢复类型。
@@ -143,7 +146,7 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
         };
         handle.recordShadowObservation(observation);
       } catch {
-        // 影子观测失败只可观测、不可阻塞召回；吞错并保持旧路/门控结果照常返回。
+        // 影子观测失败只可观测、不可阻塞召回；吞错并保持门控结果/空信封照常返回。
       }
     },
   };
@@ -152,7 +155,6 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
     mode: input.mode,
     now: input.now,
     handle,
-    legacySearch: input.legacySearch,
     sink,
   });
 
@@ -166,5 +168,5 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
     }
   };
 
-  return { tools, indexReady, dispose };
+  return { tools, indexReady, sourceLookup: input.sourceLookup ?? null, dispose };
 }

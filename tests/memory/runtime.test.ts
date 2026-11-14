@@ -426,7 +426,8 @@ test('N16 recordShadowObservation：第六窄方法落独立影子 JSONL，termN
       const shadowInput: ShadowObservationInput = {
         termNorm: 'cat',
         gatedStatus: 'abstain',
-        legacyCount: 2,
+        candidateCount: 2,
+        countScope: 'gated-full',
         acceptedCount: 0,
         rejectedReasonCodes: ['like-only-weak-match'],
         observedMs: AT,
@@ -484,7 +485,8 @@ test('单例冲突：离线写柄占用时窄柄降级只读，读可用、写�
         const shadowOutcome = handle.recordShadowObservation({
           termNorm: 'cat',
           gatedStatus: 'hit',
-          legacyCount: 1,
+          candidateCount: 1,
+          countScope: 'gated-full',
           acceptedCount: 1,
           rejectedReasonCodes: [],
           observedMs: AT,

@@ -2,7 +2,7 @@
  * N16 步骤2 · memory 侧影子观测窄写原语测试（裁决备忘录 §2 硬条件 a/b/d）。
  *
  * 闭合的安全属性：
- *  - 封闭窄写：入参恰六字段、无任何目录/路径形参，影子目录由工厂按 indexDir 内部固定推导；
+ *  - 封闭窄写：入参恰七字段（含 candidateCount/countScope）、无任何目录/路径形参，影子目录由工厂按 indexDir 内部固定推导；
  *  - 运行时键白名单 + 受控状态/原因码枚举，额外键与杜撰码当场 IntegrityError（miss.ts 同款 fail-closed）；
  *  - term_hash 内部 sha256 计算，termNorm 与原始查询永不落盘；append-only 固定 JSONL、无更新/删除；
  *  - 构造期不建目录（off 零副作用），首次写才 mkdir；写失败隔离为 ok:false，绝不向上抛阻断主检索；
@@ -34,7 +34,8 @@ function validInput(overrides: Partial<ShadowObservationInput> = {}): ShadowObse
   return {
     termNorm: 'cat',
     gatedStatus: 'abstain',
-    legacyCount: 3,
+    candidateCount: 3,
+    countScope: 'gated-full',
     acceptedCount: 1,
     rejectedReasonCodes: ['like-only-weak-match', 'ascii-no-word-boundary'],
     observedMs: AT,
@@ -66,7 +67,7 @@ test('构造期零副作用：open sink 不创建影子目录；首次 record �
   }
 });
 
-test('落盘行仅六字段且含 termHash 无 termNorm/原文，term_hash=sha256(termNorm)', () => {
+test('落盘行仅七字段且含 termHash 无 termNorm/原文，term_hash=sha256(termNorm)', () => {
   const root = makeTempRoot('mem-shadow-row-');
   try {
     const { indexDir, logFile } = layout(root);
@@ -80,15 +81,17 @@ test('落盘行仅六字段且含 termHash 无 termNorm/原文，term_hash=sha25
     const row = JSON.parse(line[0] as string) as Record<string, unknown>;
     assert.deepEqual(Object.keys(row).sort(), [
       'acceptedCount',
+      'candidateCount',
+      'countScope',
       'gatedStatus',
-      'legacyCount',
       'observedMs',
       'rejectedReasonCodes',
       'termHash',
     ]);
     assert.equal(row.termHash, sha256Hex('cat'));
     assert.equal(row.gatedStatus, 'abstain');
-    assert.equal(row.legacyCount, 3);
+    assert.equal(row.candidateCount, 3);
+    assert.equal(row.countScope, 'gated-full');
     assert.equal(row.acceptedCount, 1);
     assert.deepEqual(row.rejectedReasonCodes, ['like-only-weak-match', 'ascii-no-word-boundary']);
     assert.equal(row.observedMs, AT);
@@ -118,12 +121,13 @@ test('append-only 不去重不覆盖：同输入重放得两行逐字一致，�
   }
 });
 
-test('封闭窄写：入参恰六白名单字段，无任何目录/路径形参（塞 path/dir 键当场拒绝）', () => {
+test('封闭窄写：入参恰七白名单字段，无任何目录/路径形参（塞 path/dir 键当场拒绝）', () => {
   const keys = Object.keys(validInput()).sort();
   assert.deepEqual(keys, [
     'acceptedCount',
+    'candidateCount',
+    'countScope',
     'gatedStatus',
-    'legacyCount',
     'observedMs',
     'rejectedReasonCodes',
     'termNorm',
@@ -154,7 +158,17 @@ test('受控枚举/类型 fail-closed：非法 status、杜撰原因码、坏计
     () => validateShadowInput(validInput({ rejectedReasonCodes: ['exact-alias-pass', 'bogus'] as never })),
     IntegrityError,
   );
-  assert.throws(() => validateShadowInput(validInput({ legacyCount: -1 })), IntegrityError);
+  assert.throws(() => validateShadowInput(validInput({ candidateCount: -1 })), IntegrityError);
+  // 口径枚举同样 fail-closed：杜撰值/历史段值均拒绝（写侧只许 gated-full）。
+  assert.throws(
+    () => validateShadowInput(validInput({ countScope: 'whatever' as never })),
+    IntegrityError,
+  );
+  assert.throws(
+    () => validateShadowInput(validInput({ countScope: 'legacy-limited' })),
+    IntegrityError,
+    'legacy-limited 只属历史行读时标注，生产写面不得再写出该口径',
+  );
   assert.throws(() => validateShadowInput(validInput({ acceptedCount: 1.5 })), IntegrityError);
   assert.throws(() => validateShadowInput(validInput({ observedMs: -2 })), IntegrityError);
   assert.throws(() => validateShadowInput(validInput({ termNorm: '  ' })), IntegrityError);

@@ -30,6 +30,7 @@ import type { Context } from '@deepseek-ai/cordis';
 
 import { Fasti } from '../../api/index.ts';
 import type { MemoryGateMode } from '../../assembly/memory-tools.ts';
+import { createSourceLookupPort } from '../../assembly/source-lookup.ts';
 import { convertSessionEvent } from './convert-event.ts';
 import { createDshLLMPort, startClosureWorker } from './llm.ts';
 import type { DshModelRoute } from './llm.ts';
@@ -374,7 +375,8 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           registry: resolveToolRegistry(toolCtx),
           mode: gateMode,
           indexDir: path.join(fasti.paths.projection, 'memory-index'),
-          legacySearch: async (query) => fasti.search(query.text, query.limit),
+          // L6 注入只读下钻端口（#114 E.4.1）：门面结构满足 SourceLookupFacade，装配层不反向 import 门面。
+          sourceLookup: createSourceLookupPort(fasti),
           log: (message) => ctx.logger.warn('%s %s', LOG_PREFIX, message),
         });
         memoryWiring = wiring;

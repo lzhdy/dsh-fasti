@@ -41,8 +41,9 @@ import type {
 } from '../contract/event-primitives.ts';
 import { readJsonlFile } from '../core/jsonl.ts';
 import { parseExperience } from '../contract/validate-experience.ts';
-import type { Experience, Pointer } from '../contract/experience.ts';
+import type { Experience, ExperienceSummaryView, Pointer } from '../contract/experience.ts';
 import type { Action, Outcome } from '../contract/experience.ts';
+import { projectExperienceSummary } from '../assembly/source-lookup.ts';
 import type {
   AppendExperienceInput,
   ChannelVerification,
@@ -1130,6 +1131,19 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
       reason: edge.reason,
       provenance: edge.provenance,
     }));
+  }
+
+  /**
+   * 按经历 id 只读获取摘要窄 DTO（#114 附录 E.4.1，sourceLookupPort 第②跳的门面支撑）。
+   *
+   * 纯读方法：复用内存 experienceLog，不触任何写原语；返回白名单 ExperienceSummaryView，
+   * 不回显 observation/text 指针与原文——原文下钻只能经 resolvePointer（第③跳）。
+   * 未知 id 返回 null（不抛、不造空对象）；重复读取结果逐字一致。
+   * 门面面增量已登记 ADR-4/6 订正（设计正本 11.6 记账），冻结面五条语义不变量不受影响。
+   */
+  async readExperienceById(id: string): Promise<ExperienceSummaryView | null> {
+    if (!this.experienceLog.has(id)) return null;
+    return projectExperienceSummary(this.experienceLog.get(id));
   }
 
   async resolvePointer(pointer: Pointer): Promise<ResolvedPointer> {

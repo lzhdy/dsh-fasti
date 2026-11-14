@@ -12,7 +12,7 @@
  */
 
 import type { ChannelDescriptor } from './channel.ts';
-import type { Experience, Pointer } from './experience.ts';
+import type { Experience, ExperienceSummaryView, Pointer } from './experience.ts';
 import type { RawTurnInput } from './raw-turn.ts';
 
 /**
@@ -261,6 +261,12 @@ export interface FastiPrimitives {
 
   /** 指针解析 → 原文行。缺指针或越界一律抛错。 */
   resolvePointer(pointer: Pointer): Promise<ResolvedPointer>;
+
+  /**
+   * 按 id 只读获取经历摘要窄 DTO（#114 附录 E.4.1）。
+   * 白名单字段、不含原文；未知 id 返回 null。原文下钻仍走 resolvePointer。
+   */
+  readExperienceById(id: string): Promise<ExperienceSummaryView | null>;
 
   /** 取媒体字节 + 元数据。阶段 3+。 */
   getMedia(refId: string): Promise<never>;

@@ -307,3 +307,34 @@ export const POINTER_FIELDS = ['id', 'channel', 'shard', 'seq'] as const;
 
 /** cue 硬上限（定案稿 §4.2）。 */
 export const CUE_MAX_LENGTH = 200;
+
+/**
+ * 经历摘要窄 DTO（#114 附录 E.4.1，sourceLookupPort 第②跳）。
+ *
+ * 键集定死、只白名单投影：身份/场景/发起方/时间三轴/节拍 + 短线索（cue 缺失恒为 null）。
+ * 绝不内联原文、observation/text 指针、contentHash 或任何内部列——原文只能经第③跳
+ * resolveRawText（Pointer → RawTurnView）获取；结构上与注入候选 GatedCardView 双向不可赋值。
+ */
+export interface ExperienceSummaryView {
+  readonly id: string;
+  readonly kind: string;
+  readonly scene: Scene;
+  readonly initiation: string;
+  readonly occurredAt: string;
+  readonly recordedAt: string;
+  readonly tick: number;
+  /** 短触发线索；经历无 cue 时为 null（不用 undefined，保证 DTO 形状稳定）。 */
+  readonly cue: string | null;
+}
+
+/**
+ * 原文行窄 DTO（#114 附录 E.4.1，sourceLookupPort 第③跳）。
+ * 由门面既有 ResolvedPointer.turns 行 camelCase 投影而来，只承载单条原文行的最小定位与正文。
+ */
+export interface RawTurnView {
+  readonly channel: string;
+  readonly shard: string;
+  readonly seq: number;
+  readonly eventId: string;
+  readonly rawText: string;
+}

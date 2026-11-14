@@ -78,9 +78,10 @@
   落 `<dataRoot>/projection/memory-shadow/`；影子重建是独立离线授权动作。
 - 运行期代码**永不 import/调用 builder**：builder 不在装配白名单，WP3 投毒保证 assembly/adapters 引用
   builder 任意符号即红。
-- 运行期对影子目录只有观测追加（v0.4 定案六字段：termHash/gatedStatus/legacyCount/acceptedCount/
-  rejectedReasonCodes/observedMs，查询级聚合无 cardId、无 termNorm/原始查询/正文，详见 §5.3），不做索引
-  构建；影子失败隔离，不阻断主链路；影子目录跨重启持久。
+- 运行期对影子目录只有观测追加（#114 E.4.2 更名后落盘七字段：termHash/gatedStatus/candidateCount/
+  countScope/acceptedCount/rejectedReasonCodes/observedMs；candidateCount 恒为门过滤前全集、countScope
+  恒 gated-full，历史行由读取器在读取时补 legacy-limited 段且计数置 null，查询级聚合无 cardId、
+  无 termNorm/原始查询/正文，详见 §5.3），不做索引构建；影子失败隔离，不阻断主链路；影子目录跨重启持久。
 
 ### 5.3 N16 执行者落点（保持装配层 fs-free）
 
@@ -170,10 +171,12 @@
   `register` 注入的 `execute`、`render` 文本回到模型上下文。v1.3 在无索引库时取齐 `search` 成功、`add_alias`
   deferred、`resolve_pointer` 错误、`cards_by_anchor` 回 `unavailable` 四类信封证明链路贯通；v1.4 离线首建后
   `cards_by_anchor` 真机走**成功路径**回显 N14 卡视图（见下条）。两类信封均无内部列或库内字段。
-- [x] **三态返回来源**（v1.4 shadow 与 on 均真机直证）：shadow 下 `fasti_memory_search` 真机回
-  `data.source==='legacy'`、`status='legacy-ok'`（对外零扰动，旁路另落影子观测）；on 下真机经模型 function-call
-  分别直证 `source==='gate'` 的 `hit`（强通道 `exact-alias-pass`）、`abstain`（`all-rejected`，工具面不回泄被拒
-  明细）、`no-match`（`zero-lexical-hit`，`cards:[]`）三态。真机所有回显均无 `serialMap` 字段（序号表只在工具内部持有）。
+- [x] **三态返回来源**（v1.4 shadow 与 on 均真机直证；**本条含 #114 拆除前时点记录，拆除后形态已更新**）：
+  v1.4 时点 shadow 下 `fasti_memory_search` 真机回双形态信封中的旁路主返回（对外零扰动、旁路另落影子观测）；
+  #114 拆除后该形态已废止，shadow 恒回 `status='observing'` 空信封（`cards:[]`、`serialMap` 空 Map）；
+  on 下真机经模型 function-call 分别直证 `status='hit'`（强通道 `exact-alias-pass`）、`abstain`
+  （`all-rejected`，工具面不回泄被拒明细）、`no-match`（`zero-lexical-hit`，`cards:[]`）三态，召回只有门一个入口。
+  真机所有回显均无 `serialMap` 字段（序号表只在工具内部持有）。
 - [x] **稳定错误信封真机呈现**（v1.4 三码全部真机直证）：真机直证未检索即解析序号回
   `serial-context-missing`、无索引库回 `unavailable`、本次检索上下文内引用不存在序号（`serials:[99]`）回
   `serial-stale`，模型侧只见 `{ok:false,error:{code,message}}` 的中文安全文案，无原始异常堆栈、无内部绝对路径、
@@ -196,14 +199,17 @@
 
 ### 10.4 影子落盘与数据根边界
 
-- [x] **影子文件**（v1.4 真机成功落盘；缺库降级 v1.3 已证）：v1.4 离线首建 `memory-index` 后，shadow 下一次
-      `search` 即在 `<dataRoot>/projection/memory-shadow/shadow-observations.jsonl` 追加一行，真机逐字段校验
-      **恰为六字段** `termHash/gatedStatus/legacyCount/acceptedCount/rejectedReasonCodes/observedMs`，无额外键；
+- [x] **影子文件**（v1.4 真机成功落盘；缺库降级 v1.3 已证；字段按 #114 E.4.2 更名后口径登记）：
+      v1.4 离线首建 `memory-index` 后，shadow 下一次 `search` 即在
+      `<dataRoot>/projection/memory-shadow/shadow-observations.jsonl` 追加一行，真机逐字段校验
+      **恰为七字段** `termHash/gatedStatus/candidateCount/countScope/acceptedCount/rejectedReasonCodes/observedMs`，
+      无额外键；v1.4 落盘时为更名前六字段，这类历史行只由读取器在读取时补 `countScope='legacy-limited'`、
+      `candidateCount=null`，禁止参与全集统计（两段不可加总）。
       `termHash` 实测逐字等于 `sha256(规范化词面)`（64 位小写 hex），文件内 `termNorm/原始查询/正文/cardId`
-      零出现（明文检索词 grep 不命中）；该次观测 `gatedStatus='hit'、acceptedCount=1、legacyCount=1`，体现 shadow
-      旁路门裁决与旧路召回的对照。`memory-shadow/` 与 `memory-index/` 为 `projection/` 下两个物理独立目录。
-      缺库降级口径仍成立：v1.3 无索引库时 `openMemoryRuntime` 抛 NotFound、`handle=null`，影子 sink 在
-      `handle===null` 直接 return 不产生文件，主链路 `search` 仍 `legacy-ok`、召回不受阻。
+      零出现（明文检索词 grep 不命中）；该次观测 `gatedStatus='hit'、acceptedCount=1、candidateCount=1`（门过滤前全集），
+      体现 shadow 旁路门裁决与对外空信封的对照（双形态信封已废止）。`memory-shadow/` 与 `memory-index/` 为
+      `projection/` 下两个物理独立目录。缺库降级口径仍成立：v1.3 无索引库时 `openMemoryRuntime` 抛 NotFound、
+      `handle=null`，影子 sink 在 `handle===null` 直接 return 不产生文件，对外仍回 `observing` 空信封，召回不受阻。
       别名写两态对照：shadow 下 `add_alias` 回 `deferred/gate-not-on`、零生产写；**on 下 v1.4 真机直证
       `add_alias` 回 `{ok:true,changed:true}` 并物理写入窄柄库 `mem_alias`（重复调用幂等 `changed:false`）**。
 - [x] **写不出工作区**（v1.3 真机通过）：审计真机全部运行期 fs 落点，仅
@@ -250,7 +256,7 @@
     命中却被 ASCII 词边界复核拒绝（`ascii-no-word-boundary`），全集无强卡 → `abstain/all-rejected`；
   - 查库内零词面子串的生僻词 → `no-match/zero-lexical-hit`。
 - **两类证据互补**：① 模型真实 function-call（隔离 headless + scnet 自定义 openai-completions 路由，密钥仅
-  环境变量）取端到端信封，覆盖 shadow 的 legacy 主返回与影子落盘、on 的三态/resolve 成功/`serial-stale`/别名真写；
+  环境变量）取端到端信封，覆盖 shadow 的 observing 空信封与影子落盘、on 的三态/resolve 成功/`serial-stale`/别名真写；
   ② 确定性 node 探针在同一真实窄柄 sqlite + 真实装配工具面上直接调用（不经 LLM 选词），锁定 abstain 的具体
   拒绝原因码、`isSerialRefusable` 分类、N14 `leakedKeys=[]`、别名幂等与物理落库——三态判定正确性仍以 gate.test
   离线锁定为准，探针只复现宿主内确定性参数。

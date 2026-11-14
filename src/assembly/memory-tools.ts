@@ -1,14 +1,17 @@
 /**
- * 宿主无关记忆工具集内核（第二层 v0.3 §7/§8，WP4a）。
+ * 宿主无关记忆工具集内核（第二层 v0.3 §7/§8，WP4a；#114 拆除绕门支路后的唯一检索入口）。
  *
  * 这是四工具的**可离线测试纯内核**：不 import node:fs/node:sqlite、不持任何文件句柄，
- * 窄柄、旧路检索、影子落点、时钟全部经构造参数注入；真机 cordis/dsh-llm 注册（WP4b）只包薄壳。
+ * 窄柄、影子落点、时钟全部经构造参数注入；真机 cordis/dsh-llm 注册（WP4b）只包薄壳。
  *
- * 三态灰度（v0.3 §8.1）：
- *  - off：主返回完全走注入的旧路检索，不触窄柄门、不写影子，行为与引入门前逐字一致；
- *  - shadow：主返回仍旧路（对外零扰动），旁路跑一次门做对照，写一条无原文观测到注入影子落点；
- *    门或影子落点的任何异常都被隔离，绝不阻断主链路；
- *  - on：主返回走窄柄 + 布尔门；生产别名写仅在此态生效，off/shadow 的卡写返回 deferred、不落生产。
+ * 三态灰度（v0.3 §8.1，#114 E.4.1 拆除后口径）：
+ *  - off：接线层（wireMemoryTools）根本不注册工具，生产环境无任何 gatedSearch 调用路径；
+ *    内核仍保留 fail-closed 兜底——若被离线直接构造并调用，抛 UnavailableError 而非返回候选；
+ *  - shadow：注册工具以获得真实查询流量，但对外恒定返回形状定死的 observing 空信封
+ *    （status='observing'、cards=[]、serialMap=空 Map，见设计正本 7.2），内部完整空跑一次
+ *    门做对照，写一条无原文观测到注入影子落点；门或影子落点的任何异常都被隔离，绝不阻断主链路；
+ *    窄柄未就绪（handle=null）时同样回 observing 空信封，只是不写观测、不抛错；
+ *  - on：唯一召回路径走窄柄 + 布尔门；生产别名写仅在此态生效，off/shadow 的卡写返回 deferred。
  *
  * N14：对外 DTO 只投影安全字段（cardId/序号/锚点/线索/门原因），绝不回显 sensitive、
  * 内部别名列名、contentHash 或原始查询文本。
@@ -20,6 +23,7 @@ import { normalizeLexicalText } from '../memory/gate.ts';
 import { resolveSerials } from '../memory/serial.ts';
 import { runGatedSearch } from './index.ts';
 import type {
+  CountScope,
   GatedSearchOutcome,
   GatedStatus,
   MemoryCard,
@@ -30,29 +34,18 @@ import type { RuntimeMemoryHandle, RuntimeSearchQuery } from '../memory/runtime.
 /** 功能开关三态（默认 off 由宿主配置决定，内核不内置默认值以外的状态分支）。 */
 export type MemoryGateMode = 'off' | 'shadow' | 'on';
 
-/** 旧路检索命中（对齐既有 contract SearchHit 的最小安全形状）。 */
-export interface LegacyHit {
-  readonly id: string;
-  readonly kind: string;
-  readonly channel: string;
-  readonly snippet: string;
-}
-
-/** 旧路检索端口（WP4b 由宿主绑定 Fasti.search，内核不 import 门面，避免反向依赖）。 */
-export type LegacySearch = (query: {
-  text: string;
-  atMs: number;
-  limit?: number;
-}) => Promise<readonly LegacyHit[]>;
-
 /**
  * 影子事实（内存态，传给注入落点）：带**已规范化**词面 termNorm 而非原始查询，
- * 以及客观计数/原因码/时刻，无正文。装配层不计算哈希——term_hash 由 memory 侧窄原语内部计算。
+ * 以及客观计数/口径/原因码/时刻，无正文。装配层不计算哈希——term_hash 由 memory 侧窄原语内部计算。
  * 落点契约（N16）：实现方**不得持久化 termNorm 或原始查询**，只能用于内部 sha256 后丢弃。
+ *
+ * 注（#114 E.4.2 更名已落）：candidateCount 恒为门过滤前全集（outcome.candidateCount），
+ * countScope 恒为 'gated-full'；被 limit 截断的旧计数来源已随旧路一并拆除，不再存在。
  */
 export interface ShadowFact {
   readonly termNorm: string;
-  readonly legacyCount: number;
+  readonly candidateCount: number;
+  readonly countScope: CountScope;
   readonly gatedStatus: GatedStatus;
   readonly acceptedCount: number;
   readonly rejectedReasonCodes: readonly string[];
@@ -73,10 +66,13 @@ export interface GatedCardView {
   readonly gateReasons: readonly string[];
 }
 
-/** 工具统一返回形状：source 标明来自旧路还是门。 */
+/**
+ * 工具统一返回形状（#114 拆除后单形态）：
+ *  - on：门裁决状态 hit/abstain/no-match + 过门卡视图；
+ *  - shadow：恒定 observing 空信封（7.2 DTO 定死，无 source 双形态键）。
+ */
 export interface GatedSearchView {
-  readonly source: 'legacy' | 'gate';
-  readonly status: GatedStatus | 'legacy-ok';
+  readonly status: GatedStatus | 'observing';
   readonly cards: readonly GatedCardView[];
   readonly reason?: string;
   readonly serialMap: SerialMap;
@@ -88,7 +84,7 @@ export type AddMissAliasView =
   | { readonly ok: false; readonly reason: string; readonly cardId: string; readonly termNorm: string }
   | { readonly deferred: true; readonly mode: MemoryGateMode; readonly reason: 'gate-not-on' };
 
-/** 序号解析结果：只返回经严格反查的 cardId，真源内容下钻留宿主门面（WP4b）。 */
+/** 序号解析结果：只返回经严格反查的 cardId，真源内容下钻走只读 sourceLookupPort（E.4.1）。 */
 export interface ResolvedPointers {
   readonly cardIds: readonly string[];
 }
@@ -104,9 +100,8 @@ export interface CreateMemoryToolsDeps {
   readonly mode: MemoryGateMode;
   /** 注入时钟（毫秒）；内核不直接读系统时钟。 */
   readonly now: () => number;
-  /** 运行期窄柄；索引库未就绪时为 null（旧路仍可用，门工具显式不可用）。 */
+  /** 运行期窄柄；索引库未就绪时为 null（门工具显式不可用，shadow 回空信封、off 兜底抛错）。 */
   readonly handle: RuntimeMemoryHandle | null;
-  readonly legacySearch: LegacySearch;
   readonly sink: ShadowSink;
 }
 
@@ -129,7 +124,6 @@ function toGateView(outcome: GatedSearchOutcome): GatedSearchView {
     gateReasons: [...gated.gateReasons],
   }));
   return {
-    source: 'gate',
     status: outcome.status,
     cards,
     ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
@@ -137,39 +131,38 @@ function toGateView(outcome: GatedSearchOutcome): GatedSearchView {
   };
 }
 
-/** 旧路命中 → 同一 DTO 形状（无锚点/线索/门原因，序号按返回次序 1..n 私有编排）。 */
-function toLegacyView(hits: readonly LegacyHit[]): GatedSearchView {
-  const cards: GatedCardView[] = hits.map((hit, index) => ({
-    cardId: hit.id,
-    serial: index + 1,
-    anchorIds: [],
-    displayCues: [],
-    gateReasons: [],
-  }));
-  const serialMap: SerialMap = new Map(hits.map((hit, index) => [index + 1, hit.id]));
-  return { source: 'legacy', status: 'legacy-ok', cards, serialMap };
+/**
+ * shadow 态对外空信封（7.2 形状定死）：observing + 空卡 + 空序号表；
+ * 不携带 source 键或任何候选，reason 留空（观测期检索不可用由工具 description 显式声明）。
+ */
+function observingView(): GatedSearchView {
+  return { status: 'observing', cards: [], serialMap: new Map<number, string>() };
 }
 
 /**
- * 影子对照：跑一次全集门（不传 limit，观测门的完整裁决），落一条无原文观测。
+ * 影子对照：跑一次与 on 态**同参**的门（含 limit），落一条无原文观测。
+ * 传 limit 是口径要求：acceptedCount 必须与真实 on 响应一致（limit 只截断 accepted，
+ * candidateCount 恒为门过滤前全集）；不传会让影子系统性高报过门数（S4 因果对照）。
  * 任何异常就地吞掉——影子是旁路，失败只意味着少一条观测，绝不影响主链路。
  */
 async function runShadowObservation(
   deps: CreateMemoryToolsDeps,
   text: string,
   atMs: number,
-  legacyCount: number,
+  limit?: number,
 ): Promise<void> {
   if (deps.handle === null) {
     return;
   }
   try {
     const query: RuntimeSearchQuery = { text, atMs };
-    const outcome = await runGatedSearch(deps.handle, query);
+    const outcome = await runGatedSearch(deps.handle, query, limit);
     // 只传规范化词面；哈希与落盘归 memory 侧窄原语，装配层不持有哈希口径、也不接触文件系统。
     const fact: ShadowFact = {
       termNorm: normalizeLexicalText(text),
-      legacyCount,
+      // 口径：门过滤前全集长度（截断只作用于 accepted，见 gate.applyGate）。
+      candidateCount: outcome.candidateCount,
+      countScope: 'gated-full',
       gatedStatus: outcome.status,
       acceptedCount: outcome.accepted.length,
       rejectedReasonCodes: outcome.rejected.flatMap((gated) => gated.gateReasons),
@@ -184,7 +177,7 @@ async function runShadowObservation(
 export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
   const requireHandle = (): RuntimeMemoryHandle => {
     if (deps.handle === null) {
-      throw new UnavailableError('记忆索引未就绪：门工具暂不可用，旧路检索不受影响');
+      throw new UnavailableError('记忆索引未就绪：门控检索工具暂不可用');
     }
     return deps.handle;
   };
@@ -193,18 +186,21 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
     async gatedSearch(input: { text: string; limit?: number }): Promise<GatedSearchView> {
       const atMs = deps.now();
 
-      if (deps.mode === 'on') {
-        const handle = requireHandle();
-        const outcome = await runGatedSearch(handle, { text: input.text, atMs }, input.limit);
-        return toGateView(outcome);
+      // off 态工具在接线层即不注册；内核兜底 fail-closed，绝不构造任何候选返回。
+      if (deps.mode === 'off') {
+        throw new UnavailableError('记忆门处于 off 态：门控检索工具不接线，无召回结果可用');
       }
 
-      // off 与 shadow 的主返回都是旧路（shadow 额外旁路对照）。
-      const legacyHits = await deps.legacySearch({ text: input.text, atMs, limit: input.limit });
+      // shadow：对外恒定 observing 空信封；内部空跑分流门并旁路写观测（窄柄缺失则只回空信封）。
       if (deps.mode === 'shadow') {
-        await runShadowObservation(deps, input.text, atMs, legacyHits.length);
+        await runShadowObservation(deps, input.text, atMs, input.limit);
+        return observingView();
       }
-      return toLegacyView(legacyHits);
+
+      // on：门控检索是唯一召回路径。
+      const handle = requireHandle();
+      const outcome = await runGatedSearch(handle, { text: input.text, atMs }, input.limit);
+      return toGateView(outcome);
     },
 
     getCardsByAnchor(experienceId: string): MemoryCard[] {

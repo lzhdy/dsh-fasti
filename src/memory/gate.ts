@@ -126,13 +126,16 @@ function judge(
  */
 export function applyGate(input: ApplyGateInput): GatedSearchOutcome {
   const { qNorm, candidates, limit } = input;
+  // 门过滤前全集条数：在任何分支返回前固定，截断与拒绝都不改写它（#114 candidateCount）。
+  const candidateCount = candidates.length;
 
   if (qNorm === '') {
-    return { status: 'no-match', accepted: [], rejected: [], reason: 'empty-query', serialMap: buildSerialMap([]) };
+    return { status: 'no-match', candidateCount, accepted: [], rejected: [], reason: 'empty-query', serialMap: buildSerialMap([]) };
   }
   if (candidates.length === 0) {
     return {
       status: 'no-match',
+      candidateCount,
       accepted: [],
       rejected: [],
       reason: 'zero-lexical-hit',
@@ -153,13 +156,14 @@ export function applyGate(input: ApplyGateInput): GatedSearchOutcome {
   }
 
   if (accepted.length === 0) {
-    return { status: 'abstain', accepted: [], rejected, reason: 'all-rejected', serialMap: buildSerialMap([]) };
+    return { status: 'abstain', candidateCount, accepted: [], rejected, reason: 'all-rejected', serialMap: buildSerialMap([]) };
   }
 
   // 全集过滤后再截断（D9）：candidates 已按 score 排序，filter 保序；弱尾不补位。
   const truncated = limit === undefined ? accepted : accepted.slice(0, limit);
   return {
     status: 'hit',
+    candidateCount,
     accepted: truncated,
     rejected,
     serialMap: buildSerialMap(truncated),

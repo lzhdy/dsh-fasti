@@ -229,8 +229,8 @@ test('四态归类：弃权 + 噪声混合 → G+NG=N，计数与各率分母正
     assert.equal(summary.rates.recallAfterGate, 1);
     assert.equal(summary.rates.correctRejectRate, 1);
     assert.equal(summary.rates.abstainRate, 1 / 2);
-    assert.ok(!isNaEstimate(summary.legacyR2), '旧口径应有样本');
-    assert.equal(summary.legacyR2.point, 0, '此例全认对，旧 r2（错误率）应为 0');
+    assert.ok(!isNaEstimate(summary.coarseR2), '粗召回基线应有样本');
+    assert.equal(summary.coarseR2.point, 0, '此例全认对，旧 r2（错误率）应为 0');
   } finally {
     cleanupTempRoot(seeded.root);
   }

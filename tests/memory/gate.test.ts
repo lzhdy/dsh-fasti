@@ -201,8 +201,7 @@ test('applyGate：不传 limit 时 accepted 保留全部过门卡，序号连续
   assert.deepEqual([...out.serialMap.keys()], [1, 2]);
 });
 
-test('applyGate：纯函数确定性且不突变输入（深冻结候选，两次结果独立且相等）', () => {
-  const candidates = Object.freeze([Object.freeze(exact('git')), Object.freeze(like('github'))]);
+test('applyGate：纯函数确定性且不突变输入（深冻结候选，两次结果独立且相等）', () => {  const candidates = Object.freeze([Object.freeze(exact('git')), Object.freeze(like('github'))]);
   const first = applyGate({ qNorm: 'git', candidates: candidates as readonly ExplainedRankedCard[] });
   const second = applyGate({ qNorm: 'git', candidates: candidates as readonly ExplainedRankedCard[] });
   assert.equal(first.status, second.status);
@@ -211,4 +210,24 @@ test('applyGate：纯函数确定性且不突变输入（深冻结候选，两�
   assert.notEqual(first.accepted, second.accepted);
   const gated: GatedRankedCard = first.accepted[0] as GatedRankedCard;
   assert.equal(gated.evidence, undefined, '第一层 evidence 占位恒 undefined');
+});
+
+test('applyGate（#114）：candidateCount 恒为门过滤前入参全集长度，四个分支与 limit 均不改写', () => {
+  // 空查询分支：即便带候选，计数仍如实反映入参全集。
+  assert.equal(applyGate({ qNorm: '', candidates: [exact('git')] }).candidateCount, 1);
+  // 零候选分支：0 表示真实无候选（区别于读取器侧无法重建的 null）。
+  assert.equal(applyGate({ qNorm: 'git', candidates: [] }).candidateCount, 0);
+  // 全拒分支：accepted 为空不影响全集计数。
+  const blocked = applyGate({ qNorm: 'git', candidates: [like('github'), like('gitlab')] });
+  assert.equal(blocked.status, 'abstain');
+  assert.equal(blocked.candidateCount, 2);
+
+  // 同一夹具：两张强通道过门，limit 只切 accepted，计数恒为 3。
+  const fixture = [exact('git'), fts('git 工具'), like('github')];
+  const unlimited = applyGate({ qNorm: 'git', candidates: fixture });
+  const limited = applyGate({ qNorm: 'git', candidates: fixture, limit: 1 });
+  assert.equal(unlimited.accepted.length, 2);
+  assert.equal(limited.accepted.length, 1, 'limit=1 仅截断 accepted');
+  assert.equal(unlimited.candidateCount, 3);
+  assert.equal(limited.candidateCount, 3, 'candidateCount 不受 limit 影响');
 });

@@ -1,10 +1,13 @@
 /**
- * N16 影子观测窄写原语（第二层 v0.3 §8.2，裁决 2026-11-13 §2 硬条件 a）。
+ * N16 影子观测窄写原语（第二层 v0.3 §8.2，裁决 2026-11-13 §2 硬条件 a；#114 E.4.2 更名后口径）。
  *
  * 这是经评审入白名单的 memory 侧**第六个**窄能力，与 sqlite 索引物理隔离：
  *  - 写面固定在 `<dataRoot>/projection/memory-shadow/shadow-observations.jsonl`，
  *    影子目录由工厂按 indexDir 内部推导，**观测入参不含任何目录/路径形参**，无法退化为通用文件写；
- *  - 入参运行时白名单（六字段），额外键/杜撰状态与原因码当场 IntegrityError（与 miss.ts 同一 fail-closed 纪律）；
+ *  - 入参运行时白名单（七字段），额外键/杜撰状态与原因码/非法 countScope 当场 IntegrityError
+ *    （与 miss.ts 同一 fail-closed 纪律）；
+ *  - candidateCount 口径为**门过滤前全集**；新写样本 countScope 一律 gated-full，
+ *    任何被截断的历史口径都只由读取侧在读时补标，生产写面不接受、也写不出该口径；
  *  - term_hash 在本模块内部 sha256 计算，termNorm 与原始查询文本**永不落盘**；
  *  - append-only：只有 appendFileSync，没有更新/删除/truncate 路径；同输入确定性逐行一致（无随机 id）；
  *  - 构造期只算路径不建目录（off 零副作用），首次 record 才 mkdir；写失败封装为 ok:false 不重抛，
@@ -19,7 +22,7 @@ import path from 'node:path';
 
 import { IntegrityError } from '../core/errors.ts';
 import { sha256Hex } from '../core/hash.ts';
-import type { GatedStatus, GateReasonCode } from './types.ts';
+import type { CountScope, GatedStatus, GateReasonCode } from './types.ts';
 
 /** 影子写面目录/文件具名常量（与 memory-index 平级，独立物理面）。 */
 export const SHADOW_DIRNAME = 'memory-shadow';
@@ -32,17 +35,21 @@ export const SHADOW_LOG_FILE = 'shadow-observations.jsonl';
 export interface ShadowObservationInput {
   readonly termNorm: string;
   readonly gatedStatus: GatedStatus;
-  readonly legacyCount: number;
+  /** 门过滤前全集候选数（不再是被 limit 截断的旧计数）。 */
+  readonly candidateCount: number;
+  /** 口径标记；生产新写恒 'gated-full'。 */
+  readonly countScope: CountScope;
   readonly acceptedCount: number;
   readonly rejectedReasonCodes: readonly GateReasonCode[];
   readonly observedMs: number;
 }
 
-/** 实际落盘行：termNorm 已消失，只剩不可逆 term_hash 与客观计数/原因码。 */
+/** 实际落盘行：termNorm 已消失，只剩不可逆 term_hash 与客观计数/口径/原因码。 */
 export interface ShadowObservationRow {
   readonly termHash: string;
   readonly gatedStatus: GatedStatus;
-  readonly legacyCount: number;
+  readonly candidateCount: number;
+  readonly countScope: CountScope;
   readonly acceptedCount: number;
   readonly rejectedReasonCodes: readonly GateReasonCode[];
   readonly observedMs: number;
@@ -53,21 +60,30 @@ export type RecordShadowOutcome =
   | { readonly ok: true; readonly row: ShadowObservationRow }
   | { readonly ok: false; readonly reason: string };
 
-/** 入参白名单六字段（运行时键集超出即拒，杜绝路径形参/原文走私）。 */
+/** 入参白名单七字段（运行时键集超出即拒，杜绝路径形参/原文走私）。 */
 const SHADOW_INPUT_KEYS: readonly string[] = [
   'termNorm',
   'gatedStatus',
-  'legacyCount',
+  'candidateCount',
+  'countScope',
   'acceptedCount',
   'rejectedReasonCodes',
   'observedMs',
 ];
 
-/** 受控状态枚举（与 types.GatedStatus 联合逐字对应，运行时 fail-closed 校验）。 */
-const GATED_STATUS_VALUES: readonly GatedStatus[] = ['hit', 'abstain', 'no-match'];
+/** 受控状态枚举（与 types.GatedStatus 联合逐字对应，运行时 fail-closed 校验；读取侧复用同一份）。 */
+export const GATED_STATUS_VALUES: readonly GatedStatus[] = ['hit', 'abstain', 'no-match'];
+
+/**
+ * 写入侧口径白名单：仅 gated-full（门过滤前全集）。
+ * 被 limit 截断的历史口径由读取侧在读时补标（旧计数与全集不同源、不可加总），
+ * 生产写面若也能写出该口径，等于让口径污染重新流入新样本，故写侧只认正解。
+ * 注：全量口径枚举的完整名单由读取侧持有，写侧刻意只登记自己允许的那一个，避免写面被扩宽。
+ */
+const WRITABLE_COUNT_SCOPE_VALUES: readonly CountScope[] = ['gated-full'];
 
 /** 受控原因码枚举（与 types.GateReasonCode 联合逐字对应；新增门原因码必须先在此登记，否则影子拒绝写）。 */
-const GATE_REASON_VALUES: readonly GateReasonCode[] = [
+export const GATE_REASON_VALUES: readonly GateReasonCode[] = [
   'empty-query',
   'zero-lexical-hit',
   'all-rejected',
@@ -80,7 +96,7 @@ const GATE_REASON_VALUES: readonly GateReasonCode[] = [
 
 /**
  * 运行时严格白名单 + 字段校验（纯函数，与 miss.validateMissInput 同构）。
- * Object.keys 出现六字段外的键（含任何路径形参、rawQuery/text）即抛 IntegrityError。
+ * Object.keys 出现七字段外的键（含任何路径形参、rawQuery/text）即抛 IntegrityError。
  */
 export function validateShadowInput(input: ShadowObservationInput): void {
   if (input === null || typeof input !== 'object') {
@@ -97,7 +113,13 @@ export function validateShadowInput(input: ShadowObservationInput): void {
   if (!GATED_STATUS_VALUES.includes(input.gatedStatus)) {
     throw new IntegrityError(`影子观测 gatedStatus 非受控枚举：${String(input.gatedStatus)}`);
   }
-  for (const field of ['legacyCount', 'acceptedCount'] as const) {
+  if (!WRITABLE_COUNT_SCOPE_VALUES.includes(input.countScope)) {
+    throw new IntegrityError(
+      `影子观测 countScope 只允许写入 ${WRITABLE_COUNT_SCOPE_VALUES.join('/')}：` +
+        `收到 ${String(input.countScope)}（截断口径只属读取侧，禁止写成新样本）`,
+    );
+  }
+  for (const field of ['candidateCount', 'acceptedCount'] as const) {
     const value = input[field];
     if (!Number.isInteger(value) || value < 0) {
       throw new IntegrityError(`影子观测 ${field} 必须是非负整数`);
@@ -142,7 +164,8 @@ export function openShadowObservationSink(indexDir: string): ShadowObservationSi
         const row: ShadowObservationRow = {
           termHash: sha256Hex(input.termNorm),
           gatedStatus: input.gatedStatus,
-          legacyCount: input.legacyCount,
+          candidateCount: input.candidateCount,
+          countScope: input.countScope,
           acceptedCount: input.acceptedCount,
           rejectedReasonCodes: [...input.rejectedReasonCodes],
           observedMs: input.observedMs,

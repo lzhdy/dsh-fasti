@@ -18,7 +18,7 @@ import { computeContentHash } from '../../../src/memory/builder.ts';
 import { ulid } from '../../../src/core/ulid.ts';
 import { MEMORY_INDEX_FILE, openMemoryWrite } from '../../../src/memory/store.ts';
 import type { AliasRow, MemoryCard, RevisionRecord } from '../../../src/memory/types.ts';
-import type { LegacyHit, MemoryGateMode } from '../../../src/assembly/memory-tools.ts';
+import type { MemoryGateMode } from '../../../src/assembly/memory-tools.ts';
 import {
   MEMORY_TOOL_NAMES,
   openDshMemoryBridge,
@@ -112,10 +112,6 @@ function seedOneCard(root: string): string {
   return indexDir;
 }
 
-function legacyHits(): (q: { text: string; limit?: number }) => Promise<LegacyHit[]> {
-  return async (q) => [{ id: 'exp_legacy_1', kind: 'dialogue', channel: 'dsh', snippet: `命中:${q.text}` }];
-}
-
 /** 解析工具 execute 返回的字符串信封。 */
 async function callTool(def: ToolDefinition, args: unknown): Promise<{ ok: boolean; data?: unknown; error?: { code: string } }> {
   const text = (await def.execute(args, EXEC)) as string;
@@ -133,7 +129,6 @@ test('WP4b 薄壳：恰注册四个记忆工具，命名/参数/字符串输出�
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'off',
       now: NOW,
-      legacySearch: legacyHits(),
     });
     assert.deepEqual(
       bridge.definitions.map((d) => d.name).sort(),
@@ -181,23 +176,21 @@ test('WP4b 薄壳：恰注册四个记忆工具，命名/参数/字符串输出�
   }
 });
 
-test('WP4b 薄壳：缺库 off 态走旧路、信封不泄漏 serialMap、门工具报 unavailable、别名 deferred', async () => {
+test('WP4b 薄壳：缺库 off 态检索 fail-closed 报 unavailable、信封无 source 键、别名 deferred', async () => {
   const root = makeTempRoot('wp4b-bridge-off-');
   try {
     const bridge = openDshMemoryBridge({
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'off',
       now: NOW,
-      legacySearch: legacyHits(),
     });
     const tools = byName(bridge);
 
+    // off 生产环境靠不注册保证零变化；薄壳直调时内核 fail-closed，经错误翻译回稳定安全码。
     const searchResult = await callTool(tools.get(MEMORY_TOOL_NAMES.gatedSearch) as ToolDefinition, { text: '关键词' });
-    assert.equal(searchResult.ok, true);
-    const data = searchResult.data as { source: string; status: string; cards: unknown[] };
-    assert.equal(data.source, 'legacy');
-    assert.equal(data.status, 'legacy-ok');
-    assert.ok(!('serialMap' in data), 'Map 不可 JSON 化且属内部状态，禁止回显给模型');
+    assert.equal(searchResult.ok, false);
+    assert.equal(searchResult.error?.code, 'unavailable');
+    assert.equal(searchResult.data, undefined, '失败信封不得夹带任何候选数据');
 
     const cardsResult = await callTool(tools.get(MEMORY_TOOL_NAMES.cardsByAnchor) as ToolDefinition, {
       experienceId: ANCHOR,
@@ -224,7 +217,6 @@ test('WP4b 薄壳：未检索就解析序号 → fail-closed 提示先检索（�
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'on',
       now: NOW,
-      legacySearch: legacyHits(),
     });
     const resolve = byName(bridge).get(MEMORY_TOOL_NAMES.resolvePointer) as ToolDefinition;
     const result = await callTool(resolve, { serials: [1] });
@@ -240,14 +232,16 @@ test('WP4b 薄壳：on 态检索后序号可解析；新检索替换序号表后
   const root = makeTempRoot('wp4b-bridge-serial-');
   try {
     const indexDir = seedOneCard(root);
-    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW, legacySearch: legacyHits() });
+    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW });
     const tools = byName(bridge);
     const search = tools.get(MEMORY_TOOL_NAMES.gatedSearch) as ToolDefinition;
     const resolve = tools.get(MEMORY_TOOL_NAMES.resolvePointer) as ToolDefinition;
 
     const hit = await callTool(search, { text: '咖啡馆' });
     assert.equal(hit.ok, true);
-    assert.equal((hit.data as { source: string }).source, 'gate');
+    const hitData = hit.data as { status: string; cards: unknown[] };
+    assert.equal(hitData.status, 'hit');
+    assert.ok(!('source' in hitData), '拆除后信封单形态，不得回传 source 键');
 
     const resolved = await callTool(resolve, { serials: [1] });
     assert.equal(resolved.ok, true);
@@ -268,7 +262,7 @@ test('WP4b 薄壳：卡详情经 N14 白名单投影，模型侧看不到任何�
   const root = makeTempRoot('wp4b-bridge-n14-');
   try {
     const indexDir = seedOneCard(root);
-    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW, legacySearch: legacyHits() });
+    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW });
     const cards = byName(bridge).get(MEMORY_TOOL_NAMES.cardsByAnchor) as ToolDefinition;
     const result = await callTool(cards, { experienceId: ANCHOR });
     assert.equal(result.ok, true);
@@ -313,7 +307,6 @@ test('WP4b 薄壳：register 聚合四个 disposer，注销时每个工具恰好
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'off',
       now: NOW,
-      legacySearch: legacyHits(),
     });
     const unregisterAll = registerMemoryToolDefinitions(registry, bridge.definitions);
     assert.equal(events.filter((e) => e.startsWith('reg:')).length, 4);
@@ -329,7 +322,7 @@ test('WP4b 薄壳：缺库降级不侧建索引文件，dispose 可重复调用�
   const root = makeTempRoot('wp4b-bridge-dispose-');
   try {
     const indexDir = path.join(root, 'projection', 'memory-index');
-    const bridge = openDshMemoryBridge({ indexDir, mode: 'off', now: NOW, legacySearch: legacyHits() });
+    const bridge = openDshMemoryBridge({ indexDir, mode: 'off', now: NOW });
     const { existsSync } = await import('node:fs');
     assert.ok(!existsSync(path.join(indexDir, MEMORY_INDEX_FILE)));
     await bridge.dispose();
@@ -367,7 +360,6 @@ test('WP4b 接线：mode=off 时不打开桥接、不注册任何工具（线上
       registry: fake.registry,
       mode: 'off',
       indexDir: path.join(root, 'projection', 'memory-index'),
-      legacySearch: legacyHits(),
       now: NOW,
     });
     assert.equal(wiring.registered, false);
@@ -386,7 +378,6 @@ test('WP4b 接线：宿主无 tools 服务（registry=null）时安全跳过、�
       registry: null,
       mode: 'shadow',
       indexDir: path.join(root, 'projection', 'memory-index'),
-      legacySearch: legacyHits(),
       now: NOW,
     });
     assert.equal(wiring.registered, false);
@@ -405,7 +396,6 @@ for (const mode of ['shadow', 'on'] as MemoryGateMode[]) {
         registry: fake.registry,
         mode,
         indexDir: path.join(root, 'projection', 'memory-index'),
-        legacySearch: legacyHits(),
         now: NOW,
       });
       assert.equal(wiring.registered, true);
@@ -420,22 +410,28 @@ for (const mode of ['shadow', 'on'] as MemoryGateMode[]) {
   });
 }
 
-test('WP4b 接线：shadow 态注册的检索工具仍走旧路（影子不改模型所见召回）', async () => {
-  const root = makeTempRoot('wp4b-wire-shadow-legacy-');
+test('WP4b 接线：shadow 态检索工具恒定回 observing 空信封（无 source 键），description 明示观测期不可用', async () => {
+  const root = makeTempRoot('wp4b-wire-shadow-observing-');
   try {
     const fake = makeFakeRegistry();
     const wiring = wireMemoryTools({
       registry: fake.registry,
       mode: 'shadow',
       indexDir: path.join(root, 'projection', 'memory-index'),
-      legacySearch: legacyHits(),
       now: NOW,
     });
     assert.equal(wiring.registered, true);
     const search = fake.definitions.find((d) => d.name === MEMORY_TOOL_NAMES.gatedSearch) as ToolDefinition;
+    assert.ok(
+      String(search.description).includes('观测期检索不可用'),
+      '工具 description 必须显式声明观测期检索不可用（设计正本 7.2）',
+    );
     const result = await callTool(search, { text: '任意词' });
     assert.equal(result.ok, true);
-    assert.equal((result.data as { source: string }).source, 'legacy');
+    const data = result.data as { status: string; cards: unknown[] };
+    assert.equal(data.status, 'observing');
+    assert.deepEqual(data.cards, []);
+    assert.ok(!('source' in data), '空信封不得携带 source 双形态键');
     await wiring.dispose();
   } finally {
     cleanupTempRoot(root);

@@ -2,8 +2,9 @@
  * WP4b 宿主无关装配工厂测试（内核侧，不 import 任何 @deepseek-ai/* 宿主包）。
  *
  * 该工厂是薄壳与记忆内核之间唯一的宿主无关编排点：打开窄柄（缺库降级 null）、
- * 把宿主旧路检索与影子 sink 注入 createMemoryTools、统一 dispose，并提供模型回显
- * 卡的 N14 白名单投影。DSH 薄壳只负责 defineTool 形状，不直接接触 memory/。
+ * 把影子 sink 注入 createMemoryTools、统一 dispose，并提供模型回显卡的 N14 白名单投影。
+ * #114 拆除后旁路检索端口已不存在：off fail-closed、shadow 回 observing 空信封、on 唯一走门。
+ * DSH 薄壳只负责 defineTool 形状，不直接接触 memory/。
  *
  * 纪律：临时根、零真实数据；时钟注入，无 Date.now() 依赖。
  */
@@ -24,7 +25,7 @@ import {
   type AssembledMemoryRuntime,
   type HostCardView,
 } from '../../src/assembly/host-tool-runtime.ts';
-import type { LegacyHit } from '../../src/assembly/memory-tools.ts';
+import { UnavailableError } from '../../src/core/errors.ts';
 import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
 
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
@@ -96,13 +97,6 @@ function seedOneCard(root: string): string {
   return indexDir;
 }
 
-function legacyStub(calls: string[]): (q: { text: string; limit?: number }) => Promise<LegacyHit[]> {
-  return async (q) => {
-    calls.push(q.text);
-    return [{ id: 'exp_legacy_1', kind: 'dialogue', channel: 'dsh', snippet: `命中:${q.text}` }];
-  };
-}
-
 test('WP4b 装配工厂：索引库不存在时降级 indexReady=false 且不创建文件、dispose 幂等', async () => {
   const root = makeTempRoot('wp4b-missing-');
   try {
@@ -111,15 +105,12 @@ test('WP4b 装配工厂：索引库不存在时降级 indexReady=false 且不创
       indexDir,
       mode: 'off',
       now: () => FIXED_NOW,
-      legacySearch: legacyStub([]),
     });
     assert.equal(rt.indexReady, false);
     assert.ok(!fs.existsSync(path.join(indexDir, MEMORY_INDEX_FILE)), '降级不得侧建索引文件');
 
-    // 缺库时旧路仍可用（handle=null → legacy）。
-    const view = await rt.tools.gatedSearch({ text: '随便什么' });
-    assert.equal(view.source, 'legacy');
-    assert.equal(view.status, 'legacy-ok');
+    // 缺库且 off：内核 fail-closed，不返回任何候选（off 生产环境靠不注册，此处验证兜底）。
+    await assert.rejects(() => rt.tools.gatedSearch({ text: '随便什么' }), UnavailableError);
 
     await rt.dispose();
     await rt.dispose();
@@ -128,51 +119,50 @@ test('WP4b 装配工厂：索引库不存在时降级 indexReady=false 且不创
   }
 });
 
-test('WP4b 装配工厂：off 态检索透传旧路且不触窄柄', async () => {
+test('WP4b 装配工厂：off 态门控检索 fail-closed，别名写 deferred，窄柄零触达', async () => {
   const root = makeTempRoot('wp4b-off-');
   try {
-    const calls: string[] = [];
+    const indexDir = path.join(root, 'projection', 'memory-index');
     const rt = openAssembledMemoryTools({
-      indexDir: path.join(root, 'projection', 'memory-index'),
+      indexDir,
       mode: 'off',
       now: () => FIXED_NOW,
-      legacySearch: legacyStub(calls),
     });
-    const view = await rt.tools.gatedSearch({ text: '关键词甲' });
-    assert.deepEqual(calls, ['关键词甲']);
-    assert.equal(view.source, 'legacy');
-    assert.equal(view.cards.length, 1, '旧路命中按同一 DTO 形状产出带私有序号的卡视图');
-    assert.equal(view.cards[0]?.cardId, 'exp_legacy_1');
+    await assert.rejects(
+      () => rt.tools.gatedSearch({ text: '关键词甲' }),
+      UnavailableError,
+      'off 态无门控召回可用，必须显式报错而非静默造结果',
+    );
+    const aliasView = rt.tools.addMissAlias({ term: '关键词甲', cardId: 'mc_x' });
+    assert.deepEqual(aliasView, { deferred: true, mode: 'off', reason: 'gate-not-on' });
+    assert.ok(!fs.existsSync(path.join(indexDir, MEMORY_INDEX_FILE)), 'fail-closed 不得侧建任何库文件');
     await rt.dispose();
   } finally {
     cleanupTempRoot(root);
   }
 });
 
-test('WP4b 装配工厂：真实库 on 态窄柄命中（indexReady=true，走门而非旧路）', async () => {
+test('WP4b 装配工厂：真实库 on 态窄柄命中（indexReady=true，门控是唯一召回路径）', async () => {
   const root = makeTempRoot('wp4b-on-');
   try {
     const indexDir = seedOneCard(root);
-    const calls: string[] = [];
     const rt = openAssembledMemoryTools({
       indexDir,
       mode: 'on',
       now: () => FIXED_NOW,
-      legacySearch: legacyStub(calls),
     });
     assert.equal(rt.indexReady, true);
     const view = await rt.tools.gatedSearch({ text: '咖啡馆' });
-    assert.equal(view.source, 'gate');
     assert.equal(view.status, 'hit', `别名命中门控状态应为 hit，实际 ${view.status}`);
+    assert.ok(!('source' in view), '拆除后信封单形态，无 source 键');
     assert.ok(view.cards.length >= 1, '应命中至少一张门控卡');
-    assert.deepEqual(calls, [], '窄柄命中不得回退旧路');
     await rt.dispose();
   } finally {
     cleanupTempRoot(root);
   }
 });
 
-test('WP4b 装配工厂：shadow 态影子落盘字段映射正确（observedMs=时钟、无原始词明文）', async () => {
+test('WP4b 装配工厂：shadow 态对外 observing 空信封且影子落盘字段映射正确（observedMs=时钟、无原始词明文）', async () => {
   const root = makeTempRoot('wp4b-shadow-');
   try {
     const indexDir = seedOneCard(root);
@@ -180,10 +170,13 @@ test('WP4b 装配工厂：shadow 态影子落盘字段映射正确（observedMs=
       indexDir,
       mode: 'shadow',
       now: () => FIXED_NOW,
-      legacySearch: legacyStub([]),
     });
-    // 用一个不会命中的词，得到 no-match 影子观测。
-    await rt.tools.gatedSearch({ text: '不存在的冷词XYZ' });
+    // 用一个不会命中的词，得到 no-match 影子观测；对外只回定死空信封。
+    const view = await rt.tools.gatedSearch({ text: '不存在的冷词XYZ' });
+    assert.equal(view.status, 'observing');
+    assert.deepEqual(view.cards, []);
+    assert.deepEqual(view.serialMap, new Map());
+    assert.ok(!('source' in view));
     await rt.dispose();
 
     const shadowFile = path.join(root, 'projection', SHADOW_DIRNAME, SHADOW_LOG_FILE);
@@ -206,17 +199,17 @@ test('WP4b 装配工厂：shadow 态影子落盘字段映射正确（observedMs=
   }
 });
 
-test('WP4b 装配工厂：缺库时 shadow 检索不抛（sink 无窄柄可写即安全跳过）', async () => {
+test('WP4b 装配工厂：缺库时 shadow 回 observing 空信封不抛，不侧建影子目录', async () => {
   const root = makeTempRoot('wp4b-shadow-missing-');
   try {
     const rt = openAssembledMemoryTools({
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'shadow',
       now: () => FIXED_NOW,
-      legacySearch: legacyStub([]),
     });
     const view = await rt.tools.gatedSearch({ text: '任意' });
-    assert.equal(view.source, 'legacy');
+    assert.equal(view.status, 'observing');
+    assert.deepEqual(view.cards, []);
     const shadowDir = path.join(root, 'projection', SHADOW_DIRNAME);
     assert.ok(!fs.existsSync(shadowDir), '无窄柄不得创建影子目录');
     await rt.dispose();
@@ -282,7 +275,6 @@ test('WP4b 装配工厂：返回对象满足装配面契约（四方法可读、
       indexDir: path.join(root, 'projection', 'memory-index'),
       mode: 'off',
       now: () => FIXED_NOW,
-      legacySearch: legacyStub([]),
     });
     assert.deepEqual(
       Object.keys(rt.tools).sort(),

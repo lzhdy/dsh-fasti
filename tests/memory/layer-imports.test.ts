@@ -52,8 +52,17 @@ function extractImportSpecifiers(text: string): string[] {
  * alias-write.ts 已落地并纳入（N5 闭合点：不 import bm25/store/builder，规范化由写柄完成）；
  * shadow-write.ts（N16 影子 JSONL 窄写）同为无环低层：只依赖 core/errors、core/hash 与 types 纯类型，
  * 经 runtime 在上层引用，自身不得落回 store 闭包。
+ * audit/shadow-read.ts（#114/S1 影子只读读取器）同样纳入：只依赖 core/errors、types 与 shadow-write 常量，
+ * 是离线审计件，若将来被写柄/store 反向拉入即报红。
  */
-const ACYCLIC_LEAF_FILES = ['content-hash.ts', 'fts.ts', 'gate.ts', 'alias-write.ts', 'shadow-write.ts'] as const;
+const ACYCLIC_LEAF_FILES = [
+  'content-hash.ts',
+  'fts.ts',
+  'gate.ts',
+  'alias-write.ts',
+  'shadow-write.ts',
+  'audit/shadow-read.ts',
+] as const;
 
 /** 显式直接拉黑（闭包判定的双保险，意图清晰且不依赖图计算正确性）。 */
 const FORBIDDEN_DIRECT_SPECS = new Set(['./store.ts', './builder.ts', './bm25.ts']);

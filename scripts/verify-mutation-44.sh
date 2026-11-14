@@ -152,13 +152,13 @@ import { applyMissAlias } from '../../src/memory/alias-write.ts';
 void applyMissAlias;" \
   node --test tests/memory/gate-smoke.test.ts
 
-# ── M12 旧 r2 口径反转（N6 回归：错误率误成准确率）──────────────────────
-mutate "M12 旧r2口径反转" src/memory/audit/four-state.ts \
+# ── M12 粗召回基线 r2 口径反转（N6 回归：错误率误成准确率）──────────────
+mutate "M12 粗召回基线r2口径反转" src/memory/audit/four-state.ts \
   "      if (cls !== 'correct-commit') {
-        legacyError += 1;
+        coarseError += 1;
       }" \
   "      if (cls === 'correct-commit') {
-        legacyError += 1;
+        coarseError += 1;
       }" \
   node --test tests/memory/four-state.test.ts tests/memory/gate-smoke.test.ts
 

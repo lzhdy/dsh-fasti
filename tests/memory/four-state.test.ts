@@ -154,10 +154,10 @@ test('旧 r2 并列：弃权在旧口径计错、在新 falseCommitRate 不计�
   const s = summarizeFourState(probes);
   assert.equal(s.rates.recallAfterGate, 2 / 4);
   assert.equal(s.rates.falseCommitRate, 0, '弃权不计入主动认定 → 0');
-  assert.ok(!isNaEstimate(s.legacyR2), '旧口径应有样本');
-  assert.equal(s.legacyR2.point, 2 / 4, '旧 r2 为错误率：弃权计错');
-  assert.equal(s.legacyR2.n, 4);
-  assert.notEqual(s.legacyR2.point, s.rates.falseCommitRate, '两口径必须并列且可见差异');
+  assert.ok(!isNaEstimate(s.coarseR2), '粗召回基线应有样本');
+  assert.equal(s.coarseR2.point, 2 / 4, '粗召回基线 r2 为错误率：弃权计错');
+  assert.equal(s.coarseR2.n, 4);
+  assert.notEqual(s.coarseR2.point, s.rates.falseCommitRate, '两口径必须并列且可见差异');
 });
 
 test('旧 r2 判别：非对称与全错案例必须暴露错误率方向（N6 回归）', () => {
@@ -167,24 +167,24 @@ test('旧 r2 判别：非对称与全错案例必须暴露错误率方向（N6 �
     probe({ probeRef: 'wa', committed: false, top1IsGold: false }),
   ]);
   // 旧 r2 = (wc_G + wa)/G = (0+1)/4 = 0.25；若误成准确率则为 0.75。
-  assert.ok(!isNaEstimate(asym.legacyR2));
-  assert.equal(asym.legacyR2.point, 1 / 4, '旧 r2 须为错误率 0.25，而非准确率 0.75');
-  assert.equal(asym.legacyR2.n, 4);
+  assert.ok(!isNaEstimate(asym.coarseR2));
+  assert.equal(asym.coarseR2.point, 1 / 4, '粗召回基线 r2 须为错误率 0.25，而非准确率 0.75');
+  assert.equal(asym.coarseR2.n, 4);
 
   const allWrong = summarizeFourState([
     ...Array.from({ length: 2 }, (_, i) => probe({ probeRef: `wcg${i}`, top1IsGold: false })),
     ...Array.from({ length: 2 }, (_, i) => probe({ probeRef: `wa${i}`, committed: false, top1IsGold: false })),
   ]);
   // 全错：旧 r2 = 4/4 = 1.0；若误成准确率则报 0.0（全错系统报零错，最严重）。
-  assert.ok(!isNaEstimate(allWrong.legacyR2));
-  assert.equal(allWrong.legacyR2.point, 1, '全错必须报错误率 1.0，不得报 0');
+  assert.ok(!isNaEstimate(allWrong.coarseR2));
+  assert.equal(allWrong.coarseR2.point, 1, '全错必须报错误率 1.0，不得报 0');
   assert.equal(allWrong.rates.falseCommitRate, 1, '新口径同为全错');
   assert.equal(allWrong.counts.cc, 0);
 });
 
 test('旧 r2：无有金探针时 N/A', () => {
   const s = summarizeFourState([probe({ hasGold: false, committed: false, top1IsGold: false })]);
-  assert.ok(isNa(s.legacyR2));
+  assert.ok(isNa(s.coarseR2));
 });
 
 // ── D. 纯函数纪律 ─────────────────────────────────────────────────────────
