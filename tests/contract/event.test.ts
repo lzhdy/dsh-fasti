@@ -58,6 +58,24 @@ const PRODUCERS = [
   'src/memory/planner.ts', // 正本 §3.1 授权的受控规划纯函数层：只读 anchors 产出卡动作计划；不写 topic_lines、不做重要性判断
   'src/memory/drain.ts', // 正本 §3.1 授权的受控编排层：只读 anchors 作经历身份与卡行物化，不写 topic_lines、不做重要性判断、不以锚点为检索词
   'src/event/anchor-refs.ts', // L2 引用完整性闸：只读入参 anchors 做成员包含性点查；不写 topic_lines、不做重要性判断、不以锚点为检索词、不读经历正文
+  'src/event/serial-table.ts', // L3 序号表纯函数：成员窄面 → 1..N 冻结映射；不读 EventRecord.anchors、零 IO、不引 memory
+  'src/api/index.ts', // 门面透传：closure 观测回调注入 + observations() 读口；不自行判定锚点
+  'src/adapters/dsh/plugin.ts', // 宿主适配：接线 onClosureObservation 回调；不读 anchors 值做判断
+];
+
+/**
+ * L3 线协议序号符号消费点白名单（验收⑯）。
+ * 凡 src/ 内出现 `anchor_serials` / `WireBoundaryCandidate` / `AnchorSerialWireError` /
+ * `LLMSummarizeResponse` / 两个 parse 函数 / `onClosureObservation` 的文件，必须在此登记；
+ * 未登记的读点当场变红 —— 逼出一次有意识的归属决定。
+ */
+const WIRE_CONSUMERS = [
+  'src/event/llm-port.ts', // 端口契约：anchor_serials / WireBoundaryCandidate / AnchorSerialWireError / LLMSummarizeResponse 类型声明
+  'src/event/closure.ts', // 内核编排：resolveResponse 解析序号、候选 fail-soft、观测回调接线
+  'src/adapters/dsh/llm.ts', // 适配层：parseAnchorSerialsField / parseBoundaryCandidateSerials 结构解析
+  'src/event/serial-table.ts', // 纯函数：resolveAnchorSerials / resolveCandidateSerials / 表映射
+  'src/api/index.ts', // 门面：onClosureObservation 透传 + observations() 读口
+  'src/adapters/dsh/plugin.ts', // 宿主：onClosureObservation 回调接线
 ];
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -416,6 +434,43 @@ test('红线自检：topic_lines 第一期恒空、anchors 无消费者（src/ �
   // 契约层是这两个字段的唯一来源：生产者据此补齐必填数组字段（第一期恒为 []）。
   assert.ok(EVENT_FIELDS.includes('anchors'));
   assert.ok(EVENT_FIELDS.includes('topic_lines'));
+});
+
+test('L3 线协议符号：消费点全清单登记，未登记读点拦截（验收⑯）', () => {
+  const WIRE_TOKENS =
+    /anchor_serials|WireBoundaryCandidate|AnchorSerialWireError|LLMSummarizeResponse|parseAnchorSerialsField|parseBoundaryCandidateSerials|onClosureObservation/;
+  const srcDir = path.join(repoRoot, 'src');
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.name.endsWith('.ts')) {
+        files.push(full);
+      }
+    }
+  };
+  walk(srcDir);
+
+  const unregistered: string[] = [];
+  for (const file of files) {
+    const relative = path.relative(repoRoot, file).split(path.sep).join('/');
+    const text = fs.readFileSync(file, 'utf8');
+    if (WIRE_TOKENS.test(text) && !WIRE_CONSUMERS.includes(relative)) {
+      unregistered.push(relative);
+    }
+  }
+  assert.deepEqual(
+    unregistered,
+    [],
+    `L3 线协议符号消费点未登记：${unregistered.join('、')}`,
+  );
+
+  // 登记表里的文件必须真实存在（防止登记死条目）。
+  for (const registered of WIRE_CONSUMERS) {
+    assert.ok(fs.existsSync(path.join(repoRoot, registered)), `登记条目存在：${registered}`);
+  }
 });
 
 // ── 闭合原因（closed_reason）──────────────────────────────────────────────

@@ -437,49 +437,55 @@ test('插件：注入模型路由 → 闭合事件由后台 worker 补上摘要�
   const route = {
     complete: async (): Promise<string> => {
       calls += 1;
-      // 锚点取真源里真实存在的经历 id（事件成员指针同集），过 L2 成员包含闸；
-      // 不在调用前臆造合成 ULID。
-      const memberIds = readExperiences(root).map((experience) => String(experience.id));
+      // 线协议走 1..N 序号：成员按 (occurredAtMs, id) 建表排序位取 1；
+      // 序号由内核解析回真源 id，不在线路上传 id 字符串。
+      const members = readExperiences(root).map((experience) => ({
+        id: String(experience.id),
+        at: Date.parse(String(experience['occurred_at'] ?? '')),
+      }));
+      members.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       return JSON.stringify({
         summary: '她问了一句在不在，随后继续处理排期。',
         key_points: ['问在不在'],
-        anchors: memberIds.slice(0, 1),
+        anchor_serials: members.length > 0 ? [1] : [],
       });
     },
   };
 
   const fiber = ctx.plugin({ apply }, { dataRoot: root, modelRoute: route, closureIntervalMs: 50 });
   await fiber;
+  try {
+    // 两条消息相隔一小时 → 第一条被静默闭合（机械信号），第二条开新事件。
+    emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
+    await settle();
+    const later = {
+      type: 'user/message',
+      time: Date.parse('2026-11-08T11:00:00.000Z'),
+      data: { id: 'evt-2', content: [{ type: 'text', text: '看下排期' }], source: { kind: 'user' } },
+    };
+    emitSessionEvent(ctx, SESSION, later);
 
-  // 两条消息相隔一小时 → 第一条被静默闭合（机械信号），第二条开新事件。
-  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
-  await settle();
-  const later = {
-    type: 'user/message',
-    time: Date.parse('2026-11-08T11:00:00.000Z'),
-    data: { id: 'evt-2', content: [{ type: 'text', text: '看下排期' }], source: { kind: 'user' } },
-  };
-  emitSessionEvent(ctx, SESSION, later);
-
-  // 后台 worker 的间隔是 50ms —— 等到摘要落盘（最多约 2 秒）。
-  let ready: Record<string, unknown> | undefined;
-  for (let i = 0; i < 100; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    ready = readEventRows(root).find(
-      (row) => row['status'] === 'closed' && row['summary_quality'] === 'ready',
-    );
-    if (ready !== undefined) {
-      break;
+    // 后台 worker 的间隔是 50ms —— 等到摘要落盘（最多约 2 秒）。
+    let ready: Record<string, unknown> | undefined;
+    for (let i = 0; i < 100; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      ready = readEventRows(root).find(
+        (row) => row['status'] === 'closed' && row['summary_quality'] === 'ready',
+      );
+      if (ready !== undefined) {
+        break;
+      }
     }
+
+    assert.ok(ready, '闭合事件应被后台 worker 摘到并写出 ready 版本');
+    assert.equal(ready['summary_source'], 'llm');
+    assert.equal(ready['summary'], '她问了一句在不在，随后继续处理排期。');
+    assert.ok(calls >= 1, '宿主路由真的被调用过');
+  } finally {
+    // 断言抛错也必须 dispose：消除 50ms worker 定时器链泄漏导致 runner 挂死。
+    await fiber.dispose();
+    cleanupTempRoot(root);
   }
-
-  assert.ok(ready, '闭合事件应被后台 worker 摘到并写出 ready 版本');
-  assert.equal(ready['summary_source'], 'llm');
-  assert.equal(ready['summary'], '她问了一句在不在，随后继续处理排期。');
-  assert.ok(calls >= 1, '宿主路由真的被调用过');
-
-  await fiber.dispose();
-  cleanupTempRoot(root);
 });
 
 // ── 闭合超时配置（设计稿 v1.1 §6.3.1 纪律①）────────────────────────────

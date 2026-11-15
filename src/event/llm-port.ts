@@ -2,14 +2,14 @@
  * LLM 端口 —— 内核只认这个接口（技术基线 §6.1）。
  *
  * 内核（contract / source / event / core / projection）**零生产依赖**：
- * 本文件只有接口与类型，不 import 任何宿主包或 SDK。
+ * 本文件只有接口、类型与端口级错误类，不 import 任何宿主包或 SDK。
  * 真正调模型的代码只在 src/adapters/dsh/llm.ts。
  *
  * 失败语义：抛错即失败（用 core/errors.ts 已有的 UnavailableError）——
  * 调用方负责退避重试，**不得**用占位文案糊过去（定案稿 §6.3）。
  */
 
-import type { BoundaryCandidate } from '../contract/event.ts';
+import { SchemaError } from '../core/errors.ts';
 
 /** 摘要请求。 */
 export interface LLMSummarizeRequest {
@@ -23,14 +23,32 @@ export interface LLMSummarizeRequest {
   readonly maxChars: number;
 }
 
+/**
+ * 话题跳转候选的**线协议**形状（L3 序号协议，定稿 §2）。
+ *
+ * 线上字段是 `at_pointer_serial`（1..N 序号）；落盘契约 `BoundaryCandidate`
+ * 仍是 `at_pointer_id`（id 字符串），两者不混：序号由内核在 appendVersion 前
+ * 解析回 id，本类型只存在于端口响应面。
+ */
+export interface WireBoundaryCandidate {
+  readonly kind: string;
+  readonly at_pointer_serial: number;
+  readonly marked_at: string;
+}
+
 /** 摘要结果。 */
 export interface LLMSummarizeResponse {
   /** 客观摘要正文。 */
   readonly summary: string;
   /** 关键点 / 关键数据。 */
   readonly keyPoints: readonly string[];
-  /** 事件锚点（第一期生成但不消费）。 */
-  readonly anchors: readonly string[];
+  /**
+   * 事件锚点的序号引用（1..N，对齐本 tick 冻结表）；不是 id 字符串。
+   *
+   * 适配器只做结构性 strict 解析（数组 + 安全整数），1..N 范围 / 重复判定
+   * 由 closure 侧序号表完成；落盘 `EventRecord.anchors` 仍是 id 字符串。
+   */
+  readonly anchor_serials: readonly number[];
   /**
    * **实际使用**的模型标识（溯源用，可空）。
    *
@@ -49,7 +67,20 @@ export interface LLMSummarizeResponse {
    *  - **最多 5 条**（超出由调用方截断）；
    *  - 解析失败则**丢弃候选、摘要照常落盘**（失败降级表第 4 行：不写半成品）。
    */
-  readonly boundary_candidates?: readonly BoundaryCandidate[] | undefined;
+  readonly boundary_candidates?: readonly WireBoundaryCandidate[] | undefined;
+}
+
+/**
+ * 线协议序号字段形态非法（适配器结构性 strict 拒收）。
+ *
+ * 继承既有 `SchemaError`（可重试标记，不代表数据永久不可修）；与
+ * `UnavailableError`（端口不可用 / 超时）instanceof 可区分。closure 侧再包装成
+ * `EventSerialReferenceError` 并补合法范围，只触发一次轮内重取。
+ */
+export class AnchorSerialWireError extends SchemaError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+  }
 }
 
 /** 单次调用选项（由调用方给，不是模型参数）。 */
@@ -66,7 +97,7 @@ export interface LLMSummarizeOptions {
 /** 摘要端口。 */
 export interface LLMPort {
   /**
-   * 调一次模型产出摘要 + 关键点 + 锚点。
+   * 调一次模型产出摘要 + 关键点 + 锚点序号。
    *
    * 失败即抛错：调用方负责退避重试，不得用占位文案糊过去。
    *
@@ -83,5 +114,5 @@ export interface LLMPort {
  */
 export type SummarizeInput = LLMSummarizeRequest;
 export type SummarizeResult = LLMSummarizeResponse;
-/** 一次摘要产出的记录（摘要 + 关键点 + 锚点）。 */
+/** 一次摘要产出的记录（摘要 + 关键点 + 锚点序号）。 */
 export type SummarizeRecord = LLMSummarizeResponse;

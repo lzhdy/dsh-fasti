@@ -81,7 +81,8 @@ test('读原语：queryEvents 按条件过滤，getEvent 取当前态，listEven
   const root = makeTempRoot();
   try {
     const log = EventLog.open(layoutOf(root).events);
-    log.appendVersion(makeEvent({ id: 'evt-a', channel: 'dsh' }));
+    // task-closure：非待归并原因，避免启动期孤立扫描追加派生版本干扰版本号断言。
+    log.appendVersion(makeEvent({ id: 'evt-a', channel: 'dsh', closed_reason: 'task-closure' }));
     log.appendVersion(
       makeEvent({
         id: 'evt-b',
@@ -90,7 +91,9 @@ test('读原语：queryEvents 按条件过滤，getEvent 取当前态，listEven
         closed_reason: null,
       }),
     );
-    log.appendVersion(makeEvent({ id: 'evt-a', version: 2, summary: '第二版摘要' }));
+    log.appendVersion(
+      makeEvent({ id: 'evt-a', version: 2, summary: '第二版摘要', closed_reason: 'task-closure' }),
+    );
 
     const fasti = await Fasti.open({ dataRoot: root });
     try {

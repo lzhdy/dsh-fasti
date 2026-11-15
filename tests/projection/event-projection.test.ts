@@ -65,12 +65,15 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
 /** 一组事件：两个 id、其中一个有历史版本（多版本折叠）。 */
 function sampleEvents(): EventRecord[] {
   return [
-    makeEvent({ id: 'evt-a', version: 1, channel: 'dsh' }),
+    // 非待归并闭合原因（task-closure）：避免启动期孤立标注扫描往 events/ 追加派生版本，
+    // 白名单用例要钉的是「重建只读真源」，不把启动扫描写入算进重建责任。
+    makeEvent({ id: 'evt-a', version: 1, channel: 'dsh', closed_reason: 'task-closure' }),
     // evt-a 的第 2 版（她修正过摘要）—— 当前态应是这一行。
     makeEvent({
       id: 'evt-a',
       version: 2,
       channel: 'dsh',
+      closed_reason: 'task-closure',
       summary: '她在浏览器里读了一篇论文',
       summary_quality: 'ready',
       summary_source: 'llm',

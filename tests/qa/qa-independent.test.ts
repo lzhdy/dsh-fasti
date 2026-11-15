@@ -38,6 +38,12 @@ const MINUTE_MS = 60_000;
 /** 无经历夹具的空窄 reader（anchors=[] 时不被点查）。 */
 const EMPTY_READ_EXPERIENCE = { readExperience: () => undefined };
 
+/** 含唯一成员 exp-1 的窄 reader：L3 建表逐成员点查，缺成员会整表 fail-closed。 */
+const MEMBER_READ_EXPERIENCE = {
+  readExperience: (id: string) =>
+    id === 'exp-1' ? { id, channel: 'dsh', occurredAtMs: BASE_MS } : undefined,
+};
+
 /** 基准 + 毫秒偏移 → ISO。 */
 function atMs(offsetMs: number): string {
   return new Date(BASE_MS + offsetMs).toISOString();
@@ -109,7 +115,7 @@ function makeHarness(params?: Partial<EventParams>): Harness {
 
 class FakePort implements LLMPort {
   readonly requests: LLMSummarizeRequest[] = [];
-  response: LLMSummarizeResponse = { summary: '她打开了一个网页。', keyPoints: [], anchors: [] };
+  response: LLMSummarizeResponse = { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [] };
   error: Error | null = null;
 
   async summarize(request: LLMSummarizeRequest): Promise<LLMSummarizeResponse> {
@@ -307,7 +313,7 @@ test('Q-B03 · 闭合管线：600 码点的含 emoji 摘要被接受（与落盘
   try {
     const port = new FakePort();
     // 300 个 emoji = 300 码点 / 600 码元（远低于 600 字上限，语义上完全合格）。
-    port.response = { summary: '😀'.repeat(300), keyPoints: [], anchors: [] };
+    port.response = { summary: '😀'.repeat(300), keyPoints: [], anchor_serials: [] };
     const backlog = new InMemoryBacklog();
     const failures: ClosureFailure[] = [];
     const pipeline = new ClosurePipeline({
@@ -315,7 +321,7 @@ test('Q-B03 · 闭合管线：600 码点的含 emoji 摘要被接受（与落盘
       port,
       backlog,
       readTexts: () => ['原文'],
-      readExperience: EMPTY_READ_EXPERIENCE,
+      readExperience: MEMBER_READ_EXPERIENCE,
       onFailure: (failure) => failures.push(failure),
     });
     log.appendVersion(makeEventRecord());
@@ -342,9 +348,9 @@ test('Q-B03 · 闭合管线：恰好 600 码点的 emoji 摘要应被接受', as
   const log = new EventLog(layoutOf(root).events);
   try {
     const port = new FakePort();
-    port.response = { summary: '😀'.repeat(600), keyPoints: [], anchors: [] };
+    port.response = { summary: '😀'.repeat(600), keyPoints: [], anchor_serials: [] };
     const backlog = new InMemoryBacklog();
-    const pipeline = new ClosurePipeline({ log, port, backlog, readTexts: () => ['原文'], readExperience: EMPTY_READ_EXPERIENCE });
+    const pipeline = new ClosurePipeline({ log, port, backlog, readTexts: () => ['原文'], readExperience: MEMBER_READ_EXPERIENCE });
     log.appendVersion(makeEventRecord());
 
     pipeline.enqueue('evt-1');
@@ -366,9 +372,9 @@ test('Q-B03 · 闭合管线：601 码点的 emoji 摘要应被拒收（真超限
   const log = new EventLog(layoutOf(root).events);
   try {
     const port = new FakePort();
-    port.response = { summary: '😀'.repeat(601), keyPoints: [], anchors: [] };
+    port.response = { summary: '😀'.repeat(601), keyPoints: [], anchor_serials: [] };
     const backlog = new InMemoryBacklog();
-    const pipeline = new ClosurePipeline({ log, port, backlog, readTexts: () => ['原文'], readExperience: EMPTY_READ_EXPERIENCE });
+    const pipeline = new ClosurePipeline({ log, port, backlog, readTexts: () => ['原文'], readExperience: MEMBER_READ_EXPERIENCE });
     log.appendVersion(makeEventRecord());
 
     pipeline.enqueue('evt-1');

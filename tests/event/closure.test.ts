@@ -61,7 +61,7 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
 /** 假端口：记录收到的请求，按预设返回或抛错。 */
 class FakePort implements LLMPort {
   readonly requests: LLMSummarizeRequest[] = [];
-  response: LLMSummarizeResponse = { summary: '她打开了一个网页。', keyPoints: [], anchors: [] };
+  response: LLMSummarizeResponse = { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [] };
   error: Error | null = null;
   /** 挂起：调用后永不 resolve（模拟模型挂住）。 */
   hang = false;
@@ -116,7 +116,8 @@ function makePipeline(
     port,
     backlog,
     readTexts: overrides.readTexts ?? (() => ['用户问晚餐吃什么', '她列了三个选项']),
-    readExperience: readerOf(overrides.members ?? []),
+    // 默认事件指针 exp-1；L3 建表逐成员点查一次，缺成员整表 fail-closed。
+    readExperience: readerOf(overrides.members ?? [memberRef('exp-1')]),
     ...(overrides.params === undefined ? {} : { params: overrides.params }),
     ...(overrides.onFailure === undefined ? {} : { onFailure: overrides.onFailure }),
   });
@@ -185,7 +186,7 @@ test('闭合：提示词按冻结形态生成（system 写法约束 + user 时�
     assert.match(request.system, /自检/, '同一次调用里自检');
     assert.match(request.system, /只输出 JSON/, '要求 JSON 输出');
     assert.match(request.user, /2026-11-08T10:00:00.000Z/, '含时间范围');
-    assert.match(request.user, /1\. 用户问晚餐吃什么/, '原文按序号列出');
+    assert.match(request.user, /#1 \| .* \| 用户问晚餐吃什么/, '原文按 #i 单行表列出（序号 | 时间 | 原文）');
     assert.equal(request.maxChars, 600, '带上硬上限');
   } finally {
     cleanupTempRoot(root);
@@ -198,7 +199,7 @@ test('硬约束：摘要超 600 字 → 拒绝本次结果（不截断、不入�
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '她'.repeat(601), keyPoints: [], anchors: [] };
+    port.response = { summary: '她'.repeat(601), keyPoints: [], anchor_serials: [] };
     const { log, backlog, pipeline } = makePipeline(root, port);
     log.appendVersion(makeEvent());
 
@@ -219,7 +220,7 @@ test('硬约束：摘要为空 → 拒绝本次结果，事件保持 pending', a
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '   ', keyPoints: [], anchors: [] };
+    port.response = { summary: '   ', keyPoints: [], anchor_serials: [] };
     const { log, pipeline } = makePipeline(root, port);
     log.appendVersion(makeEvent());
 
@@ -239,7 +240,7 @@ test('硬约束：不设字数下限 —— 8 字的「她打开了一个网页�
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '她打开了一个网页。', keyPoints: [], anchors: [] };
+    port.response = { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [] };
     const { log, pipeline } = makePipeline(root, port);
     log.appendVersion(makeEvent());
 
@@ -259,7 +260,7 @@ test('硬约束：不写三要素规则检查器 —— 只有结果没有「谁
   try {
     const port = new FakePort();
     // 无主语、无结果、无三要素 —— 若内核写了规则检查器，这里就会被拒。
-    port.response = { summary: '聊了晚餐。', keyPoints: [], anchors: [] };
+    port.response = { summary: '聊了晚餐。', keyPoints: [], anchor_serials: [] };
     const { log, pipeline } = makePipeline(root, port);
     log.appendVersion(makeEvent());
 
@@ -510,14 +511,18 @@ test('不阻塞：LLM 挂住时摄入路径不等待 —— 入队是纯内存�
 
 test('不阻塞：模型挂住时 processOne 不写版本（事件保持 pending，等模型回来）', async () => {
   const root = makeTempRoot();
+  let pending: Promise<boolean> | undefined;
   try {
     const port = new FakePort();
     port.hang = true;
-    const { log, pipeline } = makePipeline(root, port);
+    // 短超时：悬挂调用由 deadline 闸收编，finally 内 await，不遗留 120s 定时器。
+    const { log, pipeline } = makePipeline(root, port, {
+      params: { closureCallTimeoutMs: 100 },
+    });
     log.appendVersion(makeEvent());
 
     pipeline.enqueue('evt-1');
-    const pending = pipeline.processOne(0);
+    pending = pipeline.processOne(0);
     // 让出一个事件循环，确认它没被"卡住后写死"。
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -529,20 +534,25 @@ test('不阻塞：模型挂住时 processOne 不写版本（事件保持 pending
     assert.equal(settled, false, '挂住的调用仍未完成（没有伪造结果）');
     assert.equal(log.currentOf('evt-1').summary_quality, 'pending');
   } finally {
+    await pending?.catch(() => undefined);
     cleanupTempRoot(root);
   }
 });
 
 test('不阻塞：模型挂住时，另一事件照常处理（互不牵连）', async () => {
   const root = makeTempRoot();
+  let hangTask: Promise<boolean> | undefined;
   try {
     const port = new FakePort();
     port.hang = true;
-    const { log, backlog, pipeline } = makePipeline(root, port);
+    // 短超时：悬挂调用由 deadline 闸快速收编，避免 120s ref'd 定时器拖住 runner。
+    const { log, backlog, pipeline } = makePipeline(root, port, {
+      params: { closureCallTimeoutMs: 20 },
+    });
     log.appendVersion(makeEvent({ id: 'evt-1' }));
 
     pipeline.enqueue('evt-1');
-    void pipeline.processOne(0); // 挂住，不等它
+    hangTask = pipeline.processOne(0); // 挂住，不等它；finally 收束
 
     // 换一个好端口处理另一个事件 —— 说明管线本身不串行阻塞。
     //
@@ -557,7 +567,7 @@ test('不阻塞：模型挂住时，另一事件照常处理（互不牵连）',
       port: good,
       backlog: backlog2,
       readTexts: () => ['原文'],
-      readExperience: EMPTY_READER,
+      readExperience: readerOf([memberRef('exp-1')]),
     });
     log2.appendVersion(makeEvent({ id: 'evt-2' }));
     pipeline2.enqueue('evt-2');
@@ -566,6 +576,8 @@ test('不阻塞：模型挂住时，另一事件照常处理（互不牵连）',
     assert.equal(log2.currentOf('evt-2').summary_quality, 'ready');
     assert.equal(log.currentOf('evt-1').summary_quality, 'pending');
   } finally {
+    // 悬挂任务必须在短超时后被闸收编；吞掉其失败结果，不遗留悬挂 Promise / 定时器。
+    await hangTask?.catch(() => undefined);
     cleanupTempRoot(root);
   }
 });
@@ -577,7 +589,7 @@ test('重跑：她写的摘要不覆盖 —— summary_source=her 的事件只�
   try {
     const port = new FakePort();
     const anchorA = '01J0000000000000000000000A';
-    port.response = { summary: '模型新写的摘要', keyPoints: ['新要点'], anchors: [anchorA] };
+    port.response = { summary: '模型新写的摘要', keyPoints: ['新要点'], anchor_serials: [1] };
     const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorA)] });
     log.appendVersion(
       makeEvent({
@@ -607,7 +619,7 @@ test('红线：内核层不出现「消费 anchors」的写法（第一期 ancho
   try {
     const port = new FakePort();
     const anchorB = '01J0000000000000000000000B';
-    port.response = { summary: '摘要', keyPoints: [], anchors: [anchorB] };
+    port.response = { summary: '摘要', keyPoints: [], anchor_serials: [1] };
     const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorB)] });
     log.appendVersion(makeEvent({ pointers: [memberPointer(anchorB)] }));
 
@@ -670,7 +682,7 @@ class FirstCallHangsPort implements LLMPort {
       // 永不 resolve：这就是「宿主路由不返回」的形态。
       return new Promise<LLMSummarizeResponse>(() => undefined);
     }
-    return { summary: `第 ${this.calls} 次调用产出的摘要`, keyPoints: [], anchors: [] };
+    return { summary: `第 ${this.calls} 次调用产出的摘要`, keyPoints: [], anchor_serials: [] };
   }
 }
 
@@ -743,7 +755,7 @@ test('Major-3 · 过期丢弃：在途改边界 → 本次结果作废（不写�
           });
         }
         const covered = request.user.split('\n').filter((line) => line.includes('原文-')).length;
-        return { summary: `覆盖 ${covered} 条记录`, keyPoints: [], anchors: [] };
+        return { summary: `覆盖 ${covered} 条记录`, keyPoints: [], anchor_serials: [] };
       },
     };
 
@@ -752,7 +764,7 @@ test('Major-3 · 过期丢弃：在途改边界 → 本次结果作废（不写�
       port,
       backlog,
       readTexts: (event) => event.pointers.map((pointer) => `原文-${pointer.id}`),
-      readExperience: EMPTY_READER,
+      readExperience: readerOf([memberRef('exp-1'), memberRef('exp-2')]),
     });
 
     log.appendVersion(
@@ -816,7 +828,7 @@ test('溯源：模型写的摘要带 summary_prompt_version=SUMMARY_PROMPT_VERSI
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '她打开了一个网页。', keyPoints: [], anchors: [], model: 'dsh-pro' };
+    port.response = { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [], model: 'dsh-pro' };
     const { log, pipeline } = makePipeline(root, port);
     log.appendVersion(makeEvent());
 
@@ -854,7 +866,7 @@ test('溯源：重跑她写的摘要（只刷锚点）→ 两字段清空（它�
   try {
     const port = new FakePort();
     const anchorA = '01J0000000000000000000000A';
-    port.response = { summary: '模型新写的摘要', keyPoints: [], anchors: [anchorA], model: 'dsh-pro' };
+    port.response = { summary: '模型新写的摘要', keyPoints: [], anchor_serials: [1], model: 'dsh-pro' };
     const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorA)] });
     log.appendVersion(
       makeEvent({
@@ -887,7 +899,7 @@ test('双流职责：慢路径只追加派生字段 —— 快路径写的事实
   try {
     const port = new FakePort();
     const anchorC = '01J0000000000000000000000C';
-    port.response = { summary: '她问晚餐吃什么，并自己列了三个选项。', keyPoints: ['晚餐'], anchors: [anchorC] };
+    port.response = { summary: '她问晚餐吃什么，并自己列了三个选项。', keyPoints: ['晚餐'], anchor_serials: [1] };
     const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorC)] });
 
     const before = makeEvent({
@@ -955,12 +967,15 @@ test('A7 · 慢路径：候选与摘要在同一次 appendVersion 写回（≤5 
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: ['读了论文'],
-      anchors: [anchorD],
+      anchor_serials: [1],
       boundary_candidates: [
-        { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:05:00.000Z' },
+        { kind: '话题跳转', at_pointer_serial: 2, marked_at: '2026-11-08T10:05:00.000Z' },
       ],
     };
-    const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorD)] });
+    // 表序：anchorD（1）→ exp-1（2）；两成员均进 reader，否则建表 fail-closed。
+    const { log, pipeline } = makePipeline(root, port, {
+      members: [memberRef(anchorD), memberRef('exp-1')],
+    });
     log.appendVersion(
       makeEvent({
         pointers: [
@@ -1000,13 +1015,15 @@ test('A7 · 慢路径：候选非权威 —— 不改 pointers / status / time_r
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: [],
-      anchors: [],
+      anchor_serials: [],
       boundary_candidates: [
-        { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:01:00.000Z' },
-        { kind: '话题跳转', at_pointer_id: 'exp-2', marked_at: '2026-11-08T10:02:00.000Z' },
+        { kind: '话题跳转', at_pointer_serial: 1, marked_at: '2026-11-08T10:01:00.000Z' },
+        { kind: '话题跳转', at_pointer_serial: 2, marked_at: '2026-11-08T10:02:00.000Z' },
       ],
     };
-    const { log, pipeline } = makePipeline(root, port);
+    const { log, pipeline } = makePipeline(root, port, {
+      members: [memberRef('exp-1'), memberRef('exp-2')],
+    });
     const before = makeEvent({
       pointers: [
         { id: 'exp-1', channel: 'dsh', shard: '2026-11', seq: 0 },
@@ -1033,19 +1050,24 @@ test('A7 · 慢路径：候选最多 5 条（超出截断，不多写）', async
   const root = makeTempRoot();
   try {
     const port = new FakePort();
+    // 5 个成员（序号 1..5）；9 条候选按序号 1..5 循环，去重后仍合法，只受条数上限约束。
+    const memberIds = ['exp-1', 'exp-2', 'exp-3', 'exp-4', 'exp-5'] as const;
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: [],
-      anchors: [],
-      boundary_candidates: Array.from({ length: 9 }, () => ({
+      anchor_serials: [],
+      boundary_candidates: Array.from({ length: 9 }, (_, i) => ({
         kind: '话题跳转',
-        at_pointer_id: 'exp-1',
+        at_pointer_serial: (i % 5) + 1,
         marked_at: '2026-11-08T10:00:00.000Z',
       })),
     };
-    const { log, pipeline } = makePipeline(root, port);
-    // 9 条候选全部指向本事件的唯一指针（exp-1）→ 都合法，只受条数上限约束。
-    log.appendVersion(makeEvent());
+    const { log, pipeline } = makePipeline(root, port, {
+      members: memberIds.map(memberRef),
+    });
+    log.appendVersion(
+      makeEvent({ pointers: memberIds.map(memberPointer) }),
+    );
 
     pipeline.enqueue('evt-1');
     await pipeline.processOne(0);
@@ -1061,11 +1083,11 @@ test('A7 · 慢路径：候选解析失败 → 丢弃候选，摘要照常落盘
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    // 候选形态不对（不是数组 / 缺 at_pointer_id）→ 解析失败。
+    // 候选形态不对（不是数组 / 缺 at_pointer_serial）→ 解析失败。
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: [],
-      anchors: [],
+      anchor_serials: [],
       boundary_candidates: [{ kind: '话题跳转' } as never],
     };
     const { log, pipeline } = makePipeline(root, port);
@@ -1091,9 +1113,9 @@ test('A7 · 慢路径：边界快照不一致 → 摘要与候选一起作废（
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: [],
-      anchors: [],
+      anchor_serials: [],
       boundary_candidates: [
-        { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:01:00.000Z' },
+        { kind: '话题跳转', at_pointer_serial: 1, marked_at: '2026-11-08T10:01:00.000Z' },
       ],
     };
     const { log, pipeline } = makePipeline(root, port);
@@ -1135,11 +1157,11 @@ test('P2 · 慢路径：at_pointer_id 不属于本事件指针 → 代码过滤�
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: [],
-      anchors: [],
+      anchor_serials: [],
       boundary_candidates: [
-        { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:01:00.000Z' },
-        { kind: '话题跳转', at_pointer_id: 'exp-999', marked_at: '2026-11-08T10:02:00.000Z' },
-        { kind: '话题跳转', at_pointer_id: 'other-event-exp', marked_at: '2026-11-08T10:03:00.000Z' },
+        { kind: '话题跳转', at_pointer_serial: 1, marked_at: '2026-11-08T10:01:00.000Z' },
+        { kind: '话题跳转', at_pointer_serial: 2, marked_at: '2026-11-08T10:02:00.000Z' },
+        { kind: '话题跳转', at_pointer_serial: 2, marked_at: '2026-11-08T10:03:00.000Z' },
       ],
     };
     const { log, pipeline } = makePipeline(root, port);
@@ -1166,9 +1188,9 @@ test('P2 · 慢路径：全部候选都越界 → 候选为空，摘要照常落
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: [],
-      anchors: [],
+      anchor_serials: [],
       boundary_candidates: [
-        { kind: '话题跳转', at_pointer_id: 'exp-999', marked_at: '2026-11-08T10:01:00.000Z' },
+        { kind: '话题跳转', at_pointer_serial: 2, marked_at: '2026-11-08T10:01:00.000Z' },
       ],
     };
     const { log, pipeline } = makePipeline(root, port);

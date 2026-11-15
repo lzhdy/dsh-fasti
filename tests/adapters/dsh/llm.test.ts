@@ -17,7 +17,7 @@ import type { DshModelRoute } from '../../../src/adapters/dsh/llm.ts';
 /** 假路由：记录请求，按预设返回正文或抛错。 */
 class FakeRoute implements DshModelRoute {
   readonly calls: Array<{ system: string; user: string; model?: string }> = [];
-  reply = '{"summary":"她打开了一个网页。","key_points":[],"anchors":[]}';
+  reply = '{"summary":"她打开了一个网页。","key_points":[],"anchor_serials":[]}';
   error: Error | null = null;
 
   async complete(req: { system: string; user: string; model?: string }): Promise<string> {
@@ -47,26 +47,28 @@ test('端口：走注入的模型路由，透传 system / user', async () => {
   assert.equal(route.calls[0]?.user, REQUEST.user);
   assert.equal(response.summary, '她打开了一个网页。');
   assert.deepEqual(response.keyPoints, []);
-  assert.deepEqual(response.anchors, []);
+  assert.deepEqual(response.anchor_serials, []);
 });
 
-test('端口：解析 key_points 与 anchors', async () => {
+test('端口：解析 key_points 与 anchor_serials（结构序号）', async () => {
   const route = new FakeRoute();
+  // 本用例无事件成员集上下文：适配器只做结构性解析，序号 1 原样透传，
+  // 1..N 成员归属由内核序号表判定（不回猜 id）。
   route.reply = JSON.stringify({
     summary: '摘要',
     key_points: ['要点一', '要点二'],
-    anchors: ['锚点一'],
+    anchor_serials: [1],
   });
   const port = createDshLLMPort(route);
 
   const response = await port.summarize(REQUEST);
   assert.deepEqual(response.keyPoints, ['要点一', '要点二']);
-  assert.deepEqual(response.anchors, ['锚点一']);
+  assert.deepEqual(response.anchor_serials, [1]);
 });
 
 test('端口：剥掉模型常见的 ```json 围栏', async () => {
   const route = new FakeRoute();
-  route.reply = '```json\n{"summary":"围栏里的摘要","key_points":[],"anchors":[]}\n```';
+  route.reply = '```json\n{"summary":"围栏里的摘要","key_points":[],"anchor_serials":[]}\n```';
   const port = createDshLLMPort(route);
 
   const response = await port.summarize(REQUEST);
@@ -83,7 +85,7 @@ test('端口：模型返回坏 JSON → 抛 UnavailableError（不返回半截�
 
 test('端口：模型返回缺 summary → 抛 UnavailableError', async () => {
   const route = new FakeRoute();
-  route.reply = '{"key_points":[],"anchors":[]}';
+  route.reply = '{"key_points":[],"anchor_serials":[]}';
   const port = createDshLLMPort(route);
 
   await assert.rejects(() => port.summarize(REQUEST), UnavailableError);

@@ -21,7 +21,8 @@ import { fileURLToPath } from 'node:url';
 
 import { CorruptedError, NotFoundError, UnavailableError } from '../../src/core/errors.ts';
 import { EVENT_SCHEMA_VERSION } from '../../src/contract/event.ts';
-import type { EventRecord } from '../../src/contract/event.ts';
+import type { BoundaryCandidate, EventRecord } from '../../src/contract/event.ts';
+import { AnchorReferenceInvalidError } from '../../src/event/anchor-refs.ts';
 import { EventLog } from '../../src/source/event-log.ts';
 import { ExperienceLog } from '../../src/source/experience-log.ts';
 import { layoutOf } from '../../src/source/paths.ts';
@@ -96,6 +97,43 @@ function readerOf(entries: Readonly<Record<string, ReaderRef>>): Reader {
   return { readExperience: (id) => entries[id] ?? undefined };
 }
 
+/**
+ * writeSummary 私有方法的测试反射 seam（定稿 §10：不开生产专用入口，TS private 仅编译期）。
+ * 测试内用类型逃逸直调真实私有方法，L1 形态闸 / L2 成员闸走的仍是生产同一实现、
+ * 同一 `assertAnchorRefs`；生产码零新增面。候选传空、regenerate=true、model 缺省。
+ */
+type WriteSummaryPrivate = {
+  writeSummary(
+    current: EventRecord,
+    anchors: readonly string[],
+    candidates: readonly BoundaryCandidate[],
+    summary: string,
+    keyPoints: readonly string[],
+    regenerate: boolean,
+    model: string | undefined,
+  ): void;
+};
+
+function writeSummaryDirect(
+  pipeline: ClosurePipeline,
+  current: EventRecord,
+  anchors: readonly string[],
+  summary: string,
+): void {
+  const privateMethod = pipeline as unknown as WriteSummaryPrivate;
+  privateMethod.writeSummary(current, anchors, [], summary, [], true, undefined);
+}
+
+/** 捕获同步抛出的闸错误（writeSummary 在 appendVersion 前同步抛 L1/L2）。 */
+function captureThrow(fn: () => void): unknown {
+  try {
+    fn();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
 /** 造一条闭合但未出摘要的事件（pending）。 */
 function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
   const base: EventRecord = {
@@ -128,7 +166,7 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
 /** 假端口：记录收到的请求次数（spy），按预设返回。 */
 class FakePort implements LLMPort {
   readonly requests: LLMSummarizeRequest[] = [];
-  response: LLMSummarizeResponse = { summary: '她打开了一个网页。', keyPoints: [], anchors: [] };
+  response: LLMSummarizeResponse = { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [] };
 
   async summarize(request: LLMSummarizeRequest): Promise<LLMSummarizeResponse> {
     this.requests.push(request);
@@ -175,28 +213,26 @@ function makeHarness(
 // 1. 闸位：L2 拒收 → 真源零新版本（appendVersion 未发生），任务留队退避
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('L2 闸位：锚点不在成员集且 reader 取不到 → 拒收，真源零新版本追加', async () => {
+test('L2 闸位：锚点不在成员集且 reader 取不到 → 拒收，真源零新版本追加', () => {
   const root = makeTempRoot();
   try {
-    const harness = makeHarness(root, {
-      reader: readerOf({}),
-      response: { summary: '她打开了一个网页。', keyPoints: [], anchors: [U_Z] },
-    });
+    const harness = makeHarness(root, { reader: readerOf({}) });
     harness.log.appendVersion(makeEvent());
-
-    harness.pipeline.enqueue('evt-1');
-    await harness.pipeline.processOne(0);
-
-    assert.equal(harness.log.versionsOf('evt-1').length, 1, 'appendVersion 未发生：仍只有 v1');
     const current = harness.log.currentOf('evt-1');
+
+    // 直注 writeSummary 私有 seam：id[] 绕过线协议序号层，走真实 L1/L2 闸。
+    const error = captureThrow(() => writeSummaryDirect(harness.pipeline, current, [U_Z], '摘要'));
+
+    assert.ok(error instanceof AnchorReferenceInvalidError, 'L2 闸抛 AnchorReferenceInvalidError');
+    assert.equal(
+      (error as AnchorReferenceInvalidError).detail.reason,
+      'anchor-not-found',
+      'reader 取不到 → anchor-not-found 桶（未被建表期 l3-serial-table-broken 取代）',
+    );
+    assert.equal(harness.log.versionsOf('evt-1').length, 1, 'appendVersion 未发生：仍只有 v1');
     assert.equal(current.version, 1, '版本号未推进');
     assert.equal(current.summary, null, '没有占位摘要');
     assert.equal(current.summary_quality, 'pending', '如实保持 pending');
-    assert.equal(harness.backlog.size(), 1, '任务未出队，走 failTask 退避');
-
-    const failures = harness.pipeline.failures() as FailureWithDetail[];
-    assert.equal(failures.length, 1, '失败明细留痕，不静默丢弃');
-    assert.equal(failures[0]?.detail?.reason, 'anchor-not-found', '独立 reason 可观测');
   } finally {
     cleanupTempRoot(root);
   }
@@ -215,7 +251,6 @@ test('L2 禁剥锚：部分有效（三真一假）整份拒收，不得改写�
         [U_B]: ref(U_B, 'dsh', T0 + DAY),
         [U_C]: ref(U_C, 'dsh', T0 + 2 * DAY),
       }),
-      response: { summary: '她打开了一个网页。', keyPoints: [], anchors: [U_A, U_B, U_C, U_Z] },
     });
     harness.log.appendVersion(
       makeEvent({
@@ -226,16 +261,18 @@ test('L2 禁剥锚：部分有效（三真一假）整份拒收，不得改写�
         ],
       }),
     );
-
-    harness.pipeline.enqueue('evt-1');
-    await harness.pipeline.processOne(0);
-
-    assert.equal(harness.log.versionsOf('evt-1').length, 1, '整份失败：零新版本');
     const current = harness.log.currentOf('evt-1');
+
+    // 三真一假整份喂入；闸在 appendVersion 前同步拒收，禁剥锚、禁空锚落版。
+    const error = captureThrow(() =>
+      writeSummaryDirect(harness.pipeline, current, [U_A, U_B, U_C, U_Z], '摘要'),
+    );
+
+    assert.ok(error instanceof AnchorReferenceInvalidError, '整份拒收：不剥锚');
+    assert.equal(harness.log.versionsOf('evt-1').length, 1, '整份失败：零新版本');
     assert.deepEqual(current.anchors, [], 'v1 空锚 abstain 原样保留，未被剥成 anchors:[] 的新版');
     assert.equal(current.summary, null);
     assert.equal(current.summary_quality, 'pending');
-    assert.ok(harness.failures.length >= 1, '失败留痕');
   } finally {
     cleanupTempRoot(root);
   }
@@ -251,7 +288,7 @@ test('L2 退避：nextAttemptAtMs 严格递增（无相等 / 紧密重循环）�
   try {
     const harness = makeHarness(root, {
       reader: readerOf({}),
-      response: { summary: '她打开了一个网页。', keyPoints: [], anchors: [U_Z] },
+      response: { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [] },
     });
     harness.log.appendVersion(makeEvent());
 
@@ -308,7 +345,7 @@ test('损坏传播：reader 抛 CorruptedError → experience-store-broken，LLM
     };
     const harness = makeHarness(root, {
       reader: brokenReader,
-      response: { summary: '她打开了一个网页。', keyPoints: [], anchors: [U_A] },
+      response: { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [] },
     });
     harness.log.appendVersion(makeEvent());
 
@@ -367,7 +404,7 @@ test('损坏传播（真源层）：experienceLog 分片行损坏 → 两轮退�
 
     const harness = makeHarness(root, {
       reader: corruptedReader,
-      response: { summary: '她打开了一个网页。', keyPoints: [], anchors: [U_A] },
+      response: { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [] },
     });
     harness.log.appendVersion(makeEvent());
     harness.pipeline.enqueue('evt-1');
@@ -411,7 +448,9 @@ test('D6 分类边界：LLM UnavailableError 不挂 experience-store-broken 桶�
       port: failingPort,
       backlog,
       readTexts: () => ['用户问晚餐吃什么'],
-      readExperience: readerOf({}),
+      // 成员 U_A 须进 reader：否则建表期 l3-serial-table-broken 会先于端口错误，
+      // 本用例要钉的是模型类 UnavailableError 不挂存储损坏桶。
+      readExperience: readerOf({ [U_A]: ref(U_A, 'dsh', T0) }),
       onFailure: (failure) => failures.push(failure),
     });
     log.appendVersion(makeEvent());
@@ -444,7 +483,7 @@ test('D6 分类边界：reader 抛 NotFoundError 归 experience-store-broken，n
     };
     const harness = makeHarness(root, {
       reader: notFoundReader,
-      response: { summary: '她打开了一个网页。', keyPoints: [], anchors: [U_A] },
+      response: { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [] },
     });
     harness.log.appendVersion(makeEvent());
     harness.pipeline.enqueue('evt-1');
@@ -520,7 +559,7 @@ test('重启语义：新实例 sweepPending 重摘非 her pending，her 不重�
       port: freshPort,
       backlog: freshBacklog,
       readTexts: () => ['用户问晚餐吃什么'],
-      readExperience: readerOf({}),
+      readExperience: readerOf({ [U_A]: ref(U_A, 'dsh', T0) }),
     });
 
     const swept = freshPipeline.sweepPending();
@@ -549,22 +588,21 @@ test('重启语义：新实例 sweepPending 重摘非 her pending，her 不重�
 // 7. 诊断不翻转：cross-channel 分桶 detail 存在，但主结论仍是拒收（端到端呼应批 1）
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('诊断不翻转：cross-channel 分桶明细存在，管线仍拒收、零新版本', async () => {
+test('诊断不翻转：cross-channel 分桶明细存在，管线仍拒收、零新版本', () => {
   const root = makeTempRoot();
   try {
     const harness = makeHarness(root, {
       reader: readerOf({ [U_W]: ref(U_W, 'web', T0) }),
-      response: { summary: '她打开了一个网页。', keyPoints: [], anchors: [U_W] },
     });
     harness.log.appendVersion(makeEvent());
+    const current = harness.log.currentOf('evt-1');
 
-    harness.pipeline.enqueue('evt-1');
-    await harness.pipeline.processOne(0);
+    const error = captureThrow(() => writeSummaryDirect(harness.pipeline, current, [U_W], '摘要'));
 
-    const failures = harness.pipeline.failures() as FailureWithDetail[];
-    assert.equal(failures.length, 1, '失败留痕');
-    assert.equal(failures[0]?.detail?.reason, 'anchor-cross-channel', '诊断桶 = 跨通道');
-    assert.equal(failures[0]?.detail?.channel, 'web', '明细带实际通道');
+    assert.ok(error instanceof AnchorReferenceInvalidError, '跨通道仍被主结论拒收');
+    const detail = (error as AnchorReferenceInvalidError).detail;
+    assert.equal(detail.reason, 'anchor-cross-channel', '诊断桶 = 跨通道');
+    assert.equal(detail.channel, 'web', '明细带实际通道');
 
     assert.equal(harness.log.versionsOf('evt-1').length, 1, '分桶不推翻拒收：零新版本');
     assert.equal(harness.log.currentOf('evt-1').summary_quality, 'pending');

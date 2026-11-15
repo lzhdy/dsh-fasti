@@ -21,12 +21,13 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import { EVENT_SCHEMA_VERSION } from '../../src/contract/event.ts';
-import type { EventRecord } from '../../src/contract/event.ts';
+import type { BoundaryCandidate, EventRecord } from '../../src/contract/event.ts';
 import { UlidGenerator } from '../../src/core/ulid.ts';
 import { InMemoryBacklog, RETRY_MAX_ATTEMPTS } from '../../src/event/backlog.ts';
 import type { Backlog, BacklogTask } from '../../src/event/backlog.ts';
-import { ClosurePipeline } from '../../src/event/closure.ts';
-import type { LLMPort, LLMSummarizeRequest, LLMSummarizeResponse } from '../../src/event/llm-port.ts';
+import { AnchorFormInvalidError, ClosurePipeline } from '../../src/event/closure.ts';
+import type { LLMPort, LLMSummarizeResponse } from '../../src/event/llm-port.ts';
+import { FakeLlmPort } from '../helpers/fake-llm-port.ts';
 import { EventLog } from '../../src/source/event-log.ts';
 import { layoutOf } from '../../src/source/paths.ts';
 import { cleanupTempRoot, countLines, makeTempRoot } from '../helpers.ts';
@@ -70,22 +71,10 @@ function makeEvent(): EventRecord {
   };
 }
 
-/** 假端口：按预设响应产出 anchors。 */
-class FakePort implements LLMPort {
-  response: LLMSummarizeResponse;
-
-  constructor(anchors: readonly unknown[]) {
-    this.response = {
-      summary: '她打开了一个网页。',
-      keyPoints: [],
-      anchors: anchors as readonly string[],
-    };
-  }
-
-  async summarize(request: LLMSummarizeRequest): Promise<LLMSummarizeResponse> {
-    void request;
-    return this.response;
-  }
+interface ReaderRef {
+  readonly id: string;
+  readonly channel: string;
+  readonly occurredAtMs: number;
 }
 
 interface Harness {
@@ -93,6 +82,7 @@ interface Harness {
   log: EventLog;
   backlog: Backlog;
   pipeline: ClosurePipeline;
+  anchors: readonly unknown[];
 }
 
 /** 成员指针夹具：id 与夹具锚点一致（L2 成员包含闸点查面）。 */
@@ -100,29 +90,67 @@ function memberPointer(id: string): EventRecord['pointers'][number] {
   return { id, channel: 'dsh', shard: '2026-11', seq: 0 };
 }
 
-/** 临时根 + 真源 v1 事件 + 队列 + 假端口；anchors 由调用方给定。 */
+/**
+ * writeSummary 私有方法的测试反射 seam（定稿 §10：不开生产专用入口，TS private 仅编译期）。
+ * 直注 id[] 绕过线协议序号层，走生产同一 L1 形态闸（assertAnchorsUlid）/ L2 成员闸。
+ */
+type WriteSummaryPrivate = {
+  writeSummary(
+    current: EventRecord,
+    anchors: readonly string[],
+    candidates: readonly BoundaryCandidate[],
+    summary: string,
+    keyPoints: readonly string[],
+    regenerate: boolean,
+    model: string | undefined,
+  ): void;
+};
+
+function writeSummaryDirect(
+  pipeline: ClosurePipeline,
+  current: EventRecord,
+  anchors: readonly unknown[],
+): void {
+  const privateMethod = pipeline as unknown as WriteSummaryPrivate;
+  privateMethod.writeSummary(
+    current,
+    anchors as readonly string[],
+    [],
+    '摘要',
+    [],
+    true,
+    undefined,
+  );
+}
+
+function captureThrow(fn: () => void): unknown {
+  try {
+    fn();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+/** 临时根 + 真源 v1 事件 + 队列；anchors 由调用方给定，直注 writeSummary。 */
 function harness(anchors: readonly unknown[], backlog: Backlog = new InMemoryBacklog()): Harness {
   const root = makeTempRoot('task42-l1-');
-  const port = new FakePort(anchors);
   const log = new EventLog(layoutOf(root).events);
   const anchorIds = anchors.map((anchor) => String(anchor));
   // 窄 reader：只回 id/channel/occurredAtMs；夹具锚点即成员引用。
-  const readExperience = {
-    readExperience: (id: string) =>
-      anchorIds.includes(id)
-        ? { id, channel: 'dsh', occurredAtMs: Date.parse(BASE_TIME) }
-        : undefined,
-  };
+  const refMap = new Map<string, ReaderRef>(
+    anchorIds.map((id) => [id, { id, channel: 'dsh', occurredAtMs: Date.parse(BASE_TIME) }]),
+  );
+  const readExperience = { readExperience: (id: string) => refMap.get(id) };
   const pipeline = new ClosurePipeline({
     log,
-    port,
+    port: null,
     backlog,
     readTexts: () => ['用户问晚餐吃什么', '她列了三个选项'],
     readExperience,
   });
   log.appendVersion({ ...makeEvent(), pointers: anchorIds.map(memberPointer) });
-  pipeline.enqueue(EVENT_ID);
-  return { root, log, backlog, pipeline };
+  return { root, log, backlog, pipeline, anchors };
 }
 
 /** 真源 events 分片文件里的总行数（跨分片累加，避免钉死月份文件名）。 */
@@ -148,26 +176,20 @@ function sourceLineCount(root: string): number {
  * 进失败明细 + 退避，不再抛穿管线。fail-closed 语义不变：真源无 v2、磁盘无新行、
  * v1 锚点不被脏值改写。
  */
-async function runAndAssertBlocked(
-  pipeline: ClosurePipeline,
-  log: EventLog,
-  root: string,
-  raw?: string,
-): Promise<void> {
-  const processed = await pipeline.processOne(0);
-  assert.equal(processed, true, '坏锚点被收编为失败任务（不再抛穿管线）');
-  const failures = pipeline.failures();
-  assert.equal(failures.length, 1, '坏锚点必须进失败明细');
-  assert.equal(failures[0]!.eventId, EVENT_ID);
+function runAndAssertBlocked(h: Harness, raw?: string): void {
+  const current = h.log.currentOf(EVENT_ID);
+  // 直注 writeSummary：L1 形态闸在 appendVersion 前同步抛 AnchorFormInvalidError。
+  const error = captureThrow(() => writeSummaryDirect(h.pipeline, current, h.anchors));
+  assert.ok(error instanceof AnchorFormInvalidError, 'L1 形态闸落盘前拦截，不写半份');
   if (raw !== undefined) {
     assert.ok(
-      failures[0]!.error.includes(raw),
-      `失败明细 error 须含坏锚点原值，实际：${failures[0]!.error}`,
+      h.anchors.includes(raw) || String((error as Error).message).includes(raw),
+      `坏锚点原值须留痕，实际锚点：${JSON.stringify(h.anchors)}`,
     );
   }
-  assert.equal(log.versionsOf(EVENT_ID).length, 1, '拦截先于落盘：真源仍只有 v1');
-  assert.equal(sourceLineCount(root), 1, '磁盘分片未追加新版本行');
-  const v1 = log.currentOf(EVENT_ID);
+  assert.equal(h.log.versionsOf(EVENT_ID).length, 1, '拦截先于落盘：真源仍只有 v1');
+  assert.equal(sourceLineCount(h.root), 1, '磁盘分片未追加新版本行');
+  const v1 = h.log.currentOf(EVENT_ID);
   assert.deepEqual(v1.anchors, [], 'v1 原样保留，锚点未被脏值改写');
 }
 
@@ -191,11 +213,11 @@ const ILLEGAL_STRING_CASES: ReadonlyArray<readonly [string, string]> = [
 
 for (const [label, anchor] of ILLEGAL_STRING_CASES) {
   test(`L1 形态闸：${label}（${JSON.stringify(anchor)}）落盘前被拦（收编退避）`, async () => {
-    const { root, log, pipeline } = harness([anchor]);
+    const h = harness([anchor]);
     try {
-      await runAndAssertBlocked(pipeline, log, root, anchor);
+      runAndAssertBlocked(h, anchor);
     } finally {
-      cleanupTempRoot(root);
+      cleanupTempRoot(h.root);
     }
   });
 }
@@ -209,21 +231,21 @@ const ILLEGAL_PRIMITIVE_CASES: ReadonlyArray<readonly [string, unknown]> = [
 
 for (const [label, value] of ILLEGAL_PRIMITIVE_CASES) {
   test(`L1 形态闸：锚点元素为 ${label} 时落盘前被拦（收编退避）`, async () => {
-    const { root, log, pipeline } = harness([value]);
+    const h = harness([value]);
     try {
-      await runAndAssertBlocked(pipeline, log, root);
+      runAndAssertBlocked(h);
     } finally {
-      cleanupTempRoot(root);
+      cleanupTempRoot(h.root);
     }
   });
 }
 
 test('L1 形态闸：合法锚点与非法锚点混合时，整批拒绝（不写半份）', async () => {
-  const { root, log, pipeline } = harness([FIXTURE_SHAPE_A, 'web_search']);
+  const h = harness([FIXTURE_SHAPE_A, 'web_search']);
   try {
-    await runAndAssertBlocked(pipeline, log, root, 'web_search');
+    runAndAssertBlocked(h, 'web_search');
   } finally {
-    cleanupTempRoot(root);
+    cleanupTempRoot(h.root);
   }
 });
 
@@ -238,21 +260,24 @@ const VALID_CASES: ReadonlyArray<readonly [string, readonly string[]]> = [
 
 for (const [label, anchors] of VALID_CASES) {
   test(`L1 形态闸：${label} 零误伤，正常写回新版本`, async () => {
-    const { root, log, pipeline } = harness(anchors);
+    const h = harness(anchors);
     try {
-      const processed = await pipeline.processOne(0);
-      assert.equal(processed, true, '任务被正常处理');
+      const current = h.log.currentOf(EVENT_ID);
+      assert.doesNotThrow(
+        () => writeSummaryDirect(h.pipeline, current, anchors),
+        '合法形态锚点放行，L1 形态闸零误伤',
+      );
 
-      const versions = log.versionsOf(EVENT_ID);
+      const versions = h.log.versionsOf(EVENT_ID);
       assert.equal(versions.length, 2, '合法锚点放行：追加 v2');
-      const current = log.currentOf(EVENT_ID);
-      assert.equal(current.version, 2);
-      assert.equal(current.summary_quality, 'ready');
-      assert.equal(current.summary_source, 'llm');
-      assert.deepEqual(current.anchors, anchors, '锚点原样落盘，精确相等');
-      assert.equal(sourceLineCount(root), 2, '真源两行：v1 + v2');
+      const after = h.log.currentOf(EVENT_ID);
+      assert.equal(after.version, 2);
+      assert.equal(after.summary_quality, 'ready');
+      assert.equal(after.summary_source, 'llm');
+      assert.deepEqual(after.anchors, anchors, '锚点原样落盘，精确相等');
+      assert.equal(sourceLineCount(h.root), 2, '真源两行：v1 + v2');
     } finally {
-      cleanupTempRoot(root);
+      cleanupTempRoot(h.root);
     }
   });
 }
@@ -299,24 +324,45 @@ class PreloadedBacklog implements Backlog {
   }
 }
 
-test('L1 退避：坏锚点进失败明细，error 文本含坏锚点原值，且先于落盘', async () => {
-  const { root, log, pipeline } = harness(['web_search']);
+// ── 编排口径说明 ─────────────────────────────────────────────────────────────
+// 以下三条覆盖「processOne catch → failTask 收编 / 退避重排 / 耗尽出队」的通用编排机制，
+// 迁移自批 A 的 L1 坏锚用例。L3 后线协议只收序号，解析出的 id 必然在表内，L1 形态闸 /
+// L2 not-found、duplicate 已不经 processOne 正常路径；故用 L3 真实到达 failTask 的
+// 等价闸错误替代：序号二次耗尽 `l3-serial-exhausted`、建表失败 `l3-serial-table-broken`。
+// 错误类与 reason 本身已由上方 writeSummaryDirect + captureThrow 证明；catch 通用、不分错误类。
+
+/** 坏序号响应（99 越出 1..N）：线协议序号层，不承载 id。 */
+function badSerialResponse(): LLMSummarizeResponse {
+  return { summary: '她打开了一个网页。', keyPoints: [], anchor_serials: [99] };
+}
+
+test('编排：序号二次耗尽 → 进失败明细，detail reason=l3-serial-exhausted、round=retry，先于落盘', async () => {
+  const root = makeTempRoot('task42-l1-');
+  const log = new EventLog(layoutOf(root).events);
+  const memberId = FIXTURE_SHAPE_A;
+  log.appendVersion({ ...makeEvent(), pointers: [memberPointer(memberId)] });
+  const port = new FakeLlmPort([badSerialResponse(), badSerialResponse()]);
+  const backlog = new InMemoryBacklog();
+  const pipeline = new ClosurePipeline({
+    log,
+    port,
+    backlog,
+    readTexts: () => ['用户问晚餐吃什么'],
+    readExperience: {
+      readExperience: (id: string) =>
+        id === memberId ? { id: memberId, channel: 'dsh', occurredAtMs: Date.parse(BASE_TIME) } : undefined,
+    },
+  });
   try {
-    // 红相：AnchorFormInvalidError 从 writeSummary 抛穿、未走 failTask；
-    // 转绿后 processOne 收编为失败任务、不再抛穿。这里先兜住抛穿，断言失败明细。
-    try {
-      await pipeline.processOne(0);
-    } catch {
-      // 转绿后不应再抛；红相抛穿不影响下方失败明细断言。
-    }
+    pipeline.enqueue(EVENT_ID);
+    await pipeline.processOne(0);
 
     const failures = pipeline.failures();
-    assert.equal(failures.length, 1, '坏锚点必须走 failTask 进失败明细，不能直接抛穿');
+    assert.equal(failures.length, 1, '耗尽必须走 failTask 进失败缓冲，不能直接抛穿');
     assert.equal(failures[0]!.eventId, EVENT_ID, '失败明细挂到本事件');
-    assert.ok(
-      failures[0]!.error.includes('web_search'),
-      `失败明细 error 须含坏锚点原值，实际：${failures[0]!.error}`,
-    );
+    assert.equal(failures[0]!.detail?.reason, 'l3-serial-exhausted', '结构化明细 reason 为序号耗尽');
+    assert.equal(failures[0]!.detail?.round, 'retry', '耗尽发生在二次重取轮');
+    assert.equal(port.count, 2, '首轮 + 重取轮各一次 LLM 调用');
     assert.equal(log.versionsOf(EVENT_ID).length, 1, '失败先于落盘：真源仍只有 v1');
     assert.equal(sourceLineCount(root), 1, '磁盘分片未追加新版本行');
   } finally {
@@ -324,35 +370,60 @@ test('L1 退避：坏锚点进失败明细，error 文本含坏锚点原值，�
   }
 });
 
-test('L1 退避：坏锚点下一拍 nextAttemptAtMs > nowMs（退避生效，不再恒为 0）', async () => {
-  const nowMs = 1_772_000_000_000;
-  const { root, backlog, pipeline } = harness(['web_search']);
+test('编排：建表失败逐 tick 退避，nextAttemptAtMs 严格递增，事件保持 pending、零追加', async () => {
+  const root = makeTempRoot('task42-l1-');
+  const log = new EventLog(layoutOf(root).events);
+  log.appendVersion({ ...makeEvent(), pointers: [memberPointer('exp-1')] });
+  // reader 恒返 undefined → 建表期 l3-serial-table-broken，零 LLM、确定性失败，省夹具。
+  const backlog = new InMemoryBacklog();
+  const pipeline = new ClosurePipeline({
+    log,
+    port: new FakeLlmPort([]),
+    backlog,
+    readTexts: () => ['用户问晚餐吃什么'],
+    readExperience: { readExperience: () => undefined },
+  });
   try {
-    try {
+    pipeline.enqueue(EVENT_ID);
+    let nowMs = 1_772_000_000_000;
+    const scheduled: number[] = [];
+    for (let tick = 0; tick < 7; tick += 1) {
       await pipeline.processOne(nowMs);
-    } catch {
-      // 红相抛穿，转绿后收编退避。
+      const tasks = backlog.snapshot();
+      assert.equal(tasks.length, 1, '退避后任务仍留在队列');
+      scheduled.push(tasks[0]!.nextAttemptAtMs);
+      nowMs = tasks[0]!.nextAttemptAtMs;
     }
-    const tasks = backlog.snapshot();
-    assert.equal(tasks.length, 1, '重试任务仍留在队列');
-    assert.ok(
-      tasks[0]!.nextAttemptAtMs > nowMs,
-      `退避后下次可执行时刻应晚于 ${nowMs}，实际 ${tasks[0]!.nextAttemptAtMs}`,
-    );
+    for (let i = 1; i < scheduled.length; i += 1) {
+      assert.ok(
+        scheduled[i]! > scheduled[i - 1]!,
+        `退避时刻应逐拍递增：${scheduled[i - 1]} → ${scheduled[i]}`,
+      );
+    }
+    assert.equal(log.currentOf(EVENT_ID).summary_quality, 'pending', '事件保持 pending');
+    assert.equal(log.versionsOf(EVENT_ID).length, 1, '真源无新版本');
+    assert.equal(sourceLineCount(root), 1, '磁盘分片未追加新版本行');
   } finally {
     cleanupTempRoot(root);
   }
 });
 
-test('L1 耗尽：连续失败达 RETRY_MAX_ATTEMPTS → exhausted 出队，事件仍 pending、真源无新版本', async () => {
+test('编排：连续失败达 RETRY_MAX_ATTEMPTS → exhausted 出队，事件仍 pending、真源无新版本', async () => {
   const backlog = new PreloadedBacklog(RETRY_MAX_ATTEMPTS - 1);
-  const { root, log, pipeline } = harness(['web_search'], backlog);
+  const root = makeTempRoot('task42-l1-');
+  const log = new EventLog(layoutOf(root).events);
+  log.appendVersion({ ...makeEvent(), pointers: [memberPointer('exp-1')] });
+  // 建表失败（reader 缺成员）确定性走 failTask，不走 permanent 特例。
+  const pipeline = new ClosurePipeline({
+    log,
+    port: new FakeLlmPort([]),
+    backlog,
+    readTexts: () => ['用户问晚餐吃什么'],
+    readExperience: { readExperience: () => undefined },
+  });
   try {
-    try {
-      await pipeline.processOne(0);
-    } catch {
-      // 红相抛穿，转绿后收编为 exhausted。
-    }
+    await pipeline.processOne(0);
+
     const failures = pipeline.failures();
     assert.equal(failures.length, 1, '耗尽事件留一条失败明细');
     assert.equal(failures[0]!.state, 'exhausted', `处置应为 exhausted，实际 ${failures[0]!.state}`);
@@ -370,16 +441,16 @@ test('L1 耗尽：连续失败达 RETRY_MAX_ATTEMPTS → exhausted 出队，事�
   }
 });
 
-test('L1 护栏：anchors: [] 合法弃权，不抛错、照常落盘空锚点（防将来误拦 abstain）', async () => {
-  const { root, log, pipeline } = harness([]);
+test('L1 护栏：anchors: [] 合法弃权，不抛错、照常落盘空锚点（防将来误拦 abstain）', () => {
+  const h = harness([]);
   try {
-    const processed = await pipeline.processOne(0);
-    assert.equal(processed, true, '空锚点属于合法弃权，任务正常处理');
-    const current = log.currentOf(EVENT_ID);
-    assert.deepEqual(current.anchors, [], '空锚点原样落盘，精确相等');
-    assert.equal(current.summary_quality, 'ready');
-    assert.equal(log.versionsOf(EVENT_ID).length, 2, '空锚点放行：追加 v2');
+    const current = h.log.currentOf(EVENT_ID);
+    assert.doesNotThrow(() => writeSummaryDirect(h.pipeline, current, []), '空锚点合法弃权');
+    const after = h.log.currentOf(EVENT_ID);
+    assert.deepEqual(after.anchors, [], '空锚点原样落盘，精确相等');
+    assert.equal(after.summary_quality, 'ready');
+    assert.equal(h.log.versionsOf(EVENT_ID).length, 2, '空锚点放行：追加 v2');
   } finally {
-    cleanupTempRoot(root);
+    cleanupTempRoot(h.root);
   }
 });

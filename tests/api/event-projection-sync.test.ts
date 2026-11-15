@@ -118,7 +118,7 @@ test('drainClosure 产出摘要后，投影的摘要列立即追平真源', asyn
     summarize: async () => ({
       summary: '她把论文摊在桌上，随后沉默地读完了引言。',
       keyPoints: ['摊开论文', '读完引言'],
-      anchors: [],
+      anchor_serials: [],
       model: 'stub-model',
     }),
   };

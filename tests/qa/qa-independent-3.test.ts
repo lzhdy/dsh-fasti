@@ -44,8 +44,8 @@ class FakePort implements LLMPort {
   response: LLMSummarizeResponse = {
     summary: '她打开了一个网页，看了一份排期表。',
     keyPoints: ['看排期表'],
-    // 合成夹具不掌握成员 ULID 指针 → 走合法空锚 abstain（L2 成员包含闸下非成员锚点必拒收）。
-    anchors: [],
+    // 合成夹具不掌握成员序号 → 走合法空选 abstain（L3 序号闸下非成员序号必拒收）。
+    anchor_serials: [],
   };
 
   async summarize(request: LLMSummarizeRequest): Promise<LLMSummarizeResponse> {
@@ -88,7 +88,7 @@ test('Q-B16 · 端到端：闭合事件进队列并被摘 → summary_quality �
     assert.equal(after.summary_quality, 'ready', '摘要已就绪');
     assert.equal(after.summary_source, 'llm', '来源是模型');
     assert.equal(after.summary, port.response.summary);
-    assert.deepEqual(after.anchors, port.response.anchors, 'anchors 顺带生成（不消费）');
+    assert.deepEqual(after.anchors, [], '空选 abstain 落盘，锚点为空数组');
     assert.ok(after.version > closed.version, '写回是新版本（append-only，不覆盖历史行）');
   } finally {
     await fasti.close();

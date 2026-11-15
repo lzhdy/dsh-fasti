@@ -335,6 +335,14 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
             failure.error,
           );
         },
+        // L3 观测逐事件 warn（不设代码阈值；三率派生与人工阈值进 runbook，定稿 §7.2）。
+        onClosureObservation: (observation) => {
+          ctx.logger.warn(
+            '%s 摘要观测：%s',
+            LOG_PREFIX,
+            JSON.stringify(observation),
+          );
+        },
         // 门面内部诊断（目前只有「待补摘要数读不出来」）—— 转给宿主日志。
         onDiagnostic: (level, message) => {
           if (level === 'warn') {

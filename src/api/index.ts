@@ -74,7 +74,7 @@ import { EventCorrector } from '../event/correction.ts';
 import type { CorrectionRerunner } from '../event/correction.ts';
 import { InMemoryBacklog } from '../event/backlog.ts';
 import { ClosurePipeline } from '../event/closure.ts';
-import type { ClosureFailure } from '../event/closure.ts';
+import type { ClosureFailure, ClosureObservation } from '../event/closure.ts';
 import type { LLMPort } from '../event/llm-port.ts';
 import { DEFAULT_CLOSURE_ROUND_BUDGET_MS } from '../event/params.ts';
 import { selectEngine } from '../projection/detect.ts';
@@ -148,6 +148,8 @@ export interface FastiOptions {
   closureCallTimeoutMs?: number | undefined;
   /** 摘要失败上报（宿主日志那一路）；缺省只留在门面的 `closureFailures()` 里。 */
   onClosureFailure?: (failure: ClosureFailure) => void;
+  /** L3 观测上报（与失败通道分离）；缺省只留在门面管线的 `observations()` 里。 */
+  onClosureObservation?: (observation: ClosureObservation) => void;
   /**
    * 门面内部诊断上报（宿主日志那一路）—— 目前只有「待补摘要数读不出来」在用。
    *
@@ -271,6 +273,9 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
       ...(options.onClosureFailure === undefined
         ? {}
         : { onFailure: options.onClosureFailure }),
+      ...(options.onClosureObservation === undefined
+        ? {}
+        : { onClosureObservation: options.onClosureObservation }),
     });
 
     // ── T14 区块：事件开放面 ──
@@ -782,6 +787,11 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
   /** 最近一次摘要失败（可观测性读口；环形缓冲，只留最近 100 条）。 */
   closureFailures(): readonly ClosureFailure[] {
     return this.t8Closure.failures();
+  }
+
+  /** 最近的 L3 观测（可观测性读口；环形缓冲，零 IO）。 */
+  closureObservations(): readonly ClosureObservation[] {
+    return this.t8Closure.observations();
   }
 
   /** 真源里「待补摘要」的事件数（closed + pending 且非她手写）。 */

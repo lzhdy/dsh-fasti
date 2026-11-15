@@ -19,10 +19,13 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { EVENT_SCHEMA_VERSION } from '../../src/contract/event.ts';
-import type { EventPointer, EventRecord } from '../../src/contract/event.ts';
+import type { BoundaryCandidate, EventPointer, EventRecord } from '../../src/contract/event.ts';
 import type { Experience } from '../../src/contract/experience.ts';
 import { EventCorrector } from '../../src/event/correction.ts';
 import type { CorrectionRerunner } from '../../src/event/correction.ts';
+import { InMemoryBacklog } from '../../src/event/backlog.ts';
+import { ClosurePipeline } from '../../src/event/closure.ts';
+import { AnchorReferenceInvalidError } from '../../src/event/anchor-refs.ts';
 import { EventLog } from '../../src/source/event-log.ts';
 import { layoutOf } from '../../src/source/paths.ts';
 import { toEventProjection } from '../../src/projection/event-row.ts';
@@ -215,47 +218,56 @@ test('T-a 继承：closeAndReopen 闭合侧 / 重开侧 anchors 各自继承原�
 // A2. T-b：rerun 走完整闭合管线（L1+L2）——坏锚样本被闸拒收，不是继承放行
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('T-b rerun 过闸：坏锚样本经 requestRerun 进闭合管线被 L2 拒收，零新版本落盘', async () => {
+test('T-b rerun 过闸：坏锚样本经 writeSummary 直注进闭合管线被 L2 拒收，零新版本落盘', () => {
   const h = makeHarness();
   try {
     h.seed({ id: 'evt-a', pointers: [pointer('r1')], summary: '旧摘要' });
 
-    // 把闭合管线当作 rerunner 实物注入：rerun 必须进完整管线，而不是在修正层继承放行。
-    const { ClosurePipeline } = await import('../../src/event/closure.ts');
-    const { InMemoryBacklog } = await import('../../src/event/backlog.ts');
-    const backlog = new InMemoryBacklog();
-    const port = {
-      requests: [] as unknown[],
-      async summarize() {
-        this.requests.push(1);
-        return { summary: '模型摘要', keyPoints: [], anchors: [U_Z] };
-      },
-    };
-    // reader 夹具：事件成员指针 r1 可读；模型回的坏锚 U_Z 不在成员集也查不到 → L2 拒收。
+    // reader 夹具：事件成员指针 r1 可读；坏锚 U_Z 不在成员集也查不到 → L2 拒收。
     const reader = {
       readExperience: (id: string) =>
         id === 'r1' ? { id: 'r1', channel: 'dsh', occurredAtMs: T0 } : undefined,
     };
     const pipeline = new ClosurePipeline({
       log: h.log,
-      port,
-      backlog,
+      port: null,
+      backlog: new InMemoryBacklog(),
       readTexts: () => ['用户问晚餐吃什么'],
       readExperience: reader,
     } as never);
 
-    // 修正器请求重跑 → 管线入队。
+    // 修正器请求重跑 → rerun 路由接线仍在（reruns 回调记录到 evt-a）。
     h.corrector.reviseBoundary({ eventId: 'evt-a', removePointerIds: [] });
     assert.deepEqual(h.reruns, ['evt-a'], '改边界触发 requestRerun');
-    pipeline.enqueue('evt-a');
-    await pipeline.processOne(0);
 
-    // L2 拒收：不写新版本，事件保持 pending；失败明细带 L2 reason。
-    assert.equal(h.log.versionsOf('evt-a').length, 2, 'rerun 被闸拒收：没有落第三个版本');
-    const current = h.log.currentOf('evt-a');
-    assert.equal(current.summary_quality, 'pending', '坏锚轮次保持 pending');
-    const failures = pipeline.failures() as unknown as ReadonlyArray<{ detail?: { reason: string } }>;
-    assert.ok(failures.some((f) => f.detail?.reason === 'anchor-not-found'), 'rerun 路径经 L2 闸拒收');
+    // L3 后线协议只收序号；坏锚走 writeSummary 私有直注 seam（类型逃逸，零生产入口），
+    // 经同一真实 L2 成员包含闸拒收，不是在修正层继承放行。
+    const privateApi = pipeline as unknown as {
+      writeSummary(
+        current: EventRecord,
+        anchors: readonly string[],
+        candidates: readonly BoundaryCandidate[],
+        summary: string,
+        keyPoints: readonly string[],
+        regenerate: boolean,
+        model: string | undefined,
+      ): void;
+    };
+    let thrown: unknown;
+    try {
+      privateApi.writeSummary(h.log.currentOf('evt-a'), [U_Z], [], '模型摘要', [], true, undefined);
+    } catch (error) {
+      thrown = error;
+    }
+
+    assert.ok(thrown instanceof AnchorReferenceInvalidError, 'rerun 路径经 L2 闸拒收坏锚');
+    assert.equal(
+      (thrown as AnchorReferenceInvalidError).detail.reason,
+      'anchor-not-found',
+      '坏锚不在成员集 → not-found 桶',
+    );
+    assert.equal(h.log.versionsOf('evt-a').length, 2, 'L2 拒收：没有落第三个版本');
+    assert.equal(h.log.currentOf('evt-a').summary_quality, 'pending', '坏锚轮次保持 pending');
   } finally {
     h.cleanup();
   }
