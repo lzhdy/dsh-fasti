@@ -95,18 +95,32 @@ interface Harness {
   pipeline: ClosurePipeline;
 }
 
+/** 成员指针夹具：id 与夹具锚点一致（L2 成员包含闸点查面）。 */
+function memberPointer(id: string): EventRecord['pointers'][number] {
+  return { id, channel: 'dsh', shard: '2026-11', seq: 0 };
+}
+
 /** 临时根 + 真源 v1 事件 + 队列 + 假端口；anchors 由调用方给定。 */
 function harness(anchors: readonly unknown[], backlog: Backlog = new InMemoryBacklog()): Harness {
   const root = makeTempRoot('task42-l1-');
   const port = new FakePort(anchors);
   const log = new EventLog(layoutOf(root).events);
+  const anchorIds = anchors.map((anchor) => String(anchor));
+  // 窄 reader：只回 id/channel/occurredAtMs；夹具锚点即成员引用。
+  const readExperience = {
+    readExperience: (id: string) =>
+      anchorIds.includes(id)
+        ? { id, channel: 'dsh', occurredAtMs: Date.parse(BASE_TIME) }
+        : undefined,
+  };
   const pipeline = new ClosurePipeline({
     log,
     port,
     backlog,
     readTexts: () => ['用户问晚餐吃什么', '她列了三个选项'],
+    readExperience,
   });
-  log.appendVersion(makeEvent());
+  log.appendVersion({ ...makeEvent(), pointers: anchorIds.map(memberPointer) });
   pipeline.enqueue(EVENT_ID);
   return { root, log, backlog, pipeline };
 }

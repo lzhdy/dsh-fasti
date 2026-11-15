@@ -26,9 +26,15 @@
  */
 
 import { withDeadline } from '../core/deadline.ts';
-import { SchemaError, UnavailableError } from '../core/errors.ts';
+import { CorruptedError, NotFoundError, SchemaError, UnavailableError } from '../core/errors.ts';
 import { isUlid } from '../core/ulid.ts';
-import { nowIso } from '../core/time.ts';
+import { isoToMs, nowIso } from '../core/time.ts';
+import {
+  AnchorReferenceInvalidError,
+  assertAnchorRefs,
+  type AnchorReferenceDetail,
+  type ExperienceReader,
+} from './anchor-refs.ts';
 import { SUMMARY_MAX_CHARS, summaryLengthOf } from '../contract/event.ts';
 import type { EventRecord } from '../contract/event.ts';
 import type { BoundaryCandidate } from '../contract/event.ts';
@@ -83,6 +89,8 @@ export interface ClosureFailure {
    * 两处各写一遍必然漂移，「已耗尽却还标着可重试」会让可观测性说谎。
    */
   readonly exhausted: boolean;
+  /** L2 引用闸 / 存储损坏的结构化明细（零经历正文；普通失败缺省不带）。 */
+  readonly detail?: AnchorReferenceDetail;
 }
 
 /**
@@ -110,6 +118,11 @@ export interface ClosureDeps {
   readonly params?: Partial<EventParams> | undefined;
   /** 取事件的原文文本（内核提供；返回空数组表示取不到）。 */
   readonly readTexts: (event: EventRecord) => string[];
+  /**
+   * 经历点查窄接口（Q4：同步、单方法、只回 id/channel/occurredAtMs，不含正文）。
+   * 与 readTexts 同一个 experienceLog 注入；写入闸必填，不允许 fail-open 跳过。
+   */
+  readonly readExperience: ExperienceReader;
   /**
    * 失败上报（宿主日志那一路）。
    *
@@ -197,6 +210,15 @@ export class ClosurePipeline {
     if (texts.length === 0) {
       // 原文一条都取不到 → 不调模型（绝不编造原文），按失败退避重试。
       this.failTask(task, new UnavailableError('事件原文取不到（指针悬空）'), nowMs);
+      return true;
+    }
+
+    // 调模型前先探测经历存储可用性：读取侧损坏（CorruptedError）在此原样上抛，
+    // 不在调 LLM 之后才暴露；探针不做存在性 / 通道 / 窗口拒收（那些由 writeSummary 内 L2 闸判）。
+    try {
+      this.probeExperienceStore(current);
+    } catch (error) {
+      this.failTask(task, error, nowMs);
       return true;
     }
 
@@ -371,6 +393,29 @@ export class ClosurePipeline {
    *  - regenerate=false → 摘要还是她那份，本次只刷锚点 → 两个字段**清空**
    *    （它们描述的是已被替换的那份摘要，留着就是在撒谎）。
    */
+  /** 诊断分桶上下文（毫秒口径；主谓词不依赖它做放行判定）。 */
+  private anchorRefContext(current: EventRecord): {
+    channel: string;
+    startedMs: number;
+    endedMs: number;
+  } {
+    // E-5：真源时间戳由系统生成、恒为 UTC Z，正常不会坏；此处 isoToMs 若抛 TypeError
+    // 属基础设施损坏，走 failTask，不进诊断桶的 time-unparseable（该标记只属于诊断
+    // 函数对坏串的容错）。不加 try/catch 折算，不引 NaN 路径。
+    return {
+      channel: current.channel,
+      startedMs: isoToMs(current.time_range.started_at),
+      endedMs: isoToMs(current.time_range.ended_at),
+    };
+  }
+
+  /** 存储可用性探针：逐指针点查，损坏错误原样上抛；取不到/不一致不在此拒收。 */
+  private probeExperienceStore(current: EventRecord): void {
+    for (const pointer of current.pointers) {
+      this.deps.readExperience.readExperience(pointer.id);
+    }
+  }
+
   private writeSummary(
     current: EventRecord,
     response: LLMSummarizeResponse,
@@ -380,6 +425,16 @@ export class ClosurePipeline {
     // L1 前置甲（§2.1 / §4.1）：版本追加**之前**的 ULID 形态闸 —— 先于 appendVersion
     // 落盘；形态不符整批拒绝（不写半份），绝不落盘。空数组（合法 abstain）放行。
     assertAnchorsUlid(response.anchors);
+    // L2 引用完整性闸（#90 批 A/B）：L1 形态之后、appendVersion 之前、writeSummary 的
+    // try/catch 之内。memberIds = 本事件 pointers 成员集；context 仅诊断分桶，
+    // 主谓词是成员包含性。整份拒收：不剥锚、不写空锚占位版本。
+    const memberIds = new Set(current.pointers.map((pointer) => pointer.id));
+    assertAnchorRefs(
+      response.anchors,
+      memberIds,
+      this.deps.readExperience,
+      this.anchorRefContext(current),
+    );
     // v1.4 · C7：话题跳转候选与摘要在**同一次 appendVersion** 写回。
     //
     // 候选来自摘要调用的附带输出（慢路径），**非权威**：只写 boundary_candidates，
@@ -427,6 +482,7 @@ export class ClosurePipeline {
       error: error instanceof Error ? error.message : String(error),
       at: nowIso(),
       state: exhausted ? 'exhausted' : 'retry',
+      detail: failureDetailOf(error),
     });
 
     if (exhausted) {
@@ -467,6 +523,33 @@ export class ClosurePipeline {
     }
     this.deps.onFailure?.(failure);
   }
+}
+
+/**
+ * 把 L2 / 存储损坏错误映射到结构化失败明细（零经历正文）。
+ *
+ * - `AnchorReferenceInvalidError`：detail 由闸内铸造，原样透传；
+ * - 读取口基础设施错误**白名单**（`CorruptedError` 坏行 / `NotFoundError` 缺失或落点失效）：
+ *   独立 reason `experience-store-broken`，不吞成 anchor-not-found；只有 reader 正常
+ *   返回 undefined 才由闸内分桶 `anchor-not-found`。
+ * - 其他一切错误（模型超时 `UnavailableError`、空摘要 / 超长等）：返回 undefined，
+ *   不挂 L2 明细；failTask 既有退避 / 留痕行为不变。错误本体不在此 catch 改类。
+ */
+function failureDetailOf(error: unknown): AnchorReferenceDetail | undefined {
+  if (error instanceof AnchorReferenceInvalidError) {
+    return error.detail;
+  }
+  if (error instanceof CorruptedError || error instanceof NotFoundError) {
+    const causeClass = error instanceof Error ? error.constructor.name : String(typeof error);
+    return {
+      reason: 'experience-store-broken',
+      anchor: '',
+      expected: 'experience log readable',
+      actual: 'experience store unavailable',
+      note: `cause: ${causeClass}`,
+    };
+  }
+  return undefined;
 }
 
 /**

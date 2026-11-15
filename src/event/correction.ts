@@ -26,6 +26,7 @@ import type { EventLog } from '../source/event-log.ts';
 
 /** 合并入参：A + B → C（可多到一，§7.3）。 */
 export interface MergeInput {
+  // 护栏：Omit<本接口字段集, 锚点字段> 口径 —— 入参不携带锚点引用（锚点只由闭合管线 rerun 覆写）。
   /** 被合并的事件 id（≥2 个，必须都是当前态且非退役态）。 */
   readonly sourceIds: readonly string[];
   /** 新事件 id；缺省由系统分配。 */
@@ -40,8 +41,9 @@ export interface MergeResult {
   readonly retired: readonly EventRecord[];
 }
 
-/** 拆拆分入参：A → B1 + B2。 */
+/** 拆分入参：A → B1 + B2。 */
 export interface SplitInput {
+  // 护栏：Omit<本接口字段集, 锚点字段> 口径 —— 入参不携带锚点引用。
   /** 被拆分的事件 id。 */
   readonly sourceId: string;
   /** 每个子事件的指针分组（按记录 id 给出；≥2 组；必须覆盖且仅覆盖源事件的指针）。 */
@@ -58,6 +60,7 @@ export interface SplitResult {
 
 /** 改边界入参：换 pointers（移出/移入）。 */
 export interface ReviseBoundaryInput {
+  // 护栏：Omit<本接口字段集, 锚点字段> 口径 —— 入参不携带锚点引用。
   /** 事件 id。 */
   readonly eventId: string;
   /** 移出的记录 id。 */
@@ -74,6 +77,7 @@ export interface ReviseBoundaryResult {
 
 /** 重开入参：closed → open。 */
 export interface ReopenInput {
+  // 护栏：Omit<本接口字段集, 锚点字段> 口径 —— 入参不携带锚点引用。
   /** 事件 id。 */
   readonly eventId: string;
 }
@@ -82,7 +86,12 @@ export interface ReopenInput {
  * 组合入参：先手动闭合进行中的 `closeId`（A），再重开同通道已闭合的 `reopenId`（B）。
  * 两个 id 不得相同，且必须落在同一通道。
  */
+/**
+ * 组合入参：先手动闭合进行中的 `closeId`（A），再重开同通道已闭合的 `reopenId`（B）。
+ * 两个 id 不得相同，且必须落在同一通道。
+ */
 export interface CloseAndReopenInput {
+  // 护栏：Omit<本接口字段集, 锚点字段> 口径 —— 入参不携带锚点引用。
   readonly closeId: string;
   readonly reopenId: string;
 }
@@ -95,6 +104,7 @@ export interface CloseAndReopenResult {
 
 /** 重写摘要入参：她手写摘要。 */
 export interface RewriteSummaryInput {
+  // 护栏：Omit<本接口字段集, 锚点字段> 口径 —— 入参不携带锚点引用。
   /** 事件 id。 */
   readonly eventId: string;
   /** 她写的摘要（长度与非空由契约层拒收，不截断）。 */
@@ -446,6 +456,7 @@ export class EventCorrector {
       created_by: 'her',
       created_at: msToIso(this.now()),
     };
+    // D8 用途清单：reviseBoundary｜summary_quality=pending｜锚点继承 current（pending 待 rerun 覆写）｜随后 requestRerun。
     this.log.appendVersion(next);
 
     this.requestRerun(current.id);
@@ -474,6 +485,7 @@ export class EventCorrector {
       created_by: 'her',
       created_at: msToIso(this.now()),
     };
+    // D8 用途清单：reopen｜summary_quality 继承当前态｜锚点继承 current｜不 requestRerun（不改窗、不改道）。
     this.log.appendVersion(next);
     return this.log.currentOf(current.id);
   }
@@ -501,6 +513,7 @@ export class EventCorrector {
       created_by: 'her',
       created_at: msToIso(this.now()),
     };
+    // D8 用途清单：closeOpen｜status=closed、closed_reason=manual｜锚点继承 current｜随后 requestRerun 兜底摘要。
     const saved = this.log.appendVersion(next).record;
     this.requestRerun(saved.id);
     return saved;
@@ -584,6 +597,7 @@ export class EventCorrector {
       created_by: 'her',
       created_at: msToIso(this.now()),
     };
+    // D8 用途清单：rewriteSummary｜summary_quality=ready、summary_source=her｜锚点继承 current｜不 requestRerun（不改窗、不改道）。
     this.log.appendVersion(next);
     return this.log.currentOf(current.id);
   }
@@ -618,6 +632,7 @@ export class EventCorrector {
       created_by: 'her',
       created_at: msToIso(this.now()),
     };
+    // D8 用途清单：retire｜退役态（merged / split）｜锚点继承 current｜不 requestRerun（退役行是历史，不可再修正）。
     return this.log.appendVersion(next).record;
   }
 
@@ -676,6 +691,7 @@ export class EventCorrector {
       }
     }
 
+    // D8 用途清单：appendNewEvent｜summary_quality=pending（新事件）｜锚点由契约补位 []｜随后由 merge/split 调用方为新事件 requestRerun。
     return this.log.appendVersion(parseEvent(raw, 'write')).record;
   }
 

@@ -21,6 +21,7 @@ import { layoutOf } from '../../src/source/paths.ts';
 import { InMemoryBacklog, RETRY_BASE_DELAY_MS } from '../../src/event/backlog.ts';
 import { ClosurePipeline } from '../../src/event/closure.ts';
 import type { ClosureFailure } from '../../src/event/closure.ts';
+import type { ExperienceReader, ReaderRef } from '../../src/event/anchor-refs.ts';
 import type { LLMPort, LLMSummarizeRequest, LLMSummarizeResponse } from '../../src/event/llm-port.ts';
 import { SUMMARY_PROMPT_VERSION } from '../../src/event/params.ts';
 import type { EventParams } from '../../src/event/params.ts';
@@ -77,6 +78,25 @@ class FakePort implements LLMPort {
   }
 }
 
+/** Map 直造的窄 reader：Ref 只给 id/channel/occurredAtMs，不含正文。 */
+function readerOf(refs: readonly ReaderRef[]): ExperienceReader {
+  const map = new Map(refs.map((ref) => [ref.id, ref]));
+  return { readExperience: (id) => map.get(id) };
+}
+
+/** 无经历夹具的空 reader（锚点 abstain [] 时不被点查）。 */
+const EMPTY_READER = readerOf([]);
+
+/** 构造一条 dsh 通道、BASE_TIME 时刻的成员引用夹具。 */
+function memberRef(id: string): ReaderRef {
+  return { id, channel: 'dsh', occurredAtMs: Date.parse(BASE_TIME) };
+}
+
+/** 事件成员指针夹具：id 与锚点一致，使锚点落在成员包含集内。 */
+function memberPointer(id: string): EventRecord['pointers'][number] {
+  return { id, channel: 'dsh', shard: '2026-11', seq: 0 };
+}
+
 /** 造一套管线（事件真源 + 队列 + 假端口）。 */
 function makePipeline(
   root: string,
@@ -85,6 +105,8 @@ function makePipeline(
     onFailure?: (failure: ClosureFailure) => void;
     params?: Partial<EventParams>;
     readTexts?: (event: EventRecord) => string[];
+    /** 事件成员指针对应的经历引用夹具（L2 成员包含闸点查面）。 */
+    members?: readonly ReaderRef[];
   } = {},
 ): { log: EventLog; backlog: InMemoryBacklog; pipeline: ClosurePipeline } {
   const log = new EventLog(layoutOf(root).events);
@@ -94,6 +116,7 @@ function makePipeline(
     port,
     backlog,
     readTexts: overrides.readTexts ?? (() => ['用户问晚餐吃什么', '她列了三个选项']),
+    readExperience: readerOf(overrides.members ?? []),
     ...(overrides.params === undefined ? {} : { params: overrides.params }),
     ...(overrides.onFailure === undefined ? {} : { onFailure: overrides.onFailure }),
   });
@@ -347,6 +370,7 @@ test('降级：原文取不到 → 不调模型（绝不编造原文），按失
       port,
       backlog,
       readTexts: () => [],
+      readExperience: EMPTY_READER,
     });
     log.appendVersion(makeEvent());
 
@@ -533,6 +557,7 @@ test('不阻塞：模型挂住时，另一事件照常处理（互不牵连）',
       port: good,
       backlog: backlog2,
       readTexts: () => ['原文'],
+      readExperience: EMPTY_READER,
     });
     log2.appendVersion(makeEvent({ id: 'evt-2' }));
     pipeline2.enqueue('evt-2');
@@ -551,10 +576,12 @@ test('重跑：她写的摘要不覆盖 —— summary_source=her 的事件只�
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '模型新写的摘要', keyPoints: ['新要点'], anchors: ['01J0000000000000000000000A'] };
-    const { log, pipeline } = makePipeline(root, port);
+    const anchorA = '01J0000000000000000000000A';
+    port.response = { summary: '模型新写的摘要', keyPoints: ['新要点'], anchors: [anchorA] };
+    const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorA)] });
     log.appendVersion(
       makeEvent({
+        pointers: [memberPointer(anchorA)],
         summary: '她自己写的摘要',
         summary_quality: 'pending',
         summary_source: 'her',
@@ -579,9 +606,10 @@ test('红线：内核层不出现「消费 anchors」的写法（第一期 ancho
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '摘要', keyPoints: [], anchors: ['01J0000000000000000000000B'] };
-    const { log, pipeline } = makePipeline(root, port);
-    log.appendVersion(makeEvent());
+    const anchorB = '01J0000000000000000000000B';
+    port.response = { summary: '摘要', keyPoints: [], anchors: [anchorB] };
+    const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorB)] });
+    log.appendVersion(makeEvent({ pointers: [memberPointer(anchorB)] }));
 
     pipeline.enqueue('evt-1');
     await pipeline.processOne(0);
@@ -724,6 +752,7 @@ test('Major-3 · 过期丢弃：在途改边界 → 本次结果作废（不写�
       port,
       backlog,
       readTexts: (event) => event.pointers.map((pointer) => `原文-${pointer.id}`),
+      readExperience: EMPTY_READER,
     });
 
     log.appendVersion(
@@ -824,10 +853,12 @@ test('溯源：重跑她写的摘要（只刷锚点）→ 两字段清空（它�
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '模型新写的摘要', keyPoints: [], anchors: ['01J0000000000000000000000A'], model: 'dsh-pro' };
-    const { log, pipeline } = makePipeline(root, port);
+    const anchorA = '01J0000000000000000000000A';
+    port.response = { summary: '模型新写的摘要', keyPoints: [], anchors: [anchorA], model: 'dsh-pro' };
+    const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorA)] });
     log.appendVersion(
       makeEvent({
+        pointers: [memberPointer(anchorA)],
         summary: '她自己写的摘要',
         summary_quality: 'pending',
         summary_source: 'her',
@@ -855,13 +886,15 @@ test('双流职责：慢路径只追加派生字段 —— 快路径写的事实
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '她问晚餐吃什么，并自己列了三个选项。', keyPoints: ['晚餐'], anchors: ['01J0000000000000000000000C'] };
-    const { log, pipeline } = makePipeline(root, port);
+    const anchorC = '01J0000000000000000000000C';
+    port.response = { summary: '她问晚餐吃什么，并自己列了三个选项。', keyPoints: ['晚餐'], anchors: [anchorC] };
+    const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorC)] });
 
     const before = makeEvent({
+      pointers: [memberPointer(anchorC)],
       closed_reason: 'silence',
       time_range: { started_at: BASE_TIME, ended_at: '2026-11-08T10:20:00.000Z' },
-      boundary_candidates: [{ kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: BASE_TIME }],
+      boundary_candidates: [{ kind: '话题跳转', at_pointer_id: anchorC, marked_at: BASE_TIME }],
     });
     log.appendVersion(before);
     pipeline.enqueue('evt-1');
@@ -918,16 +951,24 @@ test('A7 · 慢路径：候选与摘要在同一次 appendVersion 写回（≤5 
   const root = makeTempRoot();
   try {
     const port = new FakePort();
+    const anchorD = '01J0000000000000000000000D';
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: ['读了论文'],
-      anchors: ['01J0000000000000000000000D'],
+      anchors: [anchorD],
       boundary_candidates: [
         { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:05:00.000Z' },
       ],
     };
-    const { log, pipeline } = makePipeline(root, port);
-    log.appendVersion(makeEvent());
+    const { log, pipeline } = makePipeline(root, port, { members: [memberRef(anchorD)] });
+    log.appendVersion(
+      makeEvent({
+        pointers: [
+          memberPointer(anchorD),
+          { id: 'exp-1', channel: 'dsh', shard: '2026-11', seq: 0 },
+        ],
+      }),
+    );
 
     pipeline.enqueue('evt-1');
     await pipeline.processOne(0);

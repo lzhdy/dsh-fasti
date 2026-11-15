@@ -252,6 +252,19 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
       port: options.llmPort ?? null,
       backlog: this.t8Backlog,
       readTexts: (event) => this.textsOfEvent(event),
+      // 与 readTexts / EventCorrector 同一个 experienceLog；窄面只取 id/channel/世界轴毫秒。
+      readExperience: {
+        readExperience: (id) => {
+          const found = this.experienceLog.has(id) ? this.experienceLog.get(id) : undefined;
+          return found === undefined
+            ? undefined
+            : {
+                id: found.id,
+                channel: found.scene.channel,
+                occurredAtMs: isoToMs(found.occurred_at),
+              };
+        },
+      },
       ...(options.closureCallTimeoutMs === undefined
         ? {}
         : { params: { closureCallTimeoutMs: options.closureCallTimeoutMs } }),

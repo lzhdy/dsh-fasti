@@ -35,6 +35,9 @@ import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
 const BASE_MS = Date.parse('2026-11-08T10:00:00.000Z');
 const MINUTE_MS = 60_000;
 
+/** 无经历夹具的空窄 reader（anchors=[] 时不被点查）。 */
+const EMPTY_READ_EXPERIENCE = { readExperience: () => undefined };
+
 /** 基准 + 毫秒偏移 → ISO。 */
 function atMs(offsetMs: number): string {
   return new Date(BASE_MS + offsetMs).toISOString();
@@ -312,6 +315,7 @@ test('Q-B03 · 闭合管线：600 码点的含 emoji 摘要被接受（与落盘
       port,
       backlog,
       readTexts: () => ['原文'],
+      readExperience: EMPTY_READ_EXPERIENCE,
       onFailure: (failure) => failures.push(failure),
     });
     log.appendVersion(makeEventRecord());
@@ -340,7 +344,7 @@ test('Q-B03 · 闭合管线：恰好 600 码点的 emoji 摘要应被接受', as
     const port = new FakePort();
     port.response = { summary: '😀'.repeat(600), keyPoints: [], anchors: [] };
     const backlog = new InMemoryBacklog();
-    const pipeline = new ClosurePipeline({ log, port, backlog, readTexts: () => ['原文'] });
+    const pipeline = new ClosurePipeline({ log, port, backlog, readTexts: () => ['原文'], readExperience: EMPTY_READ_EXPERIENCE });
     log.appendVersion(makeEventRecord());
 
     pipeline.enqueue('evt-1');
@@ -364,7 +368,7 @@ test('Q-B03 · 闭合管线：601 码点的 emoji 摘要应被拒收（真超限
     const port = new FakePort();
     port.response = { summary: '😀'.repeat(601), keyPoints: [], anchors: [] };
     const backlog = new InMemoryBacklog();
-    const pipeline = new ClosurePipeline({ log, port, backlog, readTexts: () => ['原文'] });
+    const pipeline = new ClosurePipeline({ log, port, backlog, readTexts: () => ['原文'], readExperience: EMPTY_READ_EXPERIENCE });
     log.appendVersion(makeEventRecord());
 
     pipeline.enqueue('evt-1');
@@ -699,7 +703,7 @@ test('Q-B09 · 未配置模型（port=null）→ 事件保持 pending、summary 
   const log = new EventLog(layoutOf(root).events);
   try {
     const backlog = new InMemoryBacklog();
-    const pipeline = new ClosurePipeline({ log, port: null, backlog, readTexts: () => ['原文'] });
+    const pipeline = new ClosurePipeline({ log, port: null, backlog, readTexts: () => ['原文'], readExperience: EMPTY_READ_EXPERIENCE });
     log.appendVersion(makeEventRecord());
 
     pipeline.enqueue('evt-1');
@@ -723,7 +727,7 @@ test('Q-B09 · 未配置模型时清道夫不入队，但事件仍可被扫出�
   const log = new EventLog(layoutOf(root).events);
   try {
     const backlog = new InMemoryBacklog();
-    const pipeline = new ClosurePipeline({ log, port: null, backlog, readTexts: () => ['原文'] });
+    const pipeline = new ClosurePipeline({ log, port: null, backlog, readTexts: () => ['原文'], readExperience: EMPTY_READ_EXPERIENCE });
     log.appendVersion(makeEventRecord({ id: 'evt-a' }));
     log.appendVersion(makeEventRecord({ id: 'evt-b' }));
 
@@ -752,6 +756,7 @@ test('Q-B09 · 连续失败达上限 → 事件如实保持 pending、失败明�
       port,
       backlog,
       readTexts: () => ['原文'],
+      readExperience: EMPTY_READ_EXPERIENCE,
       onFailure: (f) => failures.push(f),
     });
     log.appendVersion(makeEventRecord());

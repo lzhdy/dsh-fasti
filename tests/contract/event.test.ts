@@ -57,6 +57,7 @@ const PRODUCERS = [
   'src/memory/decision.ts', // 正本 §3.1 授权的受控决策派生纯函数层：只读 anchors 铸造 decision 行；不写 topic_lines、不做重要性判断
   'src/memory/planner.ts', // 正本 §3.1 授权的受控规划纯函数层：只读 anchors 产出卡动作计划；不写 topic_lines、不做重要性判断
   'src/memory/drain.ts', // 正本 §3.1 授权的受控编排层：只读 anchors 作经历身份与卡行物化，不写 topic_lines、不做重要性判断、不以锚点为检索词
+  'src/event/anchor-refs.ts', // L2 引用完整性闸：只读入参 anchors 做成员包含性点查；不写 topic_lines、不做重要性判断、不以锚点为检索词、不读经历正文
 ];
 
 const here = path.dirname(fileURLToPath(import.meta.url));

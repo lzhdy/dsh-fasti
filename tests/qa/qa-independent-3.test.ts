@@ -44,7 +44,8 @@ class FakePort implements LLMPort {
   response: LLMSummarizeResponse = {
     summary: '她打开了一个网页，看了一份排期表。',
     keyPoints: ['看排期表'],
-    anchors: ['01J0000000000000000000000E'],
+    // 合成夹具不掌握成员 ULID 指针 → 走合法空锚 abstain（L2 成员包含闸下非成员锚点必拒收）。
+    anchors: [],
   };
 
   async summarize(request: LLMSummarizeRequest): Promise<LLMSummarizeResponse> {

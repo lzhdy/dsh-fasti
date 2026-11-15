@@ -437,10 +437,13 @@ test('插件：注入模型路由 → 闭合事件由后台 worker 补上摘要�
   const route = {
     complete: async (): Promise<string> => {
       calls += 1;
+      // 锚点取真源里真实存在的经历 id（事件成员指针同集），过 L2 成员包含闸；
+      // 不在调用前臆造合成 ULID。
+      const memberIds = readExperiences(root).map((experience) => String(experience.id));
       return JSON.stringify({
         summary: '她问了一句在不在，随后继续处理排期。',
         key_points: ['问在不在'],
-        anchors: ['01J0000000000000000000000F'],
+        anchors: memberIds.slice(0, 1),
       });
     },
   };
