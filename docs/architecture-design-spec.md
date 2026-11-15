@@ -1050,6 +1050,104 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 
 读取口抛出的错误中，仅 `CorruptedError`（坏行）与 `NotFoundError`（缺失／落点失效）归 `experience-store-broken`，detail.note 保留原始错误类名；reader 正常返回 undefined 仍由闸内分桶 `anchor-not-found`。其余一切错误（模型超时 `UnavailableError`、空摘要／超长等）`failureDetailOf` 返回 undefined，不带 L2 明细；failTask 既有退避／留痕行为不变。
 
+## 11.9 #90 写入闸批 B（L3）候选序号协议落地登记（2026-11-15）
+
+> 依据 `docs/task90-l3-final-spec.md`；本节登记批 B 已落地口径、挂账边界与零改动面，机制细节以该定稿为准。本节只追加 11.x，不改动 11.1–11.8 与附录既有文字。
+
+### 11.9.1 统一序号协议命题
+
+- 线协议统一走 1..N 序号：响应锚点字段 `anchor_serials: readonly number[]`，候选线字段 `at_pointer_serial: number`；LLM 线上协议零系统裸 ULID。
+- prompt 为单列表机器格式 `#i | 发生时间 | 原文`，废除旧"原文列表＋裸 id 对照表"双列表；内核在 `appendVersion` 前把序号分别解析回 id。
+- 落盘 `EventRecord.anchors` 与 `boundary_candidates[].at_pointer_id` 仍是 id 字符串；契约类型、event-schema 与投影透传形状零变化。
+- 端口契约就地破立：不设 v2、不开兼容 shim、不双字段并存；`LLMSummarizeRequest` 的 system/user 字符串形状不变，重取反馈只作为 user 文本末尾隔离块承载，不新增线协议字段。
+
+### 11.9.2 序号纯函数模块与分层边界
+
+- 新模块 `src/event/serial-table.ts`（纯函数、零 IO）：`SerialMember {id, channel, occurredAtMs}`、`SerialTable {size, ordered, ids, bySerial}`；`buildSortedMembers`、`buildSerialTable`、`resolveAnchorSerials`（fail-closed）、`resolveCandidateSerials`（fail-soft）、`renderFeedback`；错误类 `EventSerialReferenceError extends SchemaError`，携带结构化 `violations`（kind/index/safeRaw?/legalRange），可被 runTick 与 L1/L2 错误类型 instanceof 区分；`isEventSerialRefusable` 同构属性测试用。
+- 排序键为 `(occurredAtMs 升序, id 字符串字典序升序)` 稳定全序，同毫秒靠 id 决胜，禁 `Date.now()` 决胜；一次 `sortedMembers` 派生序号表、prompt 原文行、反馈 1..N 范围、锚点解析映射与候选解析映射，同源冻结表单一实例，解析时禁重排、禁重读、禁逐 id 点查。
+- M6 规则①边界：event 层禁依赖 `memory/serial.ts`（静态活门投毒），不复用 `MemorySerialReferenceError`；core 下沉挂账（§11.9.8），防漂移替代为同构属性测试——一张行为表同时驱动 memory/serial 与 event/serial-table 两套实现（未知抛、非整数抛、不返半截、refusable 语义），漂移即红。
+
+### 11.9.3 strict 整数纪律与错误代价判据
+
+| 输入 | 锚点路径裁定 | 备注 |
+|---|---|---|
+| `3.0` / `3.00` | 接受为 3 | JSON.parse 后同值，按值不按词法 |
+| `3.5` | 整份拒绝（重取） | 非整数 |
+| `"3"` | 整份拒绝（重取） | 禁 `Number()` 宽容转换 |
+| 负数 / 0 / N+1 | 整份拒绝（重取） | 越界，反馈带 1..N 范围 |
+| 重复 `[1,1]` | 整份拒绝（重取） | 显式拒收不去重，对齐 L1 `anchor-duplicate` |
+| 字段缺失 / null / 非数组 | 整份拒绝（重取） | 旧 stringArray 把缺失洗成 `[]` 的静默绕过已消灭 |
+| 混类型 `[1,"x"]` | 整份拒绝 | 禁止逐条过滤 |
+| 超大整数 | 整份拒绝 | `Number.isSafeInteger` 前置，范围检查兜底 |
+| 任意字符串（含 ULID 形态） | 整份拒绝 | 判"非 number 即违约"，不只查 ULID 形态 |
+| 候选字段畸形 / 未知序号 | fail-soft 逐条丢 | 候选是慢路径附带输出，摘要照常落盘 |
+
+- 统一纪律：字段必须存在且为数组，每元素 `typeof number && Number.isSafeInteger`；禁 coerce、不 filter、不返半截。`[]` 形状合法：首轮 N>0 为合法 abstain，重取轮按协议失败，N=0 走不到 L3。
+- 错误代价判据写进设计正本：落 append-only 真源、不可修复的证据链字段 fail-closed；条目可弃、无生产消费者的展示附带字段 fail-soft。候选 fail-soft 的升级条件：一旦 `at_pointer_id` 出现 event-row 之外的生产消费者，立即升级 fail-closed（静态门加读取点守卫）。
+- 适配器侧 `parseAnchorSerialsField` 只做数组＋安全整数结构性 strict；1..N 范围与重复判定归 closure 序号表。`parseBoundaryCandidateSerials` fail-soft 只丢结构畸形条目；越界与重复值原样透传，由 `resolveCandidateSerials` 内核统一丢弃，`ids`／`serials`／`dropped` 同一出口，closure 落盘只消费该出口结果，不二次做范围校验或去重。
+- 脱敏口径：非 number 违约（任意字符串，不止 ULID 形态）违例不写 `safeRaw`，反馈只给「第 k 项不是整数」类型描述；ULID 形态的 `<id-like value omitted>` 占位仅作用于渲染侧收到的 id 形态值；整数坏值照回显不变。
+
+### 11.9.4 解析前移与轮内重取控制流
+
+- 解析时机：runTick 拿到响应、`sameBoundary` 复检之后、`writeSummary` 之前，用本 tick 冻结表做纯数据变换（`anchor_serials→id[]`、候选 serial→id/丢弃）；协议错误在此捕获进重取分支。`writeSummary` 仍只收 id[] anchors，L1 形态闸、L2 引用闸与 anchor-refs 代码入参形状零改动。
+- 建表时某成员 `readExperience` 返回 undefined：不跳过该成员，整事件 failTask，独立 reason `l3-serial-table-broken`，零 LLM 调用。
+- reason 词表无私码：适配器 wire 错误在 closure 包装成标准 `EventSerialReferenceError`，不带自定义 reason，违约信息由结构化 violations 承载；失败 reason 只保留 `l3-serial-table-broken`／`l3-candidate-overflow`／`l3-serial-exhausted` 三枚，不存在 `l3-wire-malformed` 或兜底私串。
+- 重取只捕 `EventSerialReferenceError` 与 `AnchorSerialWireError`；`UnavailableError`、超时、L1、L2 错误均为确定性失败，直接 failTask，不重取。重取在同一 tick：同一冻结表、同一 snapshot、同一 texts；不重跑探针、不重读 readTexts、不重读 latest、不做第二次 sameBoundary（边界变化整轮丢弃不计数，杜绝"用表 A 解析响应 B"）。
+- 共享 tick 预算 = 2×`closureCallTimeoutMs`（沿用既有"两个调用超时"惯用语，不新增可调参数）；二次调用只拿剩余时间，剩余不足直接 failTask 不发起重取。预算耗尽未发起二次调用仍归 `l3-serial-exhausted` 失败族（占 1 次 attempt、退避留痕），detail 带 `skipped: 'budget'` 与协议重取耗尽区分；该字段仅供观测／runbook 判读，不设代码阈值、不另造状态位。重取本身不占 backlog attempt；二次仍协议错误（含重取轮空选）整轮 failTask，占 1 次 attempt；单事件 LLM 调用上限天然 8×2=16，不另造计数器。
+- R-1 收窄：重取轮返回 `[]` 按协议失败处理（failTask，detail.round='retry'）；首轮 N>0 返回 `[]` 仍是合法 abstain。"空数组不被接受"的措辞只出现在重取反馈块，首轮 system prompt 永不禁止空数组（避免胁迫硬选）。
+- 反馈由内核纯函数 `renderFeedback` 用固定模板＋JSON.stringify 确定性渲染，禁字符串拼接；整数坏值照回显，非整数项只给类型级描述，ULID 形态值替换为 `<id-like value omitted>`；条目数与单值长度设上限；不回显合法选择，不做完整回显。
+
+### 11.9.5 M=64 上限与 N=0 勘误
+
+- 工程常量 `MAX_SERIAL_POOL_MEMBERS = 64`，禁运行期可调、禁静默截断。依据：字数闸已由分段器在源头闭合，M 防的是长列表选择质量退化而非上下文爆窗；取值明显高于现实分布，避免重演旧 20 条硬顶的数据黑洞；2 的幂便于夹具。本卡不重复造"成员数＋字数"双闸。
+- 超限策略：N 直接取 `current.pointers` 长度、无需读文本；判定顺序为可用性点查 → N>M failTask → readTexts → 建表 → LLM。N>64 → 不构造 prompt、零 LLM 调用，failTask reason `l3-candidate-overflow`（detail 带 n/m/eventId），进失败缓冲而非观测回调（确定性任务失败）；事件保 pending，她可用 correction 拆分后自然通过，不发明立即 permanent 特例；不建 shadow 临时代码，overflow reason 与 `l3-pool-sampled` 本身即免费采样器。
+- N=0 勘误：readTexts 返回空数组沿用既有 failTask 路径，根本不可达 L3 选择协议；不产生任何 L3 观测，summarize 调用 0 次。若未来空 texts 控制流改变，须另卡评审。
+
+### 11.9.6 独立观测通道
+
+- `ClosureDeps` 增并列可选回调 `onClosureObservation`，与 `onClosureFailure` 分离；内核同时维护内存环形缓冲（容量沿用 `FAILURE_BUFFER_LIMIT` 同款常量，零 IO、零投影、不落盘），提供只读访问器供宿主与测试；回调缺失时管线安全降级。
+- 五冻结 reason（逐字）：`l3-empty-selection-with-nonempty-pool`（首轮空选，带 n/eventId/round='first'）、`l3-serial-retry`（触发重取，带 violation kinds）、`l3-serial-exhausted`（重取仍败，round='retry'，含重取轮空选）、`l3-candidate-dropped`（候选 fail-soft 丢弃计数）、`l3-pool-sampled`（每个进入 L3 的 tick 上报 n 与原文总字符数）。
+- 宿主 plugin 仿 `onClosureFailure` 接逐事件 warn 日志，不设代码阈值；三率派生公式与人工阈值进 runbook，不进生产码。指标分母口径：`empty_selection_rate` 分母＝N>0 且发起首次 summarize 的 tick 数（不含重取，避免双计稀释），分子＝首轮空选 tick；`retry_round_empty` 计数单列；overflow 走失败通道，不进此率。
+
+### 11.9.7 prompt 注入损害上界与已知残余
+
+- 越界类注入最坏情形：模型稳定遵从 → 每轮重取皆败 → 8 个 tick 共 16 次调用后 permanent pending、真源零追加。合法序号类注入只能选中真实成员、结构全合法落盘，损害与"普通模型选错证据"同级，append-only 但经 correction 可修。
+- "被注入选中"与"正常误选"在机械上不可区分，接受为已知残余：机械闸守完整性（伪造存在性归零），统计审计守质量（R1/R2/诱饵域是其归宿）。正本禁止出现"反幻觉已完成"措辞，诚实表述为"不可验证的自由生成被消除，残余错误转入可观测域"。
+- 不做 XML 分隔包装（不可验证、`</tag>` 闭合注入反成新洞）；#i 单列表机器格式即全部 prompt 卫生。纯函数关键词启发式注入检测器驳回：无标定数据、误报率未知，属统计审计层职责，登记挂账，不进本卡内核。
+
+### 11.9.8 挂账与驳回总表
+
+| 项 | 处置 | 去向／理由 |
+|---|---|---|
+| serial 协议下沉 src/core 共享 | 挂账 | 本卡用同构属性测试防漂移；下沉动 assembly 白名单，独立重构卡 |
+| 注入模式纯函数检测器 | 挂账 | 归统计审计层（R1/R2），启发式未标定不进内核 |
+| 分段器成员上限治本 | 挂账（#117 邻近项） | 500 成员事件是分段器失败，不是 L3 问题 |
+| XML／分隔符包装 | 驳回 | 不可验证、闭合注入新洞；单列表机器格式替代 |
+| 反馈"完整回显上次选择" | 驳回 | token／注入面翻倍、纠错价值近零 |
+| 双字段并存／summarizeV2／兼容 shim | 驳回 | 无过渡对象的双协议＝永久死面 |
+| 分层表／"以上都不是"出口 | 驳回 | 证据可见性静默截断，与 abstain 语义重叠 |
+| shadow 拦截模式 | 驳回 | 临时代码面；overflow 观测即采样器 |
+| 空选／三率内核自动熔断 | 驳回 | 逐事件 warn＋runbook 人工阈值，批 A 口径延续 |
+| 内核自动分段超限事件 | 驳回 | 内核改写真源事件结构属越权，分段是她的修正权 |
+| 测试专用内核窄入口 | 驳回 | writeSummary 保留 id 入参后绕测入口天然存在 |
+| worker 侧代码内阈值 warn | 驳回 | 降级为逐事件 warn＋runbook 阈值，不留运行期魔数 |
+
+### 11.9.9 #90 卡面状态与零改动面
+
+**批 B（L3）src 落地文件面**（工作区未提交，2026-11-15）：
+
+- 新增 `src/event/serial-table.ts`：序号表、两套解析器、反馈渲染、`EventSerialReferenceError`、`isEventSerialRefusable` 与 `MAX_SERIAL_POOL_MEMBERS`。
+- 改 `src/event/llm-port.ts`：`anchor_serials` 响应字段、`WireBoundaryCandidate` 线类型、`AnchorSerialWireError extends SchemaError`；Request 形状不变。
+- 改 `src/adapters/dsh/llm.ts`：`parseAnchorSerialsField`、`parseBoundaryCandidateSerials`；anchors 路径 stringArray 旧反模式移除，key_points 路径保留字符串 filter。
+- 改 `src/event/closure.ts`：建表时机与同源单实例、解析前移、轮内重取与共享预算、overflow／table-broken 失败路径、单列表 prompt、独立观测缓冲与五 reason；`writeSummary` 入参仍为 id[]。
+- 改 `src/api/index.ts`：`onClosureObservation` 可选透传与 `closureObservations()` 门面读口。
+- 改 `src/adapters/dsh/plugin.ts`：`onClosureObservation` 逐事件 warn 接线，无代码阈值。
+- 测试与负例由红测侧登记：`tests/event/task90-serial-table.test.ts`、`task90-l3-closure.test.ts`、`tests/adapters/dsh/task90-l3-strict-parse.test.ts`；新增生产符号的 PRODUCERS 白名单登记属测试侧事项。
+
+**验收口径**：src `tsconfig.json` 类型检查 0；全量 `npm test`、双 tsc 与静态门断言点的封板数字（预期 1126／1126／0、静态门断言点 90、contract 24／24）以夹具迁完后的全量实跑为准回填，本节不预填未实跑结果。
+
+**零改动面**：`anchor-refs.ts`、contract 落盘形状与 event-schema、projection、`memory/serial.ts`、`correction.ts` 未动。批 A 11.8 口径延续不回退：读取口仅 `CorruptedError`／`NotFoundError` 归 `experience-store-broken`，模型超时等其余错误 `failureDetailOf` 返回 undefined。
+
 # 附录 A　术语表
 
 | 术语 | 含义 |
