@@ -981,6 +981,75 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 - 每次过闸门只改三处：该卡"阶段／状态"、11.6 挂账增减、必要时的依赖修正；机制结论仍写进对应正文章节。
 - 禁止在本章复制长篇机制文字：机制说不清就回正文补，正文与本章出现冲突时，机制以正文为准、状态以本章为准。
 
+## 11.8 #90 写入闸批 A（L2）落地登记（2026-11-15）
+
+> 依据 `docs/task90-write-gate-final-spec.md`；本节登记批 A 已落地口径与批 B 冻结边界，机制细节以该定稿为准。本节只追加 11.x，不改动其他章节既有文字。
+
+### 11.8.1 L2 判据命题
+
+- 主谓词：`anchors ⊆ 本次闭合事件的 pointers 成员 id 集`，且每个 id 经经历真源窄接口点查存在。闸不裁定证据语义（什么算证据），只裁定"模型没有引用它没见过的材料"。
+- 生产闸运行期不解析时间；时间相关比较只存在于诊断分桶函数与分区不变式测试内。
+- 窄接口 `readExperience(id): { id, channel, occurredAtMs } | undefined`：同步、按锚点逐个 O(1) 点查、零经历正文；纯函数核心零 I/O，禁 import `node:fs`／`ExperienceLog`／`readAll`（静态投毒钉死）。
+
+### 11.8.2 三条件降级与分区不变式
+
+- 存在／同通道／闭区间三条件不删除，降级为只读诊断分桶：成员校验失败时尽力取经历，细分为 `anchor-cross-channel`（存在且 channel 不同）／`anchor-out-of-window`（存在且不在 time_range）／`anchor-not-found`（真源不存在）／`anchor-not-in-event`（兜底桶）。分桶只服务观测与维修明细，任何一桶的结论都不能推翻主谓词的拒收。
+- 坏时间串在 detail 打 `time-unparseable` 标记，不折算、`deltaMs`／`window` 禁出现 NaN／Infinity。
+- 管线不变式测试（非生产闸）：`pool(channel, time_range) ≡ 事件成员集 ≡ readTexts 输入 id 集` 三方等价；构造窗内非成员样本，主谓词必拒收（不变式成立期间主谓词与三条件数学等价，分段器改坏时该测试先红）。
+
+### 11.8.3 reason 冻结词表与失败语义
+
+- 冻结六词：`anchor-duplicate`、`anchor-not-found`、`anchor-cross-channel`、`anchor-out-of-window`、`anchor-not-in-event`、`experience-store-broken`；L1 既有 `anchor-form-invalid` 不动。全部 detail 结构化、零经历正文／零摘要正文。
+- 同一 ULID 多次出现显式拒收 `anchor-duplicate`，**禁止静默去重**；`[]` 合法放行（abstain）；任何失败禁止剥锚、禁止空锚／占位版本降级，部分有效锚点的唯一修复是整份重跑。
+
+### 11.8.4 重启与 permanent 语义
+
+- 单进程 8 次退避耗尽后事件保持 pending、真源零追加；跨重启由 `sweepPending` 重新入队，attempts 重置，给新一轮 8 次。
+- `summary_source='her'` 的 pending 版本不被清道夫重摘（既有边界）；不存在静默坟场。
+- 解救路径：`requestRerun` 重跑闭合管线即修复入口；不建离线 pending 重放工具。失败明细走既有闭合失败内存明细与 `onClosureFailure` 宿主回调，不新增表、投影文件或记忆投影。
+
+### 11.8.5 冷备审计-only 挂账
+
+冷备含悬空坏锚点、builder 硬失败零产物，只能审计查看、不可恢复运行态；冷备三份物理文件的删除仍待用户显式授权。
+
+### 11.8.6 熔断走 runbook
+
+`cross-channel`／`out-of-window` 占比异常由人工 runbook 判读；阈值常数不进生产码，不做自动开关或新状态位／扩面控制面。
+
+### 11.8.7 occurred_at 时点假设
+
+`occurred_at` 是时点而非区间。闭区间的硬理由：`time_range` 由成员 min／max 派生，首尾成员恰落在边界上，开区间会稳定误杀最常见合法锚点；未来若改区间语义，需另行改区间重叠判定。
+
+### 11.8.8 correction 六处 appendVersion 用途清单
+
+| 方法 | summary_quality | 锚点来源 | 是否 requestRerun |
+|---|---|---|---|
+| `reviseBoundary` | pending | 继承 current（pending 待 rerun 覆写） | 是 |
+| `reopen` | 继承当前态 | 继承 current | 否 |
+| `closeOpen` | closed ／ manual | 继承 current | 是 |
+| `rewriteSummary` | ready ／ her | 继承 current | 否 |
+| `retire` | 退役态（merged ／ split） | 继承 current | 否 |
+| `appendNewEvent` | pending（新事件） | 契约补位 `[]` | 是（由 merge／split 调用方为新事件触发） |
+
+`appendVersion` 生产调用方三档：segmenter＝结构写入 5 处（零 anchors 标识符）、closure＝摘要＋模型锚点产出 1 处、correction＝继承／退役／新事件物化 6 处。存储原语不持读取器、不加运行时证据语义闸（Q5 驳回项）；correction 路径靠 pending＋rerun 纪律，改窗／改道必经 rerunner。
+
+### 11.8.9 #90 卡面状态
+
+**批 A（L2）已落地**（工作区未提交，2026-11-15）：
+
+- 新增 `src/event/anchor-refs.ts`：纯函数闸 `assertAnchorRefs`／诊断函数 `classifyAnchorFailure`、窄接口 `ExperienceReader`、`AnchorReferenceInvalidError extends SchemaError`（可重试标记，非永久不可修）。
+- 改 `src/event/closure.ts`：`ClosureDeps.readExperience` 必填；writeSummary 在 L1 形态闸之后、`appendVersion` 之前、try/catch 之内调 L2 闸；LLM 前存储可用性探针（只上抛损坏，不判缺失／通道／窗口）；`failTask` 归类结构化 detail。
+- 改 `src/api/index.ts`：复用同一个 `experienceLog` 的 has／get 适配窄三面 `{id, channel, occurredAtMs}`，与 readTexts、EventCorrector 同源。
+- 改 `src/event/correction.ts`：六个 Input 类型护栏（不携带锚点字段）＋六处 appendVersion 用途注释；零运行时闸、零读取器持有。
+- 测试与负例：`tests/event/task90-anchor-refs.test.ts`、`task90-closure-l2.test.ts`、`task90-correction-rerun.test.ts`；类型负例 `correction-input-anchors.deny.ts`、`reader-ref.deny.ts`。
+- 验收口径：全量 `npm test` 1058／1058／0，双 tsc 0，静态门 50／50。
+
+**批 B（L3）冻结不实现**：候选序号表、轮内 1 次带反馈重取、非静默 abstain 观测等独立立项评审；批 B 对 `ClosureDeps` 零接口变更承诺。
+
+### 11.8.10 D6 错误归类边界
+
+读取口抛出的错误中，仅 `CorruptedError`（坏行）与 `NotFoundError`（缺失／落点失效）归 `experience-store-broken`，detail.note 保留原始错误类名；reader 正常返回 undefined 仍由闸内分桶 `anchor-not-found`。其余一切错误（模型超时 `UnavailableError`、空摘要／超长等）`failureDetailOf` 返回 undefined，不带 L2 明细；failTask 既有退避／留痕行为不变。
+
 # 附录 A　术语表
 
 | 术语 | 含义 |
