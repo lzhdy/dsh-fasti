@@ -32,7 +32,12 @@ import { Fasti } from '../../api/index.ts';
 import type { MemoryGateMode } from '../../assembly/memory-tools.ts';
 import { createSourceLookupPort } from '../../assembly/source-lookup.ts';
 import { convertSessionEvent } from './convert-event.ts';
-import { createDshLLMPort, startClosureWorker } from './llm.ts';
+import {
+  DEFAULT_MEMORY_PROJECTION_BUDGET_MS,
+  createDshLLMPort,
+  startClosureWorker,
+  startMemoryProjectionWorker,
+} from './llm.ts';
 import type { DshModelRoute } from './llm.ts';
 import { wireMemoryTools, type DshToolRegistry, type MemoryWiring } from './memory-tool-bridge.ts';
 
@@ -297,6 +302,17 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
     config.closureIntervalMs === undefined ? {} : { intervalMs: config.closureIntervalMs },
   );
 
+  // ── 记忆投影 worker（第七法）──
+  // 调度点排在闭合 worker 之后：closure 先行，记忆 drain 本轮在后；两者轮次与预算独立，
+  // 记忆 drain 失败在门面/worker 两层隔离，不阻断闭合管线。
+  startMemoryProjectionWorker(ctx, async () => {
+    const fasti = await ready;
+    if (fasti === null || state.closed) {
+      return;
+    }
+    await fasti.drainMemoryProjection(DEFAULT_MEMORY_PROJECTION_BUDGET_MS);
+  });
+
   // 生命周期：装载时 open，卸载时 close（释放 SQLite 句柄）。
   ctx.effect(async () => {
     let fasti: Fasti;
@@ -383,6 +399,12 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           log: (message) => ctx.logger.warn('%s %s', LOG_PREFIX, message),
         });
         memoryWiring = wiring;
+        // DI 绑定：把装配运行面的第七法端口挂到门面（端口未就绪时为 null，门面短路 not-wired）。
+        void ready.then((instance) => {
+          if (instance !== null) {
+            instance.bindMemoryProjection(wiring.memoryProjection);
+          }
+        });
         if (wiring.registered) {
           ctx.logger.info('%s 记忆工具已注册：门模式=%s', LOG_PREFIX, gateMode);
         }

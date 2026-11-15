@@ -17,38 +17,52 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { ConflictError, IntegrityError, NotFoundError, UnavailableError } from '../core/errors.ts';
 import { ensureDir, exists } from '../core/fsx.ts';
-import { isUlid, ulid } from '../core/ulid.ts';
+import { isUlid } from '../core/ulid.ts';
+import { msToIso } from '../core/time.ts';
 import { applyMissAlias } from './alias-write.ts';
 import type { ApplyMissAliasOutcome } from './alias-write.ts';
 import { insertAuditItem, insertAuditRun } from './audit/metrics.ts';
 import { normalizeQuery, searchCards, searchCardsExplained } from './bm25.ts';
+import { castDecision } from './decision.ts';
+import type { DecisionVersionContext } from './decision.ts';
 import { aliasFromRow, cueTextOf, syncFts } from './fts.ts';
 import { appendDecision, appendRevision, readRevisions, validateRevisionChain } from './ledger.ts';
 import { MemoryIndexStaleError } from './memory-errors.ts';
 import { insertMissRow } from './miss.ts';
 import { MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from './schema.ts';
-import type {
-  AliasRow,
-  AuditItemRecord,
-  AuditRunRecord,
-  CardChangeSet,
-  DecisionRecord,
-  ExplainedRankedCard,
-  MemoryCard,
-  MissObservationInput,
-  RankedCard,
-  RevisionRecord,
-  SearchQuery,
-  TruthFingerprint,
+import {
+  CURRENT_RULES_VERSION,
+  type AliasRow,
+  type AuditItemRecord,
+  type AuditRunRecord,
+  type CardChangeSet,
+  type DecisionRecord,
+  type ExplainedRankedCard,
+  type MemoryCard,
+  type MissObservationInput,
+  type RankedCard,
+  type RevisionRecord,
+  type SearchQuery,
+  type TruthFingerprint,
 } from './types.ts';
 
 // N1 无环抽取：别名行映射/cue_text/FTS 重建实现移入 fts.ts，此处 re-export 保持公开 API 路径稳定
 // （既有从 './store.ts' 引用 aliasFromRow/cueTextOf/syncFts 的调用方与测试零改动）。
 export { aliasFromRow, cueTextOf, syncFts };
 
+/**
+ * 【仅遗留 miss 回填路径使用 · B3 收编时根治】写柄只持 indexDir、不触真源（M6 规则①），
+ * 读不到事件版本；此常量仅作 miss 回填决策行的版本身份占位，不是事件版本号。
+ * B3 收编接事件版本读取器后删除；drain 编排内 create-card / invalidate / add-alias
+ * 三处决策一律由事件版本上下文注入，不经此占位。
+ */
+const LEGACY_ONLY_MISS_ALIAS_VERSION = 1;
+
 /** 选择索引目录（即 projection/memory-index/）。 */
 export interface StorePaths {
   indexDir: string;
+  /** 事件真源数据根（第七法只读读取器注入点；缺省 null = 未接真源，空轮处理）。 */
+  dataRoot?: string | null;
 }
 
 /** 只读柄 —— 未来运行时只拿这个（方案 §4.3）。 */
@@ -65,6 +79,8 @@ export interface MemoryReadHandle {
   listEffective(atMs: number): MemoryCard[];
   /** 真值指纹与 stamp 不符抛 MemoryIndexStaleError（读操作拒绝服务）。 */
   verifyStampedFingerprint(current: TruthFingerprint): void;
+  /** 读 schema_meta 单键；缺键返回 null（只读，不建表/不写值）。 */
+  getMeta(key: string): string | null;
   close(): Promise<void>;
 }
 
@@ -91,6 +107,11 @@ export interface AddMissAliasRequest {
   cardId: string;
   sensitive: 0 | 1;
   atMs: number;
+  /**
+   * 决策版本上下文（事件版本号 + 该版本 created_at）；与 create-card/invalidate 同一处注入。
+   * 缺省走遗留 miss 回填占位口径；drain 编排路径必须显式传入事件版本上下文。
+   */
+  versionContext?: DecisionVersionContext | undefined;
 }
 
 /** 写柄 —— 仅 builder 脚本可实例化（方案 §4.3）。 */
@@ -345,6 +366,13 @@ class ReadHandle implements MemoryReadHandle, MemoryInternalReadHandle {
     return rows.map(cardFromRow);
   }
 
+  getMeta(key: string): string | null {
+    const row = this.require()
+      .prepare('SELECT value FROM schema_meta WHERE key = ?')
+      .get(key) as { value: string } | undefined;
+    return row === undefined ? null : String(row.value);
+  }
+
   verifyStampedFingerprint(current: TruthFingerprint): void {
     const row = this.require()
       .prepare("SELECT value FROM schema_meta WHERE key = 'truth_fingerprint'")
@@ -452,18 +480,28 @@ class WriteHandle extends ReadHandle implements MemoryWriteHandle {
       if (card === null) {
         throw new IntegrityError(`addMissAlias 后目标卡消失（不变量破坏）：${request.cardId}`);
       }
-      const decision: DecisionRecord = {
-        decision_id: ulid(),
-        at_ms: request.atMs,
-        action: 'add-alias',
-        card_id: card.cardId,
-        event_id: card.eventId,
-        anchor_json: card.anchorJson,
-        content_hash: outcome.contentHash,
-        model_tag: 'rules-v1',
-        reason: 'add-alias:miss-recheck',
-        created_by: 'her',
+      // 决策行经 decision.ts 纯铸造：decision_id 内容派生（非随机 ulid()）。
+      // 版本上下文与 create-card/invalidate 同一处注入：优先取调用方按事件版本传入的
+      // DecisionVersionContext；遗留 miss 回填路径无事件版本读取器时，版本身份用占位常量、
+      // 时间取注入 ms（不写版本号字面量到铸造站点）。
+      const anchors = JSON.parse(card.anchorJson) as string[];
+      const versionContext: DecisionVersionContext = request.versionContext ?? {
+        version: LEGACY_ONLY_MISS_ALIAS_VERSION,
+        createdAtIso: msToIso(request.atMs),
       };
+      const decision: DecisionRecord = castDecision({
+        eventId: card.eventId,
+        version: versionContext.version,
+        createdAtIso: versionContext.createdAtIso,
+        action: 'add-alias',
+        cardId: card.cardId,
+        anchors,
+        contentHash: outcome.contentHash,
+        structuralHash: '',
+        modelTag: CURRENT_RULES_VERSION,
+        reason: 'add-alias:miss-recheck',
+        dedupKey: `add-alias|${card.eventId}|${card.cardId}|${outcome.termNorm}`,
+      });
       appendDecision(this.indexDir, decision);
     }
     return outcome;

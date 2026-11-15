@@ -13,6 +13,12 @@ export type CardType = 'event';
 export type ProbeType = 'gold' | 'decoy' | 'consistency' | 'provenance';
 
 /**
+ * 当前投影规则版本（决策行 model_tag / schema_meta.rules_version 比对口径）。
+ * 投影盖过期版本戳 → drain 判 rebuild-required，零写入（§2.5 R-18）。
+ */
+export const CURRENT_RULES_VERSION = 'rules-v1';
+
+/**
  * 轻卡行 —— 零正文（方案 §3.2 mem_card）。
  *
  * anchor_json 是权威锚点（真源经历 id 列表的 JSON 字符串数组）；
@@ -52,7 +58,7 @@ export interface MemoryCard {
   /** 行作废时刻（tombstone 记账用），NULL=未作废（ms）。 */
   expiredMs: number | null;
   status: 'active' | 'invalid' | 'superseded';
-  /** 锚点+线索字段规范化后的 sha256，幂等与账本核对用。 */
+  /** 卡片内容摘要哈希：同输入面自比/幂等核对，不承担失效判定（结构变化见 structuralHash）。 */
   contentHash: string;
   /** 写侧 ROI 观测列，v1 仅离线回放更新。 */
   hitCount: number;
@@ -169,8 +175,14 @@ export interface DecisionRecord {
   event_id: string;
   /** 经历 id 列表（JSON 字符串数组）。 */
   anchor_json: string;
-  /** 决策时锚点快照哈希。 */
+  /** 决策时卡片内容摘要快照（同输入面自比，不做失效判定）。 */
   content_hash: string;
+  /**
+   * 结构快照哈希（six 输入面：anchors/channel/时间窗/eligibility/rules_version），
+   * applied 集回放键 `event_id:structural_hash` 据此派生。历史行缺该字段按未 applied 处理；
+   * 非建卡决策（add-alias/invalidate）可置空串。
+   */
+  structural_hash?: string;
   /** 决策规则/模型标识 + prompt 版本。 */
   model_tag: string;
   /** 简短理由码+一句话，不复制原文。 */

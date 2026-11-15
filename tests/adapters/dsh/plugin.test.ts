@@ -440,7 +440,7 @@ test('插件：注入模型路由 → 闭合事件由后台 worker 补上摘要�
       return JSON.stringify({
         summary: '她问了一句在不在，随后继续处理排期。',
         key_points: ['问在不在'],
-        anchors: ['发消息'],
+        anchors: ['01J0000000000000000000000F'],
       });
     },
   };

@@ -14,6 +14,9 @@
 
 import { UnavailableError } from '../core/errors.ts';
 import type { ApplyMissAliasOutcome } from './alias-write.ts';
+import { buildSkippedDrainReport, classifyDrainSkip, runDrainRound } from './drain.ts';
+import type { DecisionVersionContext } from './decision.ts';
+import type { DrainRoundReport, DrainSkipContext } from './drain.ts';
 import { openShadowObservationSink } from './shadow-write.ts';
 import type { RecordShadowOutcome, ShadowObservationInput } from './shadow-write.ts';
 import { openMemoryRuntimeBackend } from './store.ts';
@@ -31,9 +34,11 @@ export interface RuntimeAddMissAliasInput {
   readonly term: string;
   readonly cardId: string;
   readonly atMs: number;
+  /** 决策版本上下文（可选；缺省由写柄按遗留路径临时构造，drain 编排接入后由事件版本注入）。 */
+  readonly versionContext?: DecisionVersionContext | undefined;
 }
 
-/** 运行期窄柄契约：装配层唯一可持有的记忆访问形状，恰六方法（N16 影子写为第六窄能力）。 */
+/** 运行期窄柄契约：装配层唯一可持有的记忆访问形状；N16 影子写为第六窄能力，第七法为整轮 drain pull。 */
 export interface RuntimeMemoryHandle {
   searchExplained(query: RuntimeSearchQuery): Promise<ExplainedRankedCard[]>;
   getCardsByAnchor(experienceId: string): MemoryCard[];
@@ -47,6 +52,11 @@ export interface RuntimeMemoryHandle {
    * 入参无任何路径形参（落点在 shadow-write 工厂内部固定）。
    */
   recordShadowObservation(input: ShadowObservationInput): RecordShadowOutcome;
+  /**
+   * 第七法：整轮 drain pull（预算化）。短路（持锁/关停/未接线/预算耗尽）零写入；
+   * 正常轮经 derive→plan→apply 编排链产出 §3.2 轮报告。本方法永不进宿主工具表。
+   */
+  drainProjection(budgetMs: number): Promise<DrainRoundReport>;
   close(): Promise<void>;
 }
 
@@ -58,6 +68,10 @@ export function openMemoryRuntime(paths: StorePaths): RuntimeMemoryHandle {
   const backend = openMemoryRuntimeBackend(paths);
   // N16 影子写面独立于 sqlite 后端：构造期不建目录、不占写单例，只读降级下仍可写。
   const shadowSink = openShadowObservationSink(paths.indexDir);
+  // 关停态：close() 后置位，第七法据此判 `closed` 短路（不触碰已关闭的读连接）。
+  let closed = false;
+  // F-C 连续失败计数（进程内、不落持久队列；成功轮由编排层归零）。
+  let consecutiveFailures = 0;
 
   const requireWriter = (): NonNullable<typeof backend.writer> => {
     if (backend.writer === null) {
@@ -83,6 +97,7 @@ export function openMemoryRuntime(paths: StorePaths): RuntimeMemoryHandle {
         cardId: input.cardId,
         sensitive: 1,
         atMs: input.atMs,
+        ...(input.versionContext === undefined ? {} : { versionContext: input.versionContext }),
       });
     },
 
@@ -95,7 +110,36 @@ export function openMemoryRuntime(paths: StorePaths): RuntimeMemoryHandle {
       return shadowSink.record(input);
     },
 
+    async drainProjection(budgetMs: number): Promise<DrainRoundReport> {
+      const startedMs = Date.now();
+      const context: DrainSkipContext = {
+        closed,
+        writable: backend.writer !== null,
+        // memory 窄柄层恒按已接线处理：dataRoot 缺省时真源折叠集为空 → 真实空轮；
+        // not-wired 短路由门面端口层在未注入端口时判定（正本 §3.1 api 行）。
+        sourceWired: true,
+        budgetExhausted: !Number.isFinite(budgetMs) || budgetMs <= 0,
+      };
+      const skipped = classifyDrainSkip(context);
+      if (skipped !== null) {
+        // 短路：事务未开始、派生集不推进，卡/台账/观测/miss 行与目录树全不变。
+        return buildSkippedDrainReport(skipped, Date.now() - startedMs);
+      }
+      const report = runDrainRound({
+        indexDir: paths.indexDir,
+        dataRoot: paths.dataRoot ?? null,
+        closed,
+        reader: backend.reader,
+        writer: backend.writer,
+        budgetMs,
+        consecutiveFailures,
+      });
+      consecutiveFailures = report.consecutiveFailures;
+      return report;
+    },
+
     async close(): Promise<void> {
+      closed = true;
       await backend.reader.close();
     },
   };

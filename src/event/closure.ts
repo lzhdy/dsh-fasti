@@ -26,7 +26,8 @@
  */
 
 import { withDeadline } from '../core/deadline.ts';
-import { UnavailableError } from '../core/errors.ts';
+import { SchemaError, UnavailableError } from '../core/errors.ts';
+import { isUlid } from '../core/ulid.ts';
 import { nowIso } from '../core/time.ts';
 import { SUMMARY_MAX_CHARS, summaryLengthOf } from '../contract/event.ts';
 import type { EventRecord } from '../contract/event.ts';
@@ -82,6 +83,19 @@ export interface ClosureFailure {
    * 两处各写一遍必然漂移，「已耗尽却还标着可重试」会让可观测性说谎。
    */
   readonly exhausted: boolean;
+}
+
+/**
+ * 锚点形态非法（#42 §2.1 前置甲 / §4.1 L1 形态闸）。
+ *
+ * 事件版本追加**之前**的单记录断言：每个锚点必须是 26 位 Crockford Base32 ULID；
+ * 形态不符 fail-closed 抛错，绝不落盘。空数组（合法 abstain）放行 —— 本闸只管形态，
+ * 不管建卡决策。基类复用既有 SchemaError（code='SCHEMA'），不新造错误层级。
+ */
+export class AnchorFormInvalidError extends SchemaError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+  }
 }
 
 /** 闭合管线依赖（显式注入，便于测试）。 */
@@ -250,7 +264,15 @@ export class ClosurePipeline {
       return true;
     }
 
-    this.writeSummary(latest, response, summary, regenerate);
+    try {
+      this.writeSummary(latest, response, summary, regenerate);
+    } catch (error) {
+      // L1 退避收编（裁决 4a）：落盘前形态闸等写回失败不再抛穿管线 —— 沿用既有
+      // failTask 退避 / 耗尽 / 失败明细口径；不 fail-open、不写半份、不跳过断言、
+      // 不静默吞错（错误原文进失败明细，坏锚点原值可回溯）。
+      this.failTask(task, error, nowMs);
+      return true;
+    }
     this.deps.backlog.complete(task.eventId);
     return true;
   }
@@ -355,6 +377,9 @@ export class ClosurePipeline {
     summary: string,
     regenerate: boolean,
   ): void {
+    // L1 前置甲（§2.1 / §4.1）：版本追加**之前**的 ULID 形态闸 —— 先于 appendVersion
+    // 落盘；形态不符整批拒绝（不写半份），绝不落盘。空数组（合法 abstain）放行。
+    assertAnchorsUlid(response.anchors);
     // v1.4 · C7：话题跳转候选与摘要在**同一次 appendVersion** 写回。
     //
     // 候选来自摘要调用的附带输出（慢路径），**非权威**：只写 boundary_candidates，
@@ -574,4 +599,22 @@ function normalizeCandidates(
     out.push({ kind, at_pointer_id: atPointerId, marked_at: markedAt });
   }
   return out;
+}
+
+/**
+ * L1 形态闸（§2.1 前置甲）：锚点数组逐个过 26 位 Crockford ULID 形态断言。
+ *
+ * 形态判定复用 `core/ulid.ts` 的 `isUlid`（不在本文件另写一份，避免两处漂移）；
+ * 非数组 / 非字符串元素 / 形态不符 → fail-closed 抛 `AnchorFormInvalidError`，
+ * 空数组是合法 abstain，直接放行。
+ */
+function assertAnchorsUlid(anchors: unknown): asserts anchors is readonly string[] {
+  if (!Array.isArray(anchors)) {
+    throw new AnchorFormInvalidError(`anchors 必须为字符串数组：${JSON.stringify(anchors)}`);
+  }
+  for (const anchor of anchors) {
+    if (typeof anchor !== 'string' || !isUlid(anchor)) {
+      throw new AnchorFormInvalidError(`锚点不是 26 位 Crockford ULID：${JSON.stringify(anchor)}`);
+    }
+  }
 }

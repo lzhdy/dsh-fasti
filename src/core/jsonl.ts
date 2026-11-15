@@ -19,13 +19,30 @@ export function toJsonLine(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** JSONL 读取选项。 */
+export interface JsonlReadOptions {
+  /**
+   * 尾行容忍模式（R-12 / §3.6 V-08 torn-read）：仅**最后一行** parse 失败视为截断不可见
+   * （不消费、不推进，物理残行保留待下一轮重读）；中间行坏仍抛 `CorruptedError` 硬失败。
+   * 默认严格模式：任何坏行（含末行）都抛错，绝不静默容忍。
+   */
+  readonly tolerant?: boolean;
+}
+
 /**
- * 严格解析 JSONL 文本。
+ * 解析 JSONL 文本。
  * @param source 用于错误信息的来源描述（如文件路径）
  */
-export function parseJsonl<T>(text: string, source: string): T[] {
+export function parseJsonl<T>(text: string, source: string, options?: JsonlReadOptions): T[] {
   const out: T[] = [];
   const lines = text.split('\n');
+
+  let lastNonEmptyIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if ((lines[i] as string).trim() !== '') {
+      lastNonEmptyIndex = i;
+    }
+  }
 
   for (let i = 0; i < lines.length; i += 1) {
     const raw = lines[i] as string;
@@ -36,6 +53,10 @@ export function parseJsonl<T>(text: string, source: string): T[] {
     try {
       out.push(JSON.parse(raw) as T);
     } catch (error) {
+      if (options?.tolerant && i === lastNonEmptyIndex) {
+        // 末行截断残行：不可见、不消费；物理文件原样保留（R-12）。
+        continue;
+      }
       throw new CorruptedError(`JSONL 第 ${i + 1} 行解析失败（${source}）：${(error as Error).message}`, {
         cause: error,
       });
@@ -46,12 +67,12 @@ export function parseJsonl<T>(text: string, source: string): T[] {
 }
 
 /** 读取并解析 JSONL 文件（文件不存在返回空数组）。 */
-export function readJsonlFile<T>(filePath: string): T[] {
+export function readJsonlFile<T>(filePath: string, options?: JsonlReadOptions): T[] {
   if (!fs.existsSync(filePath)) {
     return [];
   }
   const text = fs.readFileSync(filePath, 'utf8');
-  return parseJsonl<T>(text, filePath);
+  return parseJsonl<T>(text, filePath, options);
 }
 
 /** append-only 追加一条记录。 */

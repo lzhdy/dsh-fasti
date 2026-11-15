@@ -171,6 +171,54 @@ export function startClosureWorker(
   }, 'dsh-fasti-closure-worker');
 }
 
+/** 记忆投影 drain 轮询预算（毫秒）：与闭合管线预算各自独立，互不复用。 */
+export const DEFAULT_MEMORY_PROJECTION_BUDGET_MS = 60_000;
+
+/**
+ * 记忆投影后台 worker（独立于闭合 worker）：
+ *  - 与 closure 不同轮次、不同预算；本轮失败只记日志，不阻断闭合管线；
+ *  - 同样用「一次性 setTimeout → 执行 → 再排下一次」的自管理链，卸载清定时器。
+ */
+export function startMemoryProjectionWorker(
+  ctx: Context,
+  drain: () => Promise<unknown>,
+  opts?: { intervalMs?: number },
+): void {
+  const intervalMs = opts?.intervalMs ?? 5_000;
+
+  ctx.effect(async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+
+    const runOnce = async (): Promise<void> => {
+      try {
+        await drain();
+      } catch (error) {
+        // 记忆 drain 自身出错不能拖死宿主或闭合管线：记日志后照常排下一轮。
+        ctx.logger.error('[dsh-fasti] 记忆投影 worker 本轮失败：%s', String(error));
+      }
+      if (stopped) {
+        return;
+      }
+      timer = setTimeout(() => {
+        void runOnce();
+      }, intervalMs);
+    };
+
+    timer = setTimeout(() => {
+      void runOnce();
+    }, intervalMs);
+
+    return () => {
+      stopped = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+  }, 'dsh-fasti-memory-projection-worker');
+}
+
 /**
  * 解析模型正文为摘要结果。
  *

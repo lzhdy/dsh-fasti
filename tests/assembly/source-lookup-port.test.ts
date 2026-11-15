@@ -18,12 +18,12 @@ import type { Pointer } from '../../src/contract/experience.ts';
 import type { GatedCardView } from '../../src/assembly/memory-tools.ts';
 import {
   isExperienceSummaryView,
-  projectExperienceSummary,
   createSourceLookupPort,
   applyLookupCaps,
   MAX_RAW_TURNS_PER_LOOKUP,
   MAX_RAW_LOOKUP_CHARS,
 } from '../../src/assembly/source-lookup.ts';
+import { projectExperienceSummary } from '../../src/projection/types.ts';
 import type {
   CountScope,
   ExperienceSummaryView,

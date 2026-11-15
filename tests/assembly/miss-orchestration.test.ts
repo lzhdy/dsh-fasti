@@ -110,6 +110,9 @@ function makeHandle(opts: FakeOpts): RuntimeMemoryHandle {
     recordShadowObservation() {
       return { ok: false as const, reason: 'orchestration-red-uses-injected-sink' };
     },
+    async drainProjection(): Promise<never> {
+      throw new Error('drainProjection 未在该装配替身接线');
+    },
     async close(): Promise<void> {},
   };
 }

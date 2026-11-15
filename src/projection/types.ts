@@ -10,6 +10,7 @@
  */
 
 import type { BoundaryCandidate } from '../contract/event.ts';
+import type { Experience, ExperienceSummaryView } from '../contract/experience.ts';
 
 /** 投影行 —— 结构层全量折叠（对应 §7.1 的 experience 表）。 */
 export interface ExperienceProjection {
@@ -239,4 +240,22 @@ export function makeSnippet(text: string, keyword: string, radius = 40): string 
   const start = Math.max(0, index - radius);
   const end = Math.min(text.length, index + keyword.length + radius);
   return text.slice(start, end);
+}
+
+/**
+ * 经历 → 摘要窄 DTO 的纯投影（P-04 下沉自 assembly/source-lookup）：只挑白名单字段，
+ * cue 缺失归一为 null；不复制 observation/action/outcome/指针/char_count/marks 等任何槽位，
+ * 无 IO、可离线复现。
+ */
+export function projectExperienceSummary(experience: Experience): ExperienceSummaryView {
+  return {
+    id: experience.id,
+    kind: experience.kind,
+    scene: experience.scene,
+    initiation: experience.initiation,
+    occurredAt: experience.occurred_at,
+    recordedAt: experience.recorded_at,
+    tick: experience.tick,
+    cue: experience.observation.cue ?? null,
+  };
 }

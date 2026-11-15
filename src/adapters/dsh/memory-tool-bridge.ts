@@ -21,6 +21,7 @@ import {
   openAssembledMemoryTools,
   projectCardForHost,
 } from '../../assembly/host-tool-runtime.ts';
+import type { AssembledMemoryRuntime } from '../../assembly/host-tool-runtime.ts';
 import type { GatedSearchView, MemoryGateMode } from '../../assembly/memory-tools.ts';
 import {
   isExperienceSummaryView,
@@ -42,9 +43,14 @@ export interface DshToolRegistry {
   register(definition: ToolDefinition): () => void;
 }
 
+/** 绑到装配运行面的记忆投影第七法端口；窄柄不可用时为 null。 */
+export type MemoryProjectionPort = AssembledMemoryRuntime['memoryProjection'];
+
 export interface DshMemoryBridge {
   /** 六个 defineTool 产物（通道一四件套 + 通道二两件套），供 ctx.tools.register 逐个注册。 */
   readonly definitions: readonly ToolDefinition[];
+  /** 记忆投影第七法端口（DI 绑定，供门面装配后置挂接）；窄柄不可用时为 null。 */
+  readonly memoryProjection: MemoryProjectionPort;
   /** 关闭底层窄柄（幂等）。 */
   dispose(): Promise<void>;
 }
@@ -325,6 +331,7 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
 
   return {
     definitions: [gatedSearch, cardsByAnchor, resolvePointer, addMissAlias, experienceSummary, rawText],
+    memoryProjection: runtime.memoryProjection,
     dispose: runtime.dispose,
   };
 }
@@ -363,6 +370,8 @@ export interface WireMemoryToolsInput {
 export interface MemoryWiring {
   /** 是否真正注册了工具（off 或无 tools 服务时为 false）。 */
   readonly registered: boolean;
+  /** 记忆投影第七法端口；未接线/窄柄不可用时为 null。 */
+  readonly memoryProjection: MemoryProjectionPort;
   /** 先注销工具再关闭底层窄柄；幂等。 */
   dispose(): Promise<void>;
 }
@@ -380,13 +389,13 @@ const noopWiringDispose: MemoryWiring['dispose'] = async () => undefined;
  */
 export function wireMemoryTools(input: WireMemoryToolsInput): MemoryWiring {
   if (input.mode === 'off') {
-    return { registered: false, dispose: noopWiringDispose };
+    return { registered: false, memoryProjection: null, dispose: noopWiringDispose };
   }
   if (input.registry === null) {
     input.log?.(
       '记忆门已配置开启但宿主未提供 tools 服务，本次跳过记忆工具注册（门控工具不接线）',
     );
-    return { registered: false, dispose: noopWiringDispose };
+    return { registered: false, memoryProjection: null, dispose: noopWiringDispose };
   }
 
   const bridge = openDshMemoryBridge({
@@ -401,6 +410,7 @@ export function wireMemoryTools(input: WireMemoryToolsInput): MemoryWiring {
   let disposed = false;
   return {
     registered: true,
+    memoryProjection: bridge.memoryProjection,
     async dispose() {
       if (disposed) return;
       disposed = true;

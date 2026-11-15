@@ -551,7 +551,7 @@ test('重跑：她写的摘要不覆盖 —— summary_source=her 的事件只�
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '模型新写的摘要', keyPoints: ['新要点'], anchors: ['新锚点'] };
+    port.response = { summary: '模型新写的摘要', keyPoints: ['新要点'], anchors: ['01J0000000000000000000000A'] };
     const { log, pipeline } = makePipeline(root, port);
     log.appendVersion(
       makeEvent({
@@ -567,7 +567,7 @@ test('重跑：她写的摘要不覆盖 —— summary_source=her 的事件只�
     const current = log.currentOf('evt-1');
     assert.equal(current.summary, '她自己写的摘要', '她的摘要没被覆盖');
     assert.equal(current.summary_source, 'her', '来源仍是她');
-    assert.deepEqual(current.anchors, ['新锚点'], '锚点更新了');
+    assert.deepEqual(current.anchors, ['01J0000000000000000000000A'], '锚点更新了');
   } finally {
     cleanupTempRoot(root);
   }
@@ -579,7 +579,7 @@ test('红线：内核层不出现「消费 anchors」的写法（第一期 ancho
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '摘要', keyPoints: [], anchors: ['锚点'] };
+    port.response = { summary: '摘要', keyPoints: [], anchors: ['01J0000000000000000000000B'] };
     const { log, pipeline } = makePipeline(root, port);
     log.appendVersion(makeEvent());
 
@@ -588,7 +588,7 @@ test('红线：内核层不出现「消费 anchors」的写法（第一期 ancho
 
     // 只写不读：anchors 被写进版本，但内核不据它做任何判断。
     const current = log.currentOf('evt-1');
-    assert.deepEqual(current.anchors, ['锚点'], '锚点确实产出了');
+    assert.deepEqual(current.anchors, ['01J0000000000000000000000B'], '锚点确实产出了');
     assert.equal(current.topic_lines.length, 0, 'topic_lines 恒空');
   } finally {
     cleanupTempRoot(root);
@@ -824,7 +824,7 @@ test('溯源：重跑她写的摘要（只刷锚点）→ 两字段清空（它�
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '模型新写的摘要', keyPoints: [], anchors: ['新锚点'], model: 'dsh-pro' };
+    port.response = { summary: '模型新写的摘要', keyPoints: [], anchors: ['01J0000000000000000000000A'], model: 'dsh-pro' };
     const { log, pipeline } = makePipeline(root, port);
     log.appendVersion(
       makeEvent({
@@ -843,7 +843,7 @@ test('溯源：重跑她写的摘要（只刷锚点）→ 两字段清空（它�
     assert.equal(current.summary, '她自己写的摘要', '她的摘要没被覆盖');
     assert.equal(current.summary_prompt_version, null, '她手写的摘要不来自任何提示词');
     assert.equal(current.summary_model, null, '也不来自任何模型');
-    assert.deepEqual(current.anchors, ['新锚点'], '锚点照常重跑');
+    assert.deepEqual(current.anchors, ['01J0000000000000000000000A'], '锚点照常重跑');
   } finally {
     cleanupTempRoot(root);
   }
@@ -855,7 +855,7 @@ test('双流职责：慢路径只追加派生字段 —— 快路径写的事实
   const root = makeTempRoot();
   try {
     const port = new FakePort();
-    port.response = { summary: '她问晚餐吃什么，并自己列了三个选项。', keyPoints: ['晚餐'], anchors: ['列选项'] };
+    port.response = { summary: '她问晚餐吃什么，并自己列了三个选项。', keyPoints: ['晚餐'], anchors: ['01J0000000000000000000000C'] };
     const { log, pipeline } = makePipeline(root, port);
 
     const before = makeEvent({
@@ -921,7 +921,7 @@ test('A7 · 慢路径：候选与摘要在同一次 appendVersion 写回（≤5 
     port.response = {
       summary: '她在读一篇论文。',
       keyPoints: ['读了论文'],
-      anchors: ['论文'],
+      anchors: ['01J0000000000000000000000D'],
       boundary_candidates: [
         { kind: '话题跳转', at_pointer_id: 'exp-1', marked_at: '2026-11-08T10:05:00.000Z' },
       ],

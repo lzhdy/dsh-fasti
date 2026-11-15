@@ -9,7 +9,15 @@ import { CorruptedError, IntegrityError, NotFoundError } from '../core/errors.ts
 export class MemoryIndexStaleError extends CorruptedError {}
 
 /** 锚点解析不到真值经历 —— 悬空锚点，构建零产物（方案 §4.6 / M1）。 */
-export class MemoryAnchorDanglingError extends IntegrityError {}
+export class MemoryAnchorDanglingError extends IntegrityError {
+  /** 受控分类码：悬空锚点统一记 `anchor-not-found`（与 derive 三分口径对齐）。 */
+  readonly reason_code: string;
+
+  constructor(message: string, options?: { cause?: unknown; reasonCode?: string }) {
+    super(message, options);
+    this.reason_code = options?.reasonCode ?? 'anchor-not-found';
+  }
+}
 
 /** 候选序号越界/失效 —— 拒绝引用，禁止猜序号（方案 §4.7 / M2）。 */
 export class MemorySerialReferenceError extends NotFoundError {}

@@ -15,7 +15,6 @@
 
 import { ChannelBoundaryError, SchemaError } from '../core/errors.ts';
 import type {
-  Experience,
   ExperienceSummaryView,
   Pointer,
   RawTurnView,
@@ -83,23 +82,6 @@ const RAW_TURN_KEYS = readonlyKeys(['channel', 'shard', 'seq', 'eventId', 'rawTe
 
 function readonlyKeys<const T extends readonly string[]>(keys: T): ReadonlySet<string> {
   return new Set<string>(keys);
-}
-
-/**
- * 经历 → 摘要窄 DTO 的纯投影：只挑白名单字段，cue 缺失归一为 null。
- * 不复制 observation/action/outcome/指针/char_count/marks 等任何槽位，无 IO、可离线复现。
- */
-export function projectExperienceSummary(experience: Experience): ExperienceSummaryView {
-  return {
-    id: experience.id,
-    kind: experience.kind,
-    scene: experience.scene,
-    initiation: experience.initiation,
-    occurredAt: experience.occurred_at,
-    recordedAt: experience.recorded_at,
-    tick: experience.tick,
-    cue: experience.observation.cue ?? null,
-  };
 }
 
 /**

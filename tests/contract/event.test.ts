@@ -53,6 +53,10 @@ const PRODUCERS = [
   'src/projection/types.ts', // 投影行类型声明
   'src/event/correction.ts', // 修正层物化新事件
   'src/memory/builder.ts', // 记忆选择索引物化锚点快照（方案 §4.6③：anchor_json 取 event.anchors 快照 + 存在性回查；不做重要性判断、不写 topic_lines）
+  'src/memory/derive.ts', // 正本 §3.1/§2.3 授权的受控锚点分类/快照纯函数层：空锚三分谓词 + 期望态派生；不写 topic_lines、不做重要性判断
+  'src/memory/decision.ts', // 正本 §3.1 授权的受控决策派生纯函数层：只读 anchors 铸造 decision 行；不写 topic_lines、不做重要性判断
+  'src/memory/planner.ts', // 正本 §3.1 授权的受控规划纯函数层：只读 anchors 产出卡动作计划；不写 topic_lines、不做重要性判断
+  'src/memory/drain.ts', // 正本 §3.1 授权的受控编排层：只读 anchors 作经历身份与卡行物化，不写 topic_lines、不做重要性判断、不以锚点为检索词
 ];
 
 const here = path.dirname(fileURLToPath(import.meta.url));

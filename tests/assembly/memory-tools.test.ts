@@ -110,6 +110,9 @@ function makeFakeHandle(opts: FakeHandleOpts): RuntimeMemoryHandle {
       // 装配内核测试用独立注入的假 sink 驱动影子，假窄柄的第六方法在此不被触达，仅满足契约形状。
       return { ok: false as const, reason: 'fake-handle-uses-injected-sink' };
     },
+    async drainProjection(): Promise<never> {
+      throw new Error('drainProjection 未在该装配替身接线');
+    },
     async close(): Promise<void> {},
   };
 }

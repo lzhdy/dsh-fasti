@@ -29,12 +29,12 @@ import {
 } from '../../../src/adapters/dsh/memory-tool-bridge.ts';
 import { ChannelBoundaryError } from '../../../src/core/errors.ts';
 import {
-  projectExperienceSummary,
   type ExperienceSummaryView,
   type Pointer,
   type RawTurnLookupView,
   type SourceLookupPort,
 } from '../../../src/assembly/source-lookup.ts';
+import { projectExperienceSummary } from '../../../src/projection/types.ts';
 import { cleanupTempRoot, makeTempRoot, makeExperience } from '../../helpers.ts';
 
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');

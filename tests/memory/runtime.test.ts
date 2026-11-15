@@ -62,7 +62,8 @@ type NarrowKeys =
   | 'close'
   | 'addMissAlias'
   | 'recordMiss'
-  | 'recordShadowObservation';
+  | 'recordShadowObservation'
+  | 'drainProjection';
 type AssertAllNarrowPresent = NarrowKeys extends RtKeys ? true : false;
 type AssertNoFullHandle =
   RtKeys extends NarrowKeys
@@ -217,6 +218,7 @@ test('N13-i 委托包装对象：反射恰见六窄方法，全量柄方法名�
       assert.deepEqual(Object.keys(handle).sort(), [
         'addMissAlias',
         'close',
+        'drainProjection',
         'getCardsByAnchor',
         'recordMiss',
         'recordShadowObservation',

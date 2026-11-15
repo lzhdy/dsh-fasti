@@ -43,7 +43,6 @@ import { readJsonlFile } from '../core/jsonl.ts';
 import { parseExperience } from '../contract/validate-experience.ts';
 import type { Experience, ExperienceSummaryView, Pointer } from '../contract/experience.ts';
 import type { Action, Outcome } from '../contract/experience.ts';
-import { projectExperienceSummary } from '../assembly/source-lookup.ts';
 import type {
   AppendExperienceInput,
   ChannelVerification,
@@ -82,7 +81,7 @@ import { selectEngine } from '../projection/detect.ts';
 import { toEdgeRow } from '../projection/edge.ts';
 import { toEventProjection } from '../projection/event-row.ts';
 import { rebuildProjection } from '../projection/rebuild.ts';
-import type { ProjectionEngine } from '../projection/types.ts';
+import { projectExperienceSummary, type ProjectionEngine } from '../projection/types.ts';
 import { CheckpointStore } from '../runtime/checkpoint.ts';
 
 /**
@@ -91,6 +90,30 @@ import { CheckpointStore } from '../runtime/checkpoint.ts';
  * 首次必告警（否则等于全静默）；之后隔 100 次再说一次，免得日志被刷屏。
  */
 const PENDING_REFRESH_WARN_EVERY = 100;
+
+/**
+ * 记忆投影 drain 轮报告（门面本地结构镜像）。
+ *
+ * 纪律：本类型在 api 本地声明，**不 import memory 类型**（含 import type / 动态 import）——
+ * api→memory 零反向依赖；形状由 assembly DI 绑定时与 runtime 窄柄第七法对齐。
+ */
+export interface MemoryProjectionDrainReport {
+  readonly scannedVersions: number;
+  readonly cardUpserts: number;
+  readonly invalidations: number;
+  readonly quarantined: number;
+  readonly emptyAnchored: number;
+  readonly applied: boolean;
+  readonly skipped: 'writer-lock-held' | 'closed' | 'budget' | 'not-wired' | null;
+  readonly consecutiveFailures: number;
+  readonly rulesVersionMismatch: boolean;
+  readonly durationMs: number;
+}
+
+/** 记忆投影第七法注入端口（结构与 runtime 窄柄 `drainProjection` 同形；绑定在 assembly DI 层）。 */
+export interface MemoryProjectionDrainPort {
+  drainProjection(budgetMs: number): Promise<MemoryProjectionDrainReport>;
+}
 
 /** 打开 Fasti 的选项。 */
 export interface FastiOptions {
@@ -133,6 +156,11 @@ export interface FastiOptions {
    * 内核零依赖，日志是宿主的事。
    */
   onDiagnostic?: (level: 'warn', message: string) => void;
+  /**
+   * 记忆投影 drain 端口（第七法注入）。缺省 `null` = 未接线，门面第七法返 `not-wired` 短路、零写入；
+   * 端口由 assembly DI 绑定到 runtime 窄柄，api 层不直接构造 memory 实现。
+   */
+  memoryProjection?: MemoryProjectionDrainPort | null | undefined;
 }
 
 /**
@@ -159,6 +187,8 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
   private degradedReason = '';
   /** 宿主诊断上报（零依赖：缺省 no-op）。 */
   private readonly onDiagnostic: (level: 'warn', message: string) => void;
+  /** 记忆投影第七法注入端口；null = 未接线，门面短路 not-wired。 */
+  private memoryProjection: MemoryProjectionDrainPort | null;
   /** 「待补摘要数」读取失败次数（用于「首次 + 每 N 次」告警，不刷屏）。 */
   private pendingRefreshFailures = 0;
   /** 是否已 close —— 收尾后仍在飞的后台轮次据此早退（不碰已释放的引擎/真源）。 */
@@ -178,6 +208,7 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
   private constructor(options: FastiOptions) {
     this.env = options.env ?? process.env;
     this.onDiagnostic = options.onDiagnostic ?? (() => undefined);
+    this.memoryProjection = options.memoryProjection ?? null;
     this.layout = layoutOf(resolveDataRoot(options));
 
     ensureDir(this.layout.experiences);
@@ -249,6 +280,11 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
 
     // tick 权威 = 真源 max(tick)（决策 D-6）；检查点仅作加速。
     this.ticks = TickAllocator.fromSource(this.experienceLog.maxTick());
+
+    // 装配/测试侧经原型取方法后可能以未绑定引用调用；把这两个窄方法绑到实例，
+    // 原型面仍保留同名方法（原型探针可见），行为与绑定前一致。
+    this.drainClosure = this.drainClosure.bind(this);
+    this.drainMemoryProjection = this.drainMemoryProjection.bind(this);
   }
 
   /** 打开 Fasti（异步：需要探测投影引擎可用性）。 */
@@ -676,6 +712,58 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
       await this.syncEventProjection();
     }
     return processed;
+  }
+
+  /**
+   * 第七法：整轮记忆投影 drain（预算化，与闭合管线预算独立、互不阻断）。
+   *
+   *  - 未注入端口 → `skipped:'not-wired'`，零写入（不建投影文件、不动台账）；
+   *  - 端口抛错在门面层隔离：不冒泡给调用方、不阻断 `drainClosure`；
+   *  - api 不直接构造 memory 实现，端口由 assembly DI 绑定。
+   */
+  async drainMemoryProjection(budgetMs: number): Promise<MemoryProjectionDrainReport> {
+    if (this.closed) {
+      return this.emptyMemoryProjectionReport('closed');
+    }
+    const port = this.memoryProjection;
+    if (port === null) {
+      return this.emptyMemoryProjectionReport('not-wired');
+    }
+    try {
+      return await port.drainProjection(budgetMs);
+    } catch (error) {
+      this.onDiagnostic(
+        'warn',
+        `记忆投影 drain 本轮失败已隔离（不阻断闭合管线）：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return this.emptyMemoryProjectionReport(null);
+    }
+  }
+
+  /**
+   * 装配层后置绑定记忆投影端口（DI 只绑定函数，不编排业务）。
+   * 构造期经 `FastiOptions.memoryProjection` 注入为主；本口用于装配句柄晚于门面打开的生命周期。
+   */
+  bindMemoryProjection(port: MemoryProjectionDrainPort | null): void {
+    this.memoryProjection = port;
+  }
+
+  /** 零写入短路/隔离报告：计数全 0、未提交。 */
+  private emptyMemoryProjectionReport(
+    skipped: MemoryProjectionDrainReport['skipped'],
+  ): MemoryProjectionDrainReport {
+    return {
+      scannedVersions: 0,
+      cardUpserts: 0,
+      invalidations: 0,
+      quarantined: 0,
+      emptyAnchored: 0,
+      applied: false,
+      skipped,
+      consecutiveFailures: 0,
+      rulesVersionMismatch: false,
+      durationMs: 0,
+    };
   }
 
   /** 最近一次摘要失败（可观测性读口；环形缓冲，只留最近 100 条）。 */

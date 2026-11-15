@@ -21,7 +21,14 @@ export function deriveCardId(eventId: string, anchorIds: readonly string[]): str
   return `mc_${sha256Hex(canonical).slice(0, 32)}`;
 }
 
-/** 内容哈希：锚点+线索字段规范化后的 sha256（幂等与账本核对用）。 */
+/**
+ * 卡片内容摘要哈希（同输入面自比）：锚点快照 + 展示线索 + 别名快照 + 消歧短句的 sha256。
+ *
+ * 定位护栏（裁决 5）：本哈希**只做同一卡片四输入面的自洽/幂等核对**，
+ * 不承担卡失效（invalidation）判定，也不跨输入面比较；结构是否变化一律走
+ * `derive.ts` 的 `structuralHash`（anchors/channel/时间窗/eligibility/rules_version 六项）。
+ * 公式与签名保持不动；输入面扩面延后，待单独评估离线迁移成本。
+ */
 export function computeContentHash(
   anchorJson: string,
   displayCuesJson: string,

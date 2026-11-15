@@ -51,6 +51,8 @@ export interface AssembledMemoryRuntime {
   readonly indexReady: boolean;
   /** L6 只读下钻端口；未注入时为 null。本批只完成绑定，工具消费随通道二接线卡切换。 */
   readonly sourceLookup: SourceLookupPort | null;
+  /** 绑到 runtime 窄柄的记忆投影第七法端口；窄柄不可用时为 null（DI 只绑定，不编排业务）。 */
+  readonly memoryProjection: Pick<RuntimeMemoryHandle, 'drainProjection'> | null;
   dispose(): Promise<void>;
 }
 
@@ -190,5 +192,12 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
     }
   };
 
-  return { tools, indexReady, sourceLookup: input.sourceLookup ?? null, dispose };
+  // DI 只做绑定：把窄柄第七法原样包成端口；不自开连接、不编排投影轮次。
+  const handleRef = handle;
+  const memoryProjection: AssembledMemoryRuntime['memoryProjection'] =
+    handleRef === null
+      ? null
+      : { drainProjection: (budgetMs: number) => handleRef.drainProjection(budgetMs) };
+
+  return { tools, indexReady, sourceLookup: input.sourceLookup ?? null, memoryProjection, dispose };
 }

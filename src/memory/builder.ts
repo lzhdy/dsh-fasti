@@ -31,13 +31,14 @@ import { parseExperience } from '../contract/validate-experience.ts';
 import { IntegrityError, NotFoundError } from '../core/errors.ts';
 import { ensureDir, listFiles } from '../core/fsx.ts';
 import { readJsonlFile } from '../core/jsonl.ts';
-import { isUlid, ulid } from '../core/ulid.ts';
+import { ulid } from '../core/ulid.ts';
 import { foldCurrentEvents } from '../projection/event-row.ts';
 import { layoutOf, resolveDataRoot } from '../source/paths.ts';
 import { appendRevision, readDecisions, readRevisions } from './ledger.ts';
 import { MemoryAnchorDanglingError } from './memory-errors.ts';
 import { MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from './schema.ts';
 import { computeContentHash, deriveCardId, sha256Hex } from './content-hash.ts';
+import { classifyAnchors } from './derive.ts';
 import { aliasFromRow, syncFts } from './fts.ts';
 import {
   MEMORY_INDEX_FILE,
@@ -116,6 +117,55 @@ export function computeTruthFingerprint(dataRoot: string): TruthFingerprint {
 /** 单行规范化哈希：按 CARD_COLUMNS 列序取值（与落盘绑定值同源，不另写一份字段表）。 */
 function cardRowHash(card: MemoryCard): string {
   return sha256Hex(JSON.stringify(cardValues(card)));
+}
+
+/** drain 新卡行物化入参（期望态引用 + 经历 cue 快照；不含叙事文本生成）。 */
+export interface DrainCardRowInput {
+  readonly cardId: string;
+  readonly eventId: string;
+  readonly anchors: readonly string[];
+  readonly channel: string;
+  readonly startedMs: number;
+  readonly endedMs: number;
+  readonly cues: readonly string[];
+}
+
+/**
+ * drain 编排新卡行物化：锚点/cue/时间窗来自期望态与经历快照；卡片内容摘要哈希在本模块
+ * 计算（content_hash 生产调用面恒定 builder/alias-write 两处，编排层不直调摘要哈希）。
+ * cue 缺失时占位空线索行满足 CHECK 长度约束，不生成叙事文本。
+ */
+export function materializeDrainCardRow(input: DrainCardRowInput): MemoryCard {
+  const anchorJson = JSON.stringify([...input.anchors]);
+  const cues = [...input.cues].slice(0, 3);
+  const displayCuesJson = JSON.stringify(cues.length > 0 ? cues : ['']);
+  const aliasesJson = '[]';
+  const discriminator = '';
+  const summaryHash = computeContentHash(anchorJson, displayCuesJson, aliasesJson, discriminator);
+  return {
+    cardId: input.cardId,
+    eventId: input.eventId,
+    anchorJson,
+    channel: input.channel,
+    cardType: 'event',
+    selection: 'selected',
+    weight: 0,
+    displayCuesJson,
+    aliasesJson,
+    discriminator,
+    entityHintJson: null,
+    occurredMs: input.startedMs,
+    endedMs: input.endedMs,
+    validMs: input.startedMs,
+    invalidMs: null,
+    createdMs: input.startedMs,
+    expiredMs: null,
+    status: 'active',
+    contentHash: summaryHash,
+    hitCount: 0,
+    lastHitMs: null,
+    schemaVersion: MEMORY_SCHEMA_VERSION,
+  };
 }
 
 /** 全量行哈希聚合（§3.4 row_hash_sum）：逐行哈希排序后 join 再 sha256 → 行序无关。 */
@@ -256,18 +306,28 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
   );
 
   // ── 4. 悬空锚点校验（发生在一切写入之前 —— 零产物，M1）──
-  // 锚点必须是 26 位 ULID 且存在于真值经历全集；任一悬空即整份硬失败、零产物。
+  // 分类谓词单点实现在 derive.ts（R-11：builder 与 drain 共用同一 classifyAnchors 符号）。
+  // 既有失败姿势不变：形态缺陷 / 悬空一律整份硬失败、零产物，抛 MemoryAnchorDanglingError，
+  // 不静默跳过、不降级成隔离清单（那是 drain 运行期姿态，builder 离线构建不采用）。
+  const experienceExists = (id: string): boolean => experienceIds.has(id);
   const dangling = new Set<string>();
   for (const event of readyEvents) {
+    const classification = classifyAnchors(event.anchors, experienceExists);
+    if (classification.status === 'ok' || classification.status === 'abstain') {
+      continue;
+    }
     for (const anchor of event.anchors) {
-      if (!isUlid(anchor) || !experienceIds.has(anchor)) {
-        dangling.add(anchor);
+      // not-found 只收回查不到经历的锚点；form-invalid 整批形态都不合法，全部计入。
+      if (classification.status === 'not-found' && experienceExists(anchor)) {
+        continue;
       }
+      dangling.add(anchor);
     }
   }
   if (dangling.size > 0) {
     throw new MemoryAnchorDanglingError(
       `锚点解析不到真值经历（悬空 ${dangling.size} 个）：${[...dangling].join('、')}`,
+      { reasonCode: 'anchor-not-found' },
     );
   }
 

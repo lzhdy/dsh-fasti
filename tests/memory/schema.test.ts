@@ -296,6 +296,7 @@ export type ImportRule =
   | 'realtime-to-memory'
   | 'memory-to-facade'
   | 'memory-to-assembly'
+  | 'api-to-assembly'
   | 'assembly-denied-import'
   | 'assembly-forbidden-native'
   | 'assembly-candidate-slice';
@@ -427,6 +428,11 @@ export function findImportViolations(files: readonly ScanFile[]): ImportViolatio
     for (const spec of extractImportSpecifiers(file.text)) {
       if (inRealtime && spec.startsWith('.') && /(^|\/)memory(\/|$)/.test(spec)) {
         push(relPath, spec, 'realtime-to-memory');
+      }
+      // P-04（§4.3 DI 单向）：api 端口层不得依赖 assembly 装配层。
+      // 注意 adapters/dsh → assembly 是既有合法方向，故本门只约束 src/api/。
+      if (relPath.startsWith('src/api/') && /(^|\/)assembly(\/|$)/.test(spec)) {
+        push(relPath, spec, 'api-to-assembly');
       }
       if (inMemory) {
         if (spec.includes('/api/') || spec.endsWith('/api')) {
@@ -869,5 +875,56 @@ test('WP4b 投毒自证：内核引 @deepseek-ai/* 标红；adapters/dsh 豁免�
       'src/assembly/probe.ts:@deepseek-ai/cordis',
       'src/memory/probe.ts:@deepseek-ai/dsh-tools',
     ]);
+  });
+});
+
+// ── P-09（§4.3）：REALTIME_DIRS 恒定等于基线四目录集合，删任一项即红 ──────────
+
+test('P-09：REALTIME_DIRS 集合恒定为基线四目录（api/event/source/adapters）', () => {
+  assert.deepEqual([...REALTIME_DIRS].sort(), [
+    'src/adapters/',
+    'src/api/',
+    'src/event/',
+    'src/source/',
+  ]);
+  assert.equal(REALTIME_DIRS.length, 4, '实时链路目录不得增删');
+});
+
+// ── P-04（§4.3 DI 单向）：api 端口层对 assembly 装配层零依赖 ──────────────
+// 依赖方向只能向下：assembly → memory、adapters → assembly；api 不得反向引 assembly。
+// 全形态口径复用既有 extractImportSpecifiers（static / import type / 动态 import() /
+// re-export / 副作用 import 均入提取结果），不另造解析。
+
+test('P-04：src/api/ 对 assembly 零依赖（DI 单向，全形态提取口径）', () => {
+  const apiFiles: ScanFile[] = [];
+  for (const full of readTsFiles(path.join(REPO_ROOT, 'src/api'))) {
+    apiFiles.push({
+      relPath: path.relative(REPO_ROOT, full).split(path.sep).join('/'),
+      text: fs.readFileSync(full, 'utf8'),
+    });
+  }
+  const apiAssembly = findImportViolations(apiFiles).filter((v) => v.rule === 'api-to-assembly');
+  assert.deepEqual(
+    apiAssembly,
+    [],
+    'api 端口层不得 import assembly（装配层依赖方向只能向下，不允许反向）',
+  );
+
+  // 显式逐形态复核入口文件：提取出的 specifier 里不得残留任何 assembly 边。
+  const indexText = fs.readFileSync(path.join(REPO_ROOT, 'src/api/index.ts'), 'utf8');
+  const leaked = extractImportSpecifiers(indexText).filter((spec) =>
+    /(^|\/)assembly(\/|$)/.test(spec),
+  );
+  assert.deepEqual(leaked, [], 'src/api/index.ts 残留指向 assembly 的 import/export 边');
+});
+
+test('P-04 投毒自证：api import assembly → 标红（证明门不是恰好为空）', async () => {
+  await withTempRoot(async (root) => {
+    const file = probeFile(
+      root,
+      'src/api/probe.ts',
+      "import { x } from '../assembly/source-lookup.ts';\n",
+    );
+    assertFlagged(file, '../assembly/source-lookup.ts', 'api-to-assembly');
   });
 });

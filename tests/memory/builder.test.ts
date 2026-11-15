@@ -476,6 +476,54 @@ test('M1（无旧库）：悬空锚点 → 抛错且零产物（不创建 projec
   }
 });
 
+test('M1 分类码：悬空锚点错误带 reason_code="anchor-not-found"，姿态不变（整份抛、零产物）', async () => {
+  const t = makeTruth();
+  try {
+    const seeded = cardFor(t.eventA, ['线索甲'], [], '区别于乙', T0);
+    await seedIndex(t.root, [seeded], T0);
+    const indexDir = indexDirOf(t.root);
+    const revisionsFile = path.join(indexDir, 'revisions.jsonl');
+    const revisionsBefore = fs.readFileSync(revisionsFile, 'utf8');
+
+    // 删掉 e1 经历行 → eventA 锚点悬空（同既有 M1 夹具）。
+    const shard = path.join(t.root, 'experiences', '2026-11.jsonl');
+    const lines = fs.readFileSync(shard, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    const kept = lines.filter((l) => !(JSON.parse(l) as { id: string }).id.includes(t.e1));
+    fs.writeFileSync(shard, `${kept.join('\n')}\n`, 'utf8');
+
+    let captured: unknown;
+    await assert.rejects(
+      buildMemoryIndex({ dataRoot: t.root, dryRun: false, nowMs: T0 + DAY }),
+      (error: unknown) => {
+        captured = error;
+        return error instanceof MemoryAnchorDanglingError;
+      },
+    );
+    const dangling = captured as MemoryAnchorDanglingError & { reason_code?: unknown };
+    assert.equal(
+      dangling.reason_code,
+      'anchor-not-found',
+      '悬空错误对象须带受控分类码 reason_code',
+    );
+
+    // 姿态不变：仍整份硬失败、零产物（不静默跳过、不降级隔离清单）。
+    assert.equal(fs.readFileSync(revisionsFile, 'utf8'), revisionsBefore, '失败不得增账本行');
+    assert.equal(
+      listTree(indexDir).some((f) => f.startsWith(`${MEMORY_INDEX_FILE}.tmp-`)),
+      false,
+      '失败不得残留 tmp',
+    );
+    const read = openMemoryRead({ indexDir });
+    try {
+      assert.ok(read.getCard(seeded.card.cardId), '旧库必须仍可正常打开');
+    } finally {
+      await read.close();
+    }
+  } finally {
+    cleanupTempRoot(t.root);
+  }
+});
+
 // ── M3：指纹过期 ──────────────────────────────────────────────────────────
 
 test('M3：改一个真值字节后不重新 stamp → verifyStampedFingerprint 抛 MemoryIndexStaleError', async () => {
