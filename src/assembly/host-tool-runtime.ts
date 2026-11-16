@@ -59,7 +59,7 @@ export interface AssembledMemoryRuntime {
   /** 绑到 runtime 窄柄的记忆投影第七法端口；窄柄不可用时为 null（DI 只绑定，不编排业务）。 */
   readonly memoryProjection: Pick<RuntimeMemoryHandle, 'drainProjection'> | null;
   /**
-   * 影子回放只写观测端口（离线题库回放 / 网页监控用，独立于模型可见的六工具）：
+   * #121 影子观测端口（装配面只写口；离线题库回放 / 网页监控用，独立于模型可见的六工具）：
    * 跑一次与 on 态同参的门并旁路落一条影子观测，不建卡、不写 mem_miss、不返回召回。
    * 与 mode 解耦、仅在显式调用时触发（无任何自动跑门）；`atMs` 必填由调用方给定回放时间，
    * 内核不读系统时钟；窄柄未就绪（indexReady=false）时静默不写、不抛。

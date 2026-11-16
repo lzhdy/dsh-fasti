@@ -320,7 +320,7 @@ test('GatedStatus 三态观测口径：空查询在 on 态归 no-match/empty-que
   assert.equal(view.cards.length, 0);
 });
 
-// ── 影子回放只写观测端口 observeShadowOnce（离线回放/监控用，与 gate mode 解耦） ────
+// ── #121 影子观测端口 observeShadowOnce（离线回放/监控用，与 gate mode 解耦） ────
 
 const REPLAY_AT = NOW - 5 * 24 * 3600 * 1000;
 

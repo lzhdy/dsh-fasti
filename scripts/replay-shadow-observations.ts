@@ -1,9 +1,9 @@
 /**
- * 离线影子回放 CLI（影子回放观测端口的第一个调用方）。
+ * #121 离线影子回放 CLI（影子观测端口的第一个调用方）。
  *
  * 读题库 JSONL，逐条调装配面 `rt.observeShadow({ text, atMs, limit })`，把无原文影子观测
  * 追加到 `<数据根>/projection/memory-shadow/shadow-observations.jsonl`。脚本自身不做任何门裁决、
- * 不复刻字段，全部经 影子回放端口同一份实现，保证离线样本与线上 shadow 工具口径零漂移。
+ * 不复刻字段，全部经 #121 观测端口同一份实现，保证离线样本与线上 shadow 工具口径零漂移。
  *
  * 安全纪律（继承 build/audit CLI）：
  *  - --data-root / --questions 必填，缺省或参数非法打印用法并 exit 2；

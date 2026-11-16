@@ -293,7 +293,7 @@ test('WP4b 装配工厂：返回对象满足装配面契约（四方法可读、
   }
 });
 
-test('影子回放装配端口 observeShadow：off 态显式调用也旁路落盘，observedMs 用回放时间且与 mode 解耦', async () => {
+test('#121 装配端口 observeShadow：off 态显式调用也旁路落盘，observedMs 用回放时间且与 mode 解耦', async () => {
   const root = makeTempRoot('wp4b-observe-');
   try {
     const indexDir = seedOneCard(root);
