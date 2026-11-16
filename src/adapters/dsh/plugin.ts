@@ -89,7 +89,7 @@ export interface DshAdapterConfig {
    * 记忆门三态开关；缺省 'off'。
    *
    *  - 'off'（默认）：不注册任何记忆工具，线上召回路径与现状完全一致（零变化）；
-   *  - 'shadow'：注册四工具，但检索主返回仍走旧路，仅旁路落无原文影子观测用于灰度比对；
+   *  - 'shadow'：注册六工具（通道一四件套＋通道二回查两件套），检索主返回仍走旧路，仅旁路落无原文影子观测用于灰度比对；
    *  - 'on'：门裁决生效，召回以窄柄门结果为准。
    *
    * 切到 'shadow'/'on' 属 Q3 显式授权动作，运行期不得自行翻转。
@@ -387,7 +387,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
 
     // 真机约束（cordis 4.0.5）：tools 是受 inject 保护的服务，未声明依赖直接读 ctx.tools
     // 会抛 "cannot get property tools without inject"。故仅在非 off 时用**动态可选注入**取服务：
-    //  - 宿主提供 tools：授权子 fiber 回调内按门模式接线（shadow/on 才真正注册四工具）；
+    //  - 宿主提供 tools：授权子 fiber 回调内按门模式接线（shadow/on 才真正注册六工具：通道一四件套＋通道二两件套）；
     //  - 宿主无 tools：该子 fiber 等待依赖、回调静默不触发，主适配器（开库/摄入/影子）照常运行，
     //    等价既有「弱宿主安全跳过」契约；不使用静态必需注入，以免缺服务时整个插件被挡在门外。
     let memoryWiring: MemoryWiring | null = null;
