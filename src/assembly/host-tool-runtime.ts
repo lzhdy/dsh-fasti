@@ -32,6 +32,12 @@ import type {
 export interface OpenAssembledMemoryToolsInput {
   /** 记忆索引目录（.../projection/memory-index），由宿主用其路径门面拼好后传入。 */
   readonly indexDir: string;
+  /**
+   * 事件真源数据根（#122）：第七法 drain 经此只读折叠 experiences/events 物化新卡。
+   * 缺省时 readSource 折叠集为空、drain 为真实空轮（零写入、零报错）；离线影子回放与纯观测只读
+   * 索引、不跑真源建卡，因此可不传。运行期 worker 建卡必须由宿主经插件→桥接把数据根递到这里。
+   */
+  readonly dataRoot?: string;
   readonly mode: MemoryGateMode;
   /** 注入时钟；宿主侧默认 () => Date.now()，测试可固定。 */
   readonly now: () => number;
@@ -154,7 +160,11 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
   let indexReady = false;
   try {
     handle = openMemoryRuntime(
-      { indexDir: input.indexDir },
+      {
+        indexDir: input.indexDir,
+        // #122：把事件真源数据根透传给窄柄；缺省不传时窄柄按 null 处理为真实空轮（回放/观测路径）。
+        ...(input.dataRoot === undefined ? {} : { dataRoot: input.dataRoot }),
+      },
       input.onMissRetentionWarning === undefined
         ? undefined
         : { onMissRetentionWarning: input.onMissRetentionWarning },

@@ -57,6 +57,11 @@ export interface DshMemoryBridge {
 
 export interface OpenDshMemoryBridgeInput {
   readonly indexDir: string;
+  /**
+   * 事件真源数据根（#122）：透传给装配面，供第七法 drain 只读折叠真源建卡。
+   * 缺省 drain 为真实空轮；离线回放/纯观测只读索引时可不传。
+   */
+  readonly dataRoot?: string;
   readonly mode: MemoryGateMode;
   /**
    * L6 注入的通道名（#115 E.5）：取自 plugin 已校验的 config.channel，桥接层不内置默认值；
@@ -90,6 +95,7 @@ function envelopeFail(code: string, message: string): string {
 export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryBridge {
   const runtime = openAssembledMemoryTools({
     indexDir: input.indexDir,
+    ...(input.dataRoot === undefined ? {} : { dataRoot: input.dataRoot }),
     mode: input.mode,
     now: input.now ?? (() => Date.now()),
     missChannel: input.channel,
@@ -363,6 +369,8 @@ export interface WireMemoryToolsInput {
   readonly registry: DshToolRegistry | null;
   readonly mode: MemoryGateMode;
   readonly indexDir: string;
+  /** #122 事件真源数据根：透传至桥接/装配供第七法 drain 折叠真源建卡；缺省为真实空轮。 */
+  readonly dataRoot?: string;
   /** L6 通道名（#115 E.5）：plugin 传入 config.channel，逐层原样透传至落空台账。 */
   readonly channel: string;
   /** L6 只读下钻端口（#114 E.4.1）；透传至桥接与装配层，缺省 null。 */
@@ -409,6 +417,7 @@ export function wireMemoryTools(input: WireMemoryToolsInput): MemoryWiring {
 
   const bridge = openDshMemoryBridge({
     indexDir: input.indexDir,
+    ...(input.dataRoot === undefined ? {} : { dataRoot: input.dataRoot }),
     mode: input.mode,
     channel: input.channel,
     ...(input.sourceLookup === undefined ? {} : { sourceLookup: input.sourceLookup }),

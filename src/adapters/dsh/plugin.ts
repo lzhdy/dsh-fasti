@@ -399,6 +399,9 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           registry: resolveToolRegistry(toolCtx),
           mode: gateMode,
           indexDir: path.join(fasti.paths.projection, 'memory-index'),
+          // #122：第七法 drain 只读折叠真源所需的数据根；取门面已解析的布局根（比可选 config.dataRoot 可靠），
+          // 缺这一截会让运行期 worker 每轮 readSource 空集、永久空轮建不出首张卡。
+          dataRoot: fasti.paths.root,
           // #115 E.5：落空台账通道名复用上方已做非空校验的同一 channel 变量，全链路唯一默认值在本文件。
           channel,
           // L6 注入只读下钻端口（#114 E.4.1／#115 通道闸）：第二参盖章本通道，

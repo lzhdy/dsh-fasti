@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
 
@@ -28,6 +29,8 @@ import {
   type DshToolRegistry,
 } from '../../../src/adapters/dsh/memory-tool-bridge.ts';
 import { ChannelBoundaryError } from '../../../src/core/errors.ts';
+import { appendJsonl } from '../../../src/core/jsonl.ts';
+import { EVENT_SCHEMA_VERSION, type EventRecord } from '../../../src/contract/event.ts';
 import {
   type ExperienceSummaryView,
   type Pointer,
@@ -795,6 +798,103 @@ test('#115 B9：端口返 null（查无/异通道按未找到）时回 not-found
     assert.equal(result.error?.code, 'not-found');
     assert.equal(result.data, undefined);
     await bridge.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+// ── #122 接线透传：插件实际链路 wireMemoryTools→桥接→装配 的 dataRoot 建卡回归 ──
+
+const BRIDGE_DRAIN_EXP = '01J0000000000000000000000A';
+
+async function seedDrainRootViaBridge(root: string): Promise<string> {
+  const indexDir = path.join(root, 'projection', 'memory-index');
+  const at = new Date(T0).toISOString();
+  appendJsonl(
+    path.join(root, 'experiences', '2026-11.jsonl'),
+    makeExperience({ id: BRIDGE_DRAIN_EXP, tick: 0, occurred_at: at, recorded_at: at, observation: { cue: '季度复盘会议改到周三' } }),
+  );
+  const event = {
+    id: 'evt-bridge-drain-1',
+    schema_version: EVENT_SCHEMA_VERSION,
+    version: 1,
+    status: 'closed',
+    closed_reason: 'silence',
+    pointers: [{ id: BRIDGE_DRAIN_EXP }],
+    time_range: { started_at: at, ended_at: at },
+    assembled_at: at,
+    summary: '客观摘要（测试阅读，不进卡）',
+    key_points: [],
+    anchors: [BRIDGE_DRAIN_EXP],
+    topic_lines: [],
+    summary_quality: 'ready',
+    summary_source: 'llm',
+    summary_prompt_version: null,
+    summary_model: null,
+    effective_chars: null,
+    raw_chars: null,
+    created_by: 'system',
+    created_at: at,
+    channel: 'dsh',
+    boundary_candidates: [],
+  } as EventRecord;
+  appendJsonl(path.join(root, 'events', '2026-11.jsonl'), event);
+  const revision: RevisionRecord = {
+    revision: 1,
+    slug: 'build',
+    at_ms: T0,
+    schema_version: 1,
+    truth_fingerprint: 'fp-bridge-drain-122',
+    prior_revision: null,
+    card_count: 0,
+    alias_count: 0,
+    row_hash_sum: 'rh-bridge-drain-122',
+    shadow_diff: { added: 0, removed: 0, changed: 0 },
+    reason: 'test fixture',
+    operator: 'offline-cli',
+  };
+  const writer = openMemoryWrite({ indexDir });
+  try {
+    writer.transactionApply({ cards: [], aliases: [] }, revision, []);
+  } finally {
+    await writer.close();
+  }
+  return indexDir;
+}
+
+function countCardsViaBridge(indexDir: string): number {
+  const db = new DatabaseSync(path.join(indexDir, MEMORY_INDEX_FILE), { readOnly: true });
+  try {
+    return (db.prepare('SELECT COUNT(*) AS n FROM mem_card').get() as { n: number }).n;
+  } finally {
+    db.close();
+  }
+}
+
+test('#122 接线透传：wireMemoryTools 注入 dataRoot 后第七法端口 drain 折叠真源建卡（插件完整链回归）', async () => {
+  const root = makeTempRoot('wp4b-wire-drain-');
+  try {
+    const indexDir = await seedDrainRootViaBridge(root);
+    const fake = makeFakeRegistry();
+    const wiring = wireMemoryTools({
+      registry: fake.registry,
+      mode: 'shadow',
+      indexDir,
+      now: NOW,
+      channel: 'dsh',
+      dataRoot: root,
+    });
+    try {
+      assert.equal(wiring.registered, true);
+      assert.ok(wiring.memoryProjection, '桥接须暴露非 null 第七法 drainProjection 端口');
+      const before = countCardsViaBridge(indexDir);
+      const report = await wiring.memoryProjection!.drainProjection(60_000);
+      assert.ok(Number(report.cardUpserts) >= 1, `完整接线链注入 dataRoot 后应建卡：${JSON.stringify(report)}`);
+      assert.equal(report.skipped, null);
+      assert.equal(countCardsViaBridge(indexDir), before + 1);
+    } finally {
+      await wiring.dispose();
+    }
   } finally {
     cleanupTempRoot(root);
   }

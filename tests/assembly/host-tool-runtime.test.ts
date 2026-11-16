@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 
 import { computeContentHash } from '../../src/memory/builder.ts';
 import { openMemoryRuntime } from '../../src/memory/runtime.ts';
@@ -26,7 +27,9 @@ import {
   type HostCardView,
 } from '../../src/assembly/host-tool-runtime.ts';
 import { UnavailableError } from '../../src/core/errors.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { appendJsonl } from '../../src/core/jsonl.ts';
+import { EVENT_SCHEMA_VERSION, type EventRecord } from '../../src/contract/event.ts';
+import { cleanupTempRoot, makeExperience, makeTempRoot } from '../helpers.ts';
 
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
 const DAY = 24 * 3600 * 1000;
@@ -366,3 +369,164 @@ test('影子回放装配面契约：observeShadow 为装配面函数，且不混
 
 // 仅引用 openMemoryRuntime 以保持与窄柄同源夹具的显式依赖说明（类型/用途对照）。
 void openMemoryRuntime;
+
+// ── #122 装配 dataRoot 透传：第七法 drain 真机建卡断口回归 ───────────────────
+
+const DRAIN_EXP_ID = '01J0000000000000000000000A';
+
+/** 在临时根写 1 条经历 + 1 个 closed/ready 事件，再建空白投影（revision 1、零卡）。 */
+async function seedReadyRootForDrain(
+  root: string,
+  observation: unknown = { cue: '季度复盘会议改到周三' },
+): Promise<string> {
+  const indexDir = path.join(root, 'projection', 'memory-index');
+  const at = new Date(T0).toISOString();
+  appendJsonl(
+    path.join(root, 'experiences', '2026-11.jsonl'),
+    makeExperience({
+      id: DRAIN_EXP_ID,
+      tick: 0,
+      occurred_at: at,
+      recorded_at: at,
+      observation: observation as never,
+    }),
+  );
+  const event = {
+    id: 'evt-drain-1',
+    schema_version: EVENT_SCHEMA_VERSION,
+    version: 1,
+    status: 'closed',
+    closed_reason: 'silence',
+    pointers: [{ id: DRAIN_EXP_ID }],
+    time_range: { started_at: at, ended_at: at },
+    assembled_at: at,
+    summary: '客观摘要（测试阅读，不进卡）',
+    key_points: [],
+    anchors: [DRAIN_EXP_ID],
+    topic_lines: [],
+    summary_quality: 'ready',
+    summary_source: 'llm',
+    summary_prompt_version: null,
+    summary_model: null,
+    effective_chars: null,
+    raw_chars: null,
+    created_by: 'system',
+    created_at: at,
+    channel: 'dsh',
+    boundary_candidates: [],
+  } as EventRecord;
+  appendJsonl(path.join(root, 'events', '2026-11.jsonl'), event);
+  const revision: RevisionRecord = {
+    revision: 1,
+    slug: 'build',
+    at_ms: T0,
+    schema_version: 1,
+    truth_fingerprint: 'fp-drain-122',
+    prior_revision: null,
+    card_count: 0,
+    alias_count: 0,
+    row_hash_sum: 'rh-drain-122',
+    shadow_diff: { added: 0, removed: 0, changed: 0 },
+    reason: 'test fixture',
+    operator: 'offline-cli',
+  };
+  const writer = openMemoryWrite({ indexDir });
+  try {
+    writer.transactionApply({ cards: [], aliases: [] }, revision, []);
+  } finally {
+    await writer.close();
+  }
+  return indexDir;
+}
+
+function countMemoryCards(indexDir: string): number {
+  const db = new DatabaseSync(path.join(indexDir, MEMORY_INDEX_FILE), { readOnly: true });
+  try {
+    return (db.prepare('SELECT COUNT(*) AS n FROM mem_card').get() as { n: number }).n;
+  } finally {
+    db.close();
+  }
+}
+
+test('#122 装配 dataRoot 透传：注入 dataRoot 后第七法 drain 折叠真源 ready 事件建出卡', async () => {
+  const root = makeTempRoot('wp4b-drain-root-');
+  try {
+    const indexDir = await seedReadyRootForDrain(root);
+    assert.equal(countMemoryCards(indexDir), 0);
+    const rt = openAssembledMemoryTools({
+      indexDir,
+      mode: 'off',
+      now: () => T0,
+      missChannel: 'dsh',
+      dataRoot: root,
+    });
+    try {
+      assert.ok(rt.memoryProjection, '装配面须暴露第七法 drainProjection 端口');
+      const report = await rt.memoryProjection!.drainProjection(60_000);
+      assert.ok(Number(report.cardUpserts) >= 1, `注入 dataRoot 后应折叠真源建卡：${JSON.stringify(report)}`);
+      assert.equal(report.skipped, null, '注入 dataRoot 后应为正常轮而非短路');
+      assert.equal(countMemoryCards(indexDir), 1);
+    } finally {
+      await rt.dispose();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#122 回归：不传 dataRoot 时第七法为真实空轮（零卡、applied=false），离线回放/观测路径不受影响', async () => {
+  const root = makeTempRoot('wp4b-drain-noroot-');
+  try {
+    const indexDir = await seedReadyRootForDrain(root);
+    const rt = openAssembledMemoryTools({ indexDir, mode: 'off', now: () => T0, missChannel: 'dsh' });
+    try {
+      assert.ok(rt.memoryProjection, '装配面仍须暴露第七法端口');
+      const report = await rt.memoryProjection!.drainProjection(60_000);
+      assert.equal(Number(report.cardUpserts), 0);
+      assert.equal(report.applied, false);
+      assert.equal(countMemoryCards(indexDir), 0, '缺省无 dataRoot 时读不到真源，不得侧建任何卡');
+    } finally {
+      await rt.dispose();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#122 真机形状：经历 observation 仅 text 指针、无 cue 时 drain 仍建 active 卡，线索落空占位 [""] 且不杜撰叙事文本', async () => {
+  const root = makeTempRoot('wp4b-drain-nocue-');
+  try {
+    // 真根 dialogue 经历实测形状：observation={text:{id,channel,shard,seq}}，不含 cue 键。
+    const indexDir = await seedReadyRootForDrain(root, {
+      text: { id: 'rt-turn-1', channel: 'dsh', shard: '2026-11', seq: 1 },
+    });
+    const rt = openAssembledMemoryTools({
+      indexDir,
+      mode: 'off',
+      now: () => T0,
+      missChannel: 'dsh',
+      dataRoot: root,
+    });
+    try {
+      const report = await rt.memoryProjection!.drainProjection(60_000);
+      assert.equal(Number(report.cardUpserts), 1, '无 cue 不影响建卡资格，卡仍须物化');
+      const db = new DatabaseSync(path.join(indexDir, MEMORY_INDEX_FILE), { readOnly: true });
+      try {
+        const row = db.prepare('SELECT status, display_cues_json AS cues, discriminator FROM mem_card').get() as {
+          status: string;
+          cues: string;
+          discriminator: string;
+        };
+        assert.equal(row.status, 'active');
+        assert.equal(row.cues, JSON.stringify(['']), '无 cue 时落空线索占位行，不得编造文本');
+        assert.equal(row.discriminator, '');
+      } finally {
+        db.close();
+      }
+    } finally {
+      await rt.dispose();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
