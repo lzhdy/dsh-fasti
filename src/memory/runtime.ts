@@ -18,6 +18,8 @@ import { buildSkippedDrainReport, classifyDrainSkip, runDrainRound } from './dra
 import type { DecisionVersionContext } from './decision.ts';
 import type { DrainRoundReport, DrainSkipContext } from './drain.ts';
 import { openShadowObservationSink } from './shadow-write.ts';
+import { MISS_RETENTION_TMP_POLICY } from './miss-retention.ts';
+import { missSentinelMessage } from './miss-sentinel.ts';
 import type { RecordShadowOutcome, ShadowObservationInput } from './shadow-write.ts';
 import { openMemoryRuntimeBackend } from './store.ts';
 import type { StorePaths } from './store.ts';
@@ -64,8 +66,18 @@ export interface RuntimeMemoryHandle {
  * 打开运行期窄柄。库不存在透传 NotFoundError（Q3 只开不建）；写单例被离线任务占用时后端降级只读，
  * 读方法照常、写方法抛 UnavailableError，不与离线构建抢锁。
  */
-export function openMemoryRuntime(paths: StorePaths): RuntimeMemoryHandle {
-  const backend = openMemoryRuntimeBackend(paths);
+export function openMemoryRuntime(
+  paths: StorePaths,
+  options?: { readonly onMissRetentionWarning?: (message: string) => void },
+): RuntimeMemoryHandle {
+  const backend = openMemoryRuntimeBackend(paths, {
+    missSentinel: {
+      hardCapK: MISS_RETENTION_TMP_POLICY.hardCapK,
+      ...(options?.onMissRetentionWarning === undefined
+        ? {}
+        : { onWarn: (warning) => options.onMissRetentionWarning!(missSentinelMessage(warning)) }),
+    },
+  });
   // N16 影子写面独立于 sqlite 后端：构造期不建目录、不占写单例，只读降级下仍可写。
   const shadowSink = openShadowObservationSink(paths.indexDir);
   // 关停态：close() 后置位，第七法据此判 `closed` 短路（不触碰已关闭的读连接）。
@@ -133,6 +145,11 @@ export function openMemoryRuntime(paths: StorePaths): RuntimeMemoryHandle {
         writer: backend.writer,
         budgetMs,
         consecutiveFailures,
+        // #117 3.2：drain 主触发留存维护，策略取段一临时值（asOfMs 每轮注入真实时钟）。
+        missRetention: {
+          ...MISS_RETENTION_TMP_POLICY,
+          asOfMs: Date.now(),
+        },
       });
       consecutiveFailures = report.consecutiveFailures;
       return report;

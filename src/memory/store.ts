@@ -29,6 +29,12 @@ import { aliasFromRow, cueTextOf, syncFts } from './fts.ts';
 import { appendDecision, appendRevision, readRevisions, validateRevisionChain } from './ledger.ts';
 import { MemoryIndexStaleError } from './memory-errors.ts';
 import { insertMissRow } from './miss.ts';
+import { pruneMissRows } from './miss-prune.ts';
+import type { MissPruneOutcome } from './miss-prune.ts';
+import { createMissSentinel } from './miss-sentinel.ts';
+import type { MissSentinel, MissSentinelOptions, MissSentinelSnapshot } from './miss-sentinel.ts';
+import { MISS_RETENTION_TMP_POLICY } from './miss-retention.ts';
+import type { MissRetentionPolicy } from './miss-retention.ts';
 import { MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from './schema.ts';
 import {
   CURRENT_RULES_VERSION,
@@ -114,6 +120,11 @@ export interface AddMissAliasRequest {
   versionContext?: DecisionVersionContext | undefined;
 }
 
+/** 写柄打开选项（#117 哨兵注入；缺省用段一临时硬顶、无告警回调）。 */
+export interface OpenMemoryWriteOptions {
+  readonly missSentinel?: MissSentinelOptions;
+}
+
 /** 写柄 —— 仅 builder 脚本可实例化（方案 §4.3）。 */
 export interface MemoryWriteHandle extends MemoryInternalReadHandle {
   /** meta stamp：写 schema_meta.stamped_revision / truth_fingerprint（§3.4）。 */
@@ -132,6 +143,13 @@ export interface MemoryWriteHandle extends MemoryInternalReadHandle {
   addMissAlias(request: AddMissAliasRequest): ApplyMissAliasOutcome;
   /** 审计落库（§4.10/I1-A）：单事务写 1 条 run 与其 items，委托 audit/metrics.ts 低层。 */
   writeAuditRun(run: AuditRunRecord, items: AuditItemRecord[]): void;
+  /**
+   * 漏召观测留存维护（#117 3.2 第 1 件）：**不搭 transactionApply 的便车**。
+   * 未越界零写事务；越界时台账先行 → fsync → 独立删除事务。纯函数裁决在 miss-retention.ts。
+   */
+  pruneMisses(policy: MissRetentionPolicy): MissPruneOutcome;
+  /** 哨兵快照（诊断/测试）：估算行数、阈值、是否已告警。 */
+  missSentinelSnapshot(): MissSentinelSnapshot;
 }
 
 /** 库文件名（与 fasti.sqlite、l2/ 平级隔离，§3.1）。 */
@@ -395,10 +413,27 @@ class ReadHandle implements MemoryReadHandle, MemoryInternalReadHandle {
 /** 写柄实现（读写打开 + 建表 + meta stamp）。 */
 class WriteHandle extends ReadHandle implements MemoryWriteHandle {
   private readonly indexDir: string;
+  /** #117 3.2 第 3 件：漏召台账行数哨兵（打开时播种，之后写入递增；每进程只告警一次）。 */
+  private readonly missSentinel: MissSentinel;
 
-  constructor(indexDir: string, file: string, db: DatabaseSync) {
+  constructor(
+    indexDir: string,
+    file: string,
+    db: DatabaseSync,
+    sentinelOptions: MissSentinelOptions = { hardCapK: MISS_RETENTION_TMP_POLICY.hardCapK },
+  ) {
     super(file, db);
     this.indexDir = indexDir;
+    this.missSentinel = createMissSentinel(sentinelOptions);
+    this.missSentinel.reseed(this.countMissRows());
+  }
+
+  /** 播种口径：只读 `COUNT(*)`，不扫表、不进事务。 */
+  private countMissRows(): number {
+    const row = this.require().prepare('SELECT COUNT(*) AS n FROM mem_miss').get() as
+      | { n: number }
+      | undefined;
+    return Number(row?.n ?? 0);
   }
 
   stampRevision(revision: RevisionRecord): void {
@@ -463,6 +498,13 @@ class WriteHandle extends ReadHandle implements MemoryWriteHandle {
 
   recordMiss(input: MissObservationInput): void {
     insertMissRow(this.require(), input);
+    // 仅成功落行才递增：写失败不应虚增估算值。
+    this.missSentinel.onAppend();
+  }
+
+  /** 哨兵快照（诊断/测试用；不暴露写能力）。 */
+  missSentinelSnapshot(): MissSentinelSnapshot {
+    return this.missSentinel.snapshot();
   }
 
   addMissAlias(request: AddMissAliasRequest): ApplyMissAliasOutcome {
@@ -526,6 +568,15 @@ class WriteHandle extends ReadHandle implements MemoryWriteHandle {
     }
   }
 
+  pruneMisses(policy: MissRetentionPolicy): MissPruneOutcome {
+    const outcome = pruneMissRows(this.require(), this.indexDir, policy);
+    // 裁剪后重校准：否则估算值会一直停在裁剪前的高位，哨兵永久闭麦。
+    if (outcome.applied) {
+      this.missSentinel.reseed(outcome.kept);
+    }
+    return outcome;
+  }
+
   override async close(): Promise<void> {
     await super.close();
     writeHandles.delete(this.indexDir);
@@ -580,13 +631,16 @@ export interface MemoryRuntimeBackend {
  * 2. 库存在才尝试写柄（CREATE TABLE IF NOT EXISTS 对既有库为幂等 no-op，不改 schema）；
  * 3. 写单例被占用（ConflictError）时回退只读连接，writable=false，由窄柄把写调用转为 UnavailableError。
  */
-export function openMemoryRuntimeBackend(paths: StorePaths): MemoryRuntimeBackend {
+export function openMemoryRuntimeBackend(
+  paths: StorePaths,
+  options?: OpenMemoryWriteOptions,
+): MemoryRuntimeBackend {
   const file = dbFileOf(paths);
   if (!exists(file)) {
     throw new NotFoundError(`记忆索引库不存在，运行期窄柄只开不建：${file}`);
   }
   try {
-    const writer = openMemoryWrite(paths);
+    const writer = openMemoryWrite(paths, options);
     return { writable: true, reader: writer, writer };
   } catch (error) {
     if (!(error instanceof ConflictError)) {
@@ -601,7 +655,7 @@ export function openMemoryRuntimeBackend(paths: StorePaths): MemoryRuntimeBacken
  * 建表在事务内执行 CREATE TABLE IF NOT EXISTS（重开幂等）；
  * 同目录二次打开抛 ConflictError（进程内单例，防双写，§11.2）。
  */
-export function openMemoryWrite(paths: StorePaths): MemoryWriteHandle {
+export function openMemoryWrite(paths: StorePaths, options?: OpenMemoryWriteOptions): MemoryWriteHandle {
   const indexDir = path.resolve(paths.indexDir);
   if (writeHandles.has(indexDir)) {
     throw new ConflictError(`记忆索引写柄已存在（进程内单例）：${indexDir}`);
@@ -632,7 +686,7 @@ export function openMemoryWrite(paths: StorePaths): MemoryWriteHandle {
     throw new UnavailableError(`无法打开记忆索引库：${file}`, { cause: error });
   }
 
-  const handle = new WriteHandle(indexDir, file, db);
+  const handle = new WriteHandle(indexDir, file, db, options?.missSentinel);
   writeHandles.set(indexDir, handle);
   return handle;
 }

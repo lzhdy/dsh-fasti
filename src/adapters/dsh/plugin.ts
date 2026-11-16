@@ -405,6 +405,8 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           // 门面结构满足 SourceLookupFacade，装配层不反向 import 门面。
           sourceLookup: createSourceLookupPort(fasti, { channel }),
           log: (message) => ctx.logger.warn('%s %s', LOG_PREFIX, message),
+          // #117 哨兵：跨过硬顶 70% 那一刻告警一次（走同一条宿主日志通道，不新增输出面）。
+          onMissRetentionWarning: (message) => ctx.logger.warn('%s %s', LOG_PREFIX, message),
         });
         memoryWiring = wiring;
         // DI 绑定：把装配运行面的第七法端口挂到门面（端口未就绪时为 null，门面短路 not-wired）。

@@ -16,7 +16,7 @@ import { IntegrityError } from '../core/errors.ts';
 import { ulid } from '../core/ulid.ts';
 import type { MissObservationInput } from './types.ts';
 
-/** 入参白名单六字段（方案 §4.9；运行时键集超出即拒）。 */
+/** 入参白名单七字段（方案 §4.9 + #117 N-1；运行时键集超出即拒）。 */
 const MISS_INPUT_KEYS: readonly string[] = [
   'termNorm',
   'channel',
@@ -24,10 +24,14 @@ const MISS_INPUT_KEYS: readonly string[] = [
   'anchorIds',
   'returnedCount',
   'observedMs',
+  'gateStatus',
 ];
 
+/** 门裁决状态合法取值（与 mem_miss.gate_status CHECK 约束同源）。 */
+const MISS_GATE_STATUSES: readonly string[] = ['no-match', 'abstain'];
+
 const INSERT_MISS_SQL =
-  'INSERT INTO mem_miss(id, term_norm, term_hash, channel, anchor_event_id, anchor_json, returned_count, observed_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+  'INSERT INTO mem_miss(id, term_norm, term_hash, channel, anchor_event_id, anchor_json, returned_count, observed_ms, gate_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
 
 /** term_hash = sha256(termNorm) 的 hex（全仓统一哈希口径，H11）。 */
 export function computeMissTermHash(termNorm: string): string {
@@ -74,6 +78,12 @@ export function validateMissInput(input: MissObservationInput): void {
   ) {
     throw new IntegrityError('漏召观测 observedMs 必须是非负有限数');
   }
+  if (
+    typeof input.gateStatus !== 'string' ||
+    !MISS_GATE_STATUSES.includes(input.gateStatus)
+  ) {
+    throw new IntegrityError("漏召观测 gateStatus 必须是 'no-match' 或 'abstain'");
+  }
 }
 
 /**
@@ -95,6 +105,7 @@ export function insertMissRow(db: DatabaseSync, input: MissObservationInput): st
     anchorJson,
     input.returnedCount,
     input.observedMs,
+    input.gateStatus,
   );
   return id;
 }

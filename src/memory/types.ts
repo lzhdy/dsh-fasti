@@ -94,7 +94,7 @@ export interface CardChangeSet {
 }
 
 /**
- * 漏召观测入参 —— 白名单字段（方案 §4.9）。
+ * 漏召观测入参 —— 白名单字段（方案 §4.9 + #117 外审 N-1）。
  *
  * 类型里不存在任何原始查询文本字段；term_hash 由函数内部计算。
  */
@@ -105,11 +105,21 @@ export interface MissObservationInput {
   anchorEventId: string | null;
   /** 上下文经历 id 快照，可空。 */
   anchorIds: readonly string[] | null;
-  /** 当次检索返回数（0=纯漏召）。 */
+  /** 当次检索返回数（0=纯漏召；v1 保留位，恒 0）。 */
   returnedCount: number;
   /** 观测时刻（ms）。 */
   observedMs: number;
+  /**
+   * 门裁决状态（#117 N-1 分拣位）：
+   * - no-match：零词法命中（词表根本没有相关词 → 可能是新领域词）；
+   * - abstain：粗召回有候选但被门全拒（有词但不够可信 → 多为别名缺口）。
+   * 两类缺口的补词动作不同，故落库时分开记账，供 #120 建议器按类出清单。
+   */
+  gateStatus: MissGateStatus;
 }
+
+/** 门裁决状态枚举（与 mem_miss.gate_status CHECK 约束一一对应）。 */
+export type MissGateStatus = 'no-match' | 'abstain';
 
 /** 离线审计运行（方案 §3.2 mem_audit_run）。 */
 export interface AuditRunRecord {
@@ -170,7 +180,12 @@ export interface DecisionRecord {
   decision_id: string;
   /** 决策时刻（ms）。 */
   at_ms: number;
-  action: 'create-card' | 'update-cues' | 'tombstone-card' | 'add-alias' | 'invalidate';
+  /**
+   * 动作码。前五者是卡/别名决策（D4 契约）；`miss-retention` 是 #117 引入的
+   * **维护动作行**（系统裁剪 mem_miss，非卡决策）：event_id/anchor_json 占位空串，
+   * content_hash 承载 kept 集合内容哈希，聚合量见 missRetention 字段。
+   */
+  action: 'create-card' | 'update-cues' | 'tombstone-card' | 'add-alias' | 'invalidate' | 'miss-retention';
   card_id: string | null;
   event_id: string;
   /** 经历 id 列表（JSON 字符串数组）。 */
@@ -187,7 +202,24 @@ export interface DecisionRecord {
   model_tag: string;
   /** 简短理由码+一句话，不复制原文。 */
   reason: string;
-  created_by: 'her';
+  /** 行为主体：`her`＝她的决策；`system`＝系统维护动作（#117 裁剪）。 */
+  created_by: 'her' | 'system';
+  /**
+   * 维护动作聚合量（#117 裁定：台账只放聚合量，严禁词面/term_hash/anchor 明细）。
+   * 仅 action='miss-retention' 行携带。
+   */
+  missRetention?: {
+    readonly asOfMs: number;
+    readonly cutoffMs: number;
+    readonly windowDays: number;
+    readonly hardCapK: number;
+    readonly totalBefore: number;
+    readonly droppedAgeOut: number;
+    readonly droppedOverflow: number;
+    readonly kept: number;
+    readonly windowCompressed: boolean;
+    readonly keptContentHash: string;
+  };
 }
 
 /**

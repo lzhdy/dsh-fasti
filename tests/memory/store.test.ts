@@ -126,7 +126,7 @@ test('openMemoryWrite 只在 indexDir 内落文件，重开幂等', async () => 
         const meta = db
           .prepare("SELECT value FROM schema_meta WHERE key='schema_version'")
           .get() as { value: string } | undefined;
-        assert.equal(meta?.value, '1');
+        assert.equal(meta?.value, '2', 'v2 = #117 N-1（mem_miss 增 gate_status）');
       } finally {
         db.close();
       }

@@ -69,6 +69,7 @@ function validInput(overrides: Partial<MissObservationInput> = {}): MissObservat
     anchorIds: null,
     returnedCount: 0,
     observedMs: T0,
+    gateStatus: 'no-match',
     ...overrides,
   };
 }
@@ -165,12 +166,13 @@ test('computeMissTermHash：sha256(termNorm) hex、确定性、与独立实现�
 
 // ── 纯函数：validateMissInput 表驱动（运行时白名单 + 字段校验）────────────
 
-test('validateMissInput：合法六字段通过（含 null 锚点与数组锚点）', () => {
+test('validateMissInput：合法七字段通过（含 null 锚点与数组锚点）', () => {
   assert.doesNotThrow(() => validateMissInput(validInput()));
   assert.doesNotThrow(() =>
     validateMissInput(validInput({ anchorEventId: 'ev-1', anchorIds: ['e1', 'e2'] })),
   );
   assert.doesNotThrow(() => validateMissInput(validInput({ anchorIds: [] })));
+  assert.doesNotThrow(() => validateMissInput(validInput({ gateStatus: 'abstain' })));
 });
 
 test('validateMissInput：白名单外键即拒（M11 运行时层）', () => {
@@ -196,6 +198,10 @@ test('validateMissInput：字段越界表驱动整份拒绝', () => {
     ['anchorEventId 非 string|null', { anchorEventId: 5 as unknown as string }],
     ['anchorIds 非数组', { anchorIds: 'e1' as unknown as string[] }],
     ['anchorIds 含非字符串', { anchorIds: [1] as unknown as string[] }],
+    // #117 N-1：门语义只允许两类落空，'hit'/空串/非字符串都不得混入案底。
+    ['gateStatus 枚举外值 hit', { gateStatus: 'hit' as unknown as 'no-match' }],
+    ['gateStatus 空串', { gateStatus: '' as unknown as 'no-match' }],
+    ['gateStatus 非字符串', { gateStatus: 1 as unknown as 'no-match' }],
   ];
   for (const [label, overrides] of bad) {
     assert.throws(() => validateMissInput(validInput(overrides)), IntegrityError, label);
@@ -226,6 +232,7 @@ test('insertMissRow：落行字段全对、返回 ULID、term_hash=sha256、anch
     assert.equal(row['anchor_json'], JSON.stringify(['e1', 'e2']));
     assert.equal(row['returned_count'], 3);
     assert.equal(row['observed_ms'], T0);
+    assert.equal(row['gate_status'], 'no-match', '门语义随行落库，供 #120 分拣缺口类型');
   } finally {
     db.close();
   }
@@ -273,7 +280,7 @@ test('insertMissRow：同输入重复 → 行数倍增、id 各异、term_hash �
 
 // ── M11 第三层：PRAGMA 列集冻结 ───────────────────────────────────────────
 
-test('M11 读库反证：mem_miss 列集冻结八列、无任何原始查询列', () => {
+test('M11 读库反证：mem_miss 列集冻结九列（v2 增 gate_status）、无任何原始查询列', () => {
   const db = memoryDb();
   try {
     const cols = (db.prepare('PRAGMA table_info(mem_miss)').all() as Array<{ name: string }>).map(
@@ -288,6 +295,7 @@ test('M11 读库反证：mem_miss 列集冻结八列、无任何原始查询列'
       'anchor_json',
       'returned_count',
       'observed_ms',
+      'gate_status',
     ]);
     for (const forbidden of ['raw_query', 'rawquery', 'text', 'raw_text', 'query', 'summary', 'body']) {
       assert.ok(!cols.includes(forbidden), `不得出现原始查询列 ${forbidden}`);

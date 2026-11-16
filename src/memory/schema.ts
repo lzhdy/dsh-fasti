@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS mem_miss(
   anchor_event_id    TEXT,
   anchor_json        TEXT,
   returned_count     INTEGER NOT NULL,
-  observed_ms        INTEGER NOT NULL);
+  observed_ms        INTEGER NOT NULL,
+  gate_status        TEXT NOT NULL CHECK (gate_status IN ('no-match', 'abstain')));
 CREATE INDEX IF NOT EXISTS idx_miss_time ON mem_miss(observed_ms);
 CREATE INDEX IF NOT EXISTS idx_miss_hash ON mem_miss(term_hash);
 `;
@@ -133,8 +134,21 @@ export const MEMORY_SCHEMA = [
   SQL_MEM_AUDIT_ITEM,
 ] as const;
 
-/** schema 版本（从 1 起，§3.2）。 */
-export const MEMORY_SCHEMA_VERSION = 1;
+/**
+ * schema 版本（从 1 起，§3.2；只增不改）。
+ * v1 首版；v2 = #117 外审 N-1：mem_miss 增 gate_status（门语义分拣，避免 ON 后代际混合 schema）。
+ */
+export const MEMORY_SCHEMA_VERSION = 2;
+
+/**
+ * 卡片契约版本（mem_card / mem_alias 的行级戳记，与库级 schema 版本解耦）。
+ *
+ * 理由（#117 批 0）：gate_status 只增在 mem_miss（观测面结构），卡片内容契约未变。
+ * 若卡行跟着库版本升级，重建会把既有卡全判成 changed（写放大 + 报告噪音），
+ * 与"重建幂等、零漂移"的红线冲突；故卡行保持 1，仅库级版本走 2。
+ * 将来真正改卡片形态时才升这里，届时按契约同步迁移卡行。
+ */
+export const MEMORY_CARD_SCHEMA_VERSION = 1;
 
 /** 期望存在的表名（测试据此核对 §3.2；FTS5 内部影子表不在其列）。 */
 export const MEMORY_EXPECTED_TABLES = [
@@ -213,6 +227,7 @@ export const MEMORY_EXPECTED_COLUMNS: Readonly<Record<string, ReadonlyArray<read
     ['anchor_json', 'TEXT'],
     ['returned_count', 'INTEGER'],
     ['observed_ms', 'INTEGER'],
+    ['gate_status', 'TEXT'],
   ],
   mem_audit_run: [
     ['run_id', 'TEXT'],

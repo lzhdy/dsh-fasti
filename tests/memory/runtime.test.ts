@@ -383,19 +383,21 @@ test('recordMiss：观测落 mem_miss（term_hash、无原文列、append-only �
         anchorIds: null,
         returnedCount: 0,
         observedMs: AT,
+        gateStatus: 'no-match',
       };
       handle.recordMiss(observation);
       handle.recordMiss(observation);
 
       const db = new DatabaseSync(file, { readOnly: true });
       try {
-        // 列集冻结八列，不存在任何原始查询文本列。
+        // 列集冻结九列（v2 增 gate_status），不存在任何原始查询文本列。
         const rawColumns = db.prepare('PRAGMA table_info(mem_miss)').all() as Array<{ name: string }>;
         const columns = rawColumns.map((c) => c.name);
         assert.deepEqual(columns.sort(), [
           'anchor_event_id',
           'anchor_json',
           'channel',
+          'gate_status',
           'id',
           'observed_ms',
           'returned_count',
@@ -479,6 +481,7 @@ test('单例冲突：离线写柄占用时窄柄降级只读，读可用、写�
               anchorIds: null,
               returnedCount: 0,
               observedMs: AT,
+              gateStatus: 'no-match',
             }),
           UnavailableError,
         );

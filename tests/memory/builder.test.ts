@@ -765,8 +765,8 @@ test('重建搬运 mem_miss / mem_audit_* 观测行（不抹掉历史观测）',
     const db = new DatabaseSync(dbFile);
     try {
       db.prepare(
-        'INSERT INTO mem_miss(id, term_norm, term_hash, channel, anchor_event_id, anchor_json, returned_count, observed_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      ).run(ulid(), '漏召词', 'hash-1', 'dsh', null, null, 0, T0);
+        'INSERT INTO mem_miss(id, term_norm, term_hash, channel, anchor_event_id, anchor_json, returned_count, observed_ms, gate_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(ulid(), '漏召词', 'hash-1', 'dsh', null, null, 0, T0, 'no-match');
       db.prepare(
         'INSERT INTO mem_audit_run(run_id, created_ms, sample_n, probe_set_version, model_tag, metrics_json, notes_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run('run-1', T0, 1, 'v1', 'rules-v1', '{}', '{}');

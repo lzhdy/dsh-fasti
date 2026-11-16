@@ -33,6 +33,7 @@ import { openDrainObservationStore } from './drain-observations.ts';
 import type { DrainObservation, ObservationReasonCode } from './observations.ts';
 import { observationId } from './observations.ts';
 import { planProjection, type PlanCardRef } from './planner.ts';
+import type { MissRetentionPolicy } from './miss-retention.ts';
 import { MEMORY_SCHEMA_VERSION } from './schema.ts';
 import type { MemoryInternalReadHandle, MemoryWriteHandle } from './store.ts';
 import type { CardChangeSet, DecisionRecord, MemoryCard, RevisionRecord } from './types.ts';
@@ -230,6 +231,11 @@ export interface DrainRoundDeps {
   readonly writer: MemoryWriteHandle | null;
   readonly budgetMs: number;
   readonly consecutiveFailures: number;
+  /**
+   * 漏召观测留存策略（#117 3.2 第 1 件）。null/缺省＝本轮不裁剪（既有调用点零行为变化）；
+   * 接线层（fasti.drainMemoryProjection）传入 miss-retention 的段一临时策略。
+   */
+  readonly missRetention?: MissRetentionPolicy | null;
 }
 
 /** 真源只读快照：折叠后的当前态事件 + 经历 cue 映射（事务外读取，不回写真源）。 */
@@ -536,7 +542,7 @@ export function runDrainRound(deps: DrainRoundDeps): DrainRoundReport {
     deps.writer.transactionApply(changes, revision, planDecisions);
   }
 
-  return buildDrainReport(
+  const report = buildDrainReport(
     {
       scannedVersions: source.events.length,
       cardUpserts: changeCards.filter((card) => card.status === 'active').length,
@@ -549,4 +555,16 @@ export function runDrainRound(deps: DrainRoundDeps): DrainRoundReport {
     },
     elapsed(),
   );
+
+  // #117 3.2 第 1 件：drain 主触发留存维护（独立判定、独立事务，不搭 apply 便车）。
+  // 放在 report 计时之后：裁剪耗时不得污染本轮预算判定口径。
+  if (deps.writer !== null && deps.missRetention !== null && deps.missRetention !== undefined) {
+    try {
+      deps.writer.pruneMisses(deps.missRetention);
+    } catch {
+      // 留存维护是旁路维护动作：失败只入案底，绝不阻断投影轮次（下一轮 level-triggered 重试）。
+    }
+  }
+
+  return report;
 }

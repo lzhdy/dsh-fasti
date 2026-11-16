@@ -42,6 +42,11 @@ export interface OpenAssembledMemoryToolsInput {
   readonly missChannel: string;
   /** L6 注入的只读下钻端口（#114 E.4.1）；拆除批完成前可为缺省，运行面以 null 暴露。 */
   readonly sourceLookup?: SourceLookupPort;
+  /**
+   * #117 哨兵告警出口：只在估算行数跨过硬顶 70% 的那一刻调一次，
+   * 由宿主决定落哪条日志（装配层不自行 print）。
+   */
+  readonly onMissRetentionWarning?: (message: string) => void;
 }
 
 /** 装配产物：四方法工具集 + 窄柄就绪标志 + 幂等关闭。 */
@@ -141,7 +146,12 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
   let handle: RuntimeMemoryHandle | null = null;
   let indexReady = false;
   try {
-    handle = openMemoryRuntime({ indexDir: input.indexDir });
+    handle = openMemoryRuntime(
+      { indexDir: input.indexDir },
+      input.onMissRetentionWarning === undefined
+        ? undefined
+        : { onMissRetentionWarning: input.onMissRetentionWarning },
+    );
     indexReady = true;
   } catch (error) {
     if (!(error instanceof NotFoundError)) throw error;

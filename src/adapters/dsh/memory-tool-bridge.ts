@@ -69,6 +69,8 @@ export interface OpenDshMemoryBridgeInput {
    * 绑定后随装配运行面一同生命周期管理，不持额外资源。
    */
   readonly sourceLookup?: SourceLookupPort;
+  /** #117 哨兵告警出口（宿主日志）；缺省则只在快照里可查、不出日志。 */
+  readonly onMissRetentionWarning?: (message: string) => void;
 }
 
 /** 统一成功信封（canonical 为字符串，output.schema=string）。 */
@@ -92,6 +94,9 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
     now: input.now ?? (() => Date.now()),
     missChannel: input.channel,
     ...(input.sourceLookup === undefined ? {} : { sourceLookup: input.sourceLookup }),
+    ...(input.onMissRetentionWarning === undefined
+      ? {}
+      : { onMissRetentionWarning: input.onMissRetentionWarning }),
   });
 
   // 会话级私有序号表：仅短期闭包持有，不 JSON 化、不落库、不跨会话；每次 gatedSearch 整体替换。
@@ -364,6 +369,10 @@ export interface WireMemoryToolsInput {
   readonly sourceLookup?: SourceLookupPort;
   readonly now?: () => number;
   readonly log?: (message: string) => void;
+  /**
+   * #117 哨兵告警出口；缺省回落到 log（宿主日志）。两者都缺省时只在快照里可查、不出日志。
+   */
+  readonly onMissRetentionWarning?: (message: string) => void;
 }
 
 /** 一次接线的生命周期句柄。 */
@@ -404,6 +413,17 @@ export function wireMemoryTools(input: WireMemoryToolsInput): MemoryWiring {
     channel: input.channel,
     ...(input.sourceLookup === undefined ? {} : { sourceLookup: input.sourceLookup }),
     ...(input.now === undefined ? {} : { now: input.now }),
+    ...(input.onMissRetentionWarning === undefined && input.log === undefined
+      ? {}
+      : {
+          onMissRetentionWarning: (message: string) => {
+            if (input.onMissRetentionWarning !== undefined) {
+              input.onMissRetentionWarning(message);
+              return;
+            }
+            input.log?.(`留存哨兵：${message}`);
+          },
+        }),
   });
   const unregisterAll = registerMemoryToolDefinitions(input.registry, bridge.definitions);
 

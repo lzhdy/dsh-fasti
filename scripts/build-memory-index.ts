@@ -26,12 +26,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
 import { buildMemoryIndex } from '../src/memory/builder.ts';
 import type { BuildReport } from '../src/memory/builder.ts';
 import { parseJsonStrict, readFileStrict } from '../src/core/fsx.ts';
 import { computeMissTermHash, validateMissInput } from '../src/memory/miss.ts';
+import { MEMORY_INDEX_FILE } from '../src/memory/store.ts';
 import { openMemoryWrite } from '../src/memory/store.ts';
 import type { MissObservationInput } from '../src/memory/types.ts';
 import { layoutOf, resolveDataRoot } from '../src/source/paths.ts';
@@ -44,6 +46,7 @@ interface CliOptions {
   yes: boolean;
   sinceRevision: number | undefined;
   replayMisses: string | undefined;
+  dumpMiss: string | undefined;
   json: boolean;
   help: boolean;
 }
@@ -55,6 +58,7 @@ function parseArgs(argv: string[]): CliOptions {
     yes: false,
     sinceRevision: undefined,
     replayMisses: undefined,
+    dumpMiss: undefined,
     json: false,
     help: false,
   };
@@ -99,6 +103,15 @@ function parseArgs(argv: string[]): CliOptions {
         options.replayMisses = value;
         break;
       }
+      case '--dump-miss': {
+        const value = argv[i + 1];
+        if (value === undefined) {
+          throw new Error('参数 --dump-miss 缺少取值');
+        }
+        i += 1;
+        options.dumpMiss = value;
+        break;
+      }
       case '--json':
         options.json = true;
         break;
@@ -125,6 +138,8 @@ function usage(): string {
     '  --replay-misses <file>  独立回放模式：file 为 MissObservationInput 的 JSON 数组；',
     '                          默认 dry-run 只校验并打印行数/term_hash 摘要、零写入、不跑构建流；',
     '                          与 --apply 联用且经二次确认后才经写柄逐条灌入（§4.9）',
+    '  --dump-miss <file>      裁剪前取证出口（#117 PF-1 配套）：只读导出 mem_miss 全表为 JSONL，',
+    '                          零写库、不跑构建流；先 --dump-miss 再裁剪，才保得住事件级证据',
     '  --json                  输出 JSON 报告（机器可读）',
     '  --help                  本帮助',
     '',
@@ -157,6 +172,24 @@ function formatReport(report: BuildReport): string {
   lines.push(`卡行数      ：${report.cards}`);
   lines.push(`别名行数    ：${report.aliases}`);
   lines.push(`漏召观测行  ：${report.misses}`);
+  const retention = report.missRetention;
+  if (retention !== undefined) {
+    lines.push('');
+    lines.push('── 漏召留存对账（#117）──────────────────────────────────────────');
+    lines.push(`观测行      ：${retention.totalBefore} → 保留 ${retention.kept}`);
+    lines.push(`超龄淘汰    ：${retention.droppedAgeOut}（窗口 ${retention.windowDays} 天外，自然到期）`);
+    lines.push(`窗内超顶裁  ：${retention.rowsDeletedWithinValidationPeriod}`);
+    lines.push(`窗口压缩    ：${retention.windowCompressed ? '是（窗口语义已不等于 W 天）' : '否'}`);
+    lines.push(`策略        ：${retention.policyVersion}（硬顶 ${retention.hardCapK}）`);
+    if (retention.rowsDeletedWithinValidationPeriod > 0 || retention.windowCompressed) {
+      lines.push('');
+      lines.push(
+        `⚠ 高亮：本次会删掉 ${retention.rowsDeletedWithinValidationPeriod} 条仍在验证窗口内的漏召观测` +
+          '（已删即毁，不可从真源重导出）。',
+      );
+      lines.push('  先跑 --dump-miss 导出取证，再执行裁剪。');
+    }
+  }
   lines.push('');
   lines.push('══════════════════════════════════════════════════════════════');
   return lines.join('\n');
@@ -171,9 +204,91 @@ function formatPreview(preview: BuildReport, dataRoot: string): string {
     `分片数      ：${preview.fingerprint.files.length}`,
     `影子 diff   ：added=${preview.shadowDiff.added} removed=${preview.shadowDiff.removed} changed=${preview.shadowDiff.changed}`,
     `卡/别名/漏召：${preview.cards} / ${preview.aliases} / ${preview.misses}`,
+    ...(preview.missRetention === undefined
+      ? []
+      : [
+          `漏召留存    ：保留 ${preview.missRetention.kept}／超龄 ${preview.missRetention.droppedAgeOut}／` +
+            `窗内超顶 ${preview.missRetention.rowsDeletedWithinValidationPeriod}` +
+            (preview.missRetention.windowCompressed ? '（窗口被压缩）' : ''),
+          ...(preview.missRetention.rowsDeletedWithinValidationPeriod > 0
+            ? [
+                `⚠ 本次真写会删掉 ${preview.missRetention.rowsDeletedWithinValidationPeriod} 条窗内观测；` +
+                  '先 --dump-miss 导出取证再继续。',
+              ]
+            : []),
+        ]),
     `目标 indexDir：${path.join(dataRoot, 'projection', 'memory-index')}`,
     '',
   ].join('\n');
+}
+
+// ── #117 裁剪前取证：--dump-miss（只读导出，零写库）──────────────────────────
+
+interface DumpMissReport {
+  mode: 'dump-miss';
+  rows: number;
+  file: string;
+  indexDir: string;
+  columnCount: number;
+}
+
+/**
+ * 独立取证模式：只读打开库，把 mem_miss 全表按 (observed_ms, id) 升序导出为 JSONL。
+ * 纪律：
+ *  - 库只以 readOnly 打开，绝不写数据根；
+ *  - 输出文件不得落在数据根内（防把取证产物混进真源目录，退出码 1）。
+ */
+function runDumpMisses(dataRoot: string, outFile: string, options: CliOptions): void {
+  const indexDir = path.join(layoutOf(resolveDataRoot({ dataRoot })).projection, 'memory-index');
+  const dbFile = path.join(indexDir, MEMORY_INDEX_FILE);
+  const root = path.resolve(resolveDataRoot({ dataRoot }));
+  const target = path.resolve(outFile);
+  if (target.startsWith(`${root}${path.sep}`) || target === root) {
+    process.stderr.write(`错误：--dump-miss 输出不得落在数据根内（${target}）\n`);
+    process.exit(1);
+    return;
+  }
+  if (!fs.existsSync(dbFile)) {
+    process.stderr.write(`错误：记忆索引库不存在，无可导出内容：${dbFile}\n`);
+    process.exit(1);
+    return;
+  }
+
+  const db = new DatabaseSync(dbFile, { readOnly: true });
+  let rows: Array<Record<string, unknown>>;
+  try {
+    rows = db.prepare('SELECT * FROM mem_miss ORDER BY observed_ms ASC, id ASC').all() as Array<
+      Record<string, unknown>
+    >;
+  } finally {
+    db.close();
+  }
+
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const body = rows.map((row) => JSON.stringify(row)).join('\n');
+  fs.writeFileSync(target, rows.length === 0 ? '' : `${body}\n`, 'utf8');
+
+  const report: DumpMissReport = {
+    mode: 'dump-miss',
+    rows: rows.length,
+    file: target,
+    indexDir,
+    columnCount: rows[0] === undefined ? 0 : Object.keys(rows[0]).length,
+  };
+  process.stdout.write(
+    options.json
+      ? `${JSON.stringify(report, null, 2)}\n`
+      : [
+          '',
+          '── 漏召台账取证（--dump-miss，只读导出）─────────────────────────',
+          `行数        ：${report.rows}`,
+          `列数        ：${report.columnCount}`,
+          `输出文件    ：${report.file}`,
+          `来源库      ：${report.indexDir}${MEMORY_INDEX_FILE}`.replace(/\\/g, '/'),
+          '库未被写入；该文件是裁剪前唯一的事件级证据留存。',
+          '',
+        ].join('\n'),
+  );
 }
 
 // ── C4 漏召回放（H2，独立模式；方案 §4.9）─────────────────────────────────
@@ -300,6 +415,12 @@ async function main(): Promise<void> {
   }
 
   const dataRoot = options.dataRoot;
+
+  // #117：--dump-miss 取证模式 —— 只读导出，不跑构建流、零写库。
+  if (options.dumpMiss !== undefined) {
+    runDumpMisses(dataRoot, options.dumpMiss, options);
+    return;
+  }
 
   // C4（H2）：--replay-misses 独立回放模式 —— 只灌漏召观测，不跑构建流；未传则构建流字节级不变。
   if (options.replayMisses !== undefined) {

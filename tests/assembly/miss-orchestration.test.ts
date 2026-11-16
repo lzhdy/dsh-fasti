@@ -136,7 +136,7 @@ function build(mode: MemoryGateMode, handle: RuntimeMemoryHandle | null) {
 
 // ── R1 on 态 no-match：恰一笔落空台账，六字段白名单锁死 ──────────────────────
 
-test('R1 on/no-match：recordMiss 恰一次，入参恰白名单六字段且锚点 v1 恒 null', async () => {
+test('R1 on/no-match：recordMiss 恰一次，入参恰白名单七字段且锚点 v1 恒 null', async () => {
   const opts: FakeOpts = { explained: [], missCalls: [] };
   const { tools } = build('on', makeHandle(opts));
 
@@ -149,6 +149,7 @@ test('R1 on/no-match：recordMiss 恰一次，入参恰白名单六字段且锚�
     'anchorEventId',
     'anchorIds',
     'channel',
+    'gateStatus',
     'observedMs',
     'returnedCount',
     'termNorm',
@@ -157,8 +158,9 @@ test('R1 on/no-match：recordMiss 恰一次，入参恰白名单六字段且锚�
   assert.equal(row.channel, INJECTED_CHANNEL, '通道值取 L6 注入，内核不内置字面量');
   assert.equal(row.anchorEventId, null, 'v1 缺口：窗口锚点随 #116 回填，本卡恒 null');
   assert.equal(row.anchorIds, null);
-  assert.equal(row.returnedCount, 0, '落空对外返回为空，returnedCount 恒 0');
+  assert.equal(row.returnedCount, 0, '落空对外返回为空，returnedCount 恒 0（保留位）');
   assert.equal(row.observedMs, NOW, '时刻取注入时钟');
+  assert.equal(row.gateStatus, 'no-match', '#117 N-1：门裁决状态随行落库，供建议器分拣缺口类型');
 });
 
 // ── R2 on 态 abstain（粗召回有、门全拒）同样登记 ────────────────────────────
@@ -177,6 +179,7 @@ test('R2 on/abstain：候选被门全拒时同样留一笔（与 no-match 同走
   assert.equal(opts.missCalls.length, 1);
   assert.equal(opts.missCalls[0]!.returnedCount, 0);
   assert.equal(opts.missCalls[0]!.termNorm, 'cat');
+  assert.equal(opts.missCalls[0]!.gateStatus, 'abstain', 'abstain＝有候选被门拒＝别名缺口，必须与 no-match 分开记');
 });
 
 // ── R3 hit 不登记 ───────────────────────────────────────────────────────────

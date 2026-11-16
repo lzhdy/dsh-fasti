@@ -28,8 +28,10 @@ const DECISION_ACTIONS: readonly string[] = [
   'tombstone-card',
   'add-alias',
   'invalidate',
+  // #117 维护动作行（系统裁剪 mem_miss，非卡决策）。
+  'miss-retention',
 ];
-const DECISION_CREATORS: readonly string[] = ['her'];
+const DECISION_CREATORS: readonly string[] = ['her', 'system'];
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
@@ -125,6 +127,40 @@ function assertDecisionShape(record: DecisionRecord): void {
   }
   if (!DECISION_CREATORS.includes(record.created_by)) {
     throw new IntegrityError(`${at}：created_by 越界（${record.created_by}）`);
+  }
+  // #117：维护动作行只允许聚合量——出现词面/哈希明细即拒（Q2-c 加严）。
+  if (record.action === 'miss-retention') {
+    const forbidden = ['term_norm', 'termNorm', 'term_hash', 'termHash', 'anchor_ids', 'anchorIds'];
+    for (const key of forbidden) {
+      if (Object.prototype.hasOwnProperty.call(record, key)) {
+        throw new IntegrityError(`${at}：维护动作行禁止携带词面/哈希明细（${key}）`);
+      }
+    }
+    const aggregate = record.missRetention;
+    if (aggregate === undefined || typeof aggregate !== 'object') {
+      throw new IntegrityError(`${at}：维护动作行必须携带 missRetention 聚合量`);
+    }
+    for (const key of [
+      'asOfMs',
+      'cutoffMs',
+      'windowDays',
+      'hardCapK',
+      'totalBefore',
+      'droppedAgeOut',
+      'droppedOverflow',
+      'kept',
+    ] as const) {
+      const value = aggregate[key];
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        throw new IntegrityError(`${at}：missRetention.${key} 必须是非负有限数`);
+      }
+    }
+    if (typeof aggregate.windowCompressed !== 'boolean') {
+      throw new IntegrityError(`${at}：missRetention.windowCompressed 必须是布尔`);
+    }
+    if (typeof aggregate.keptContentHash !== 'string' || aggregate.keptContentHash === '') {
+      throw new IntegrityError(`${at}：missRetention.keptContentHash 必须是非空字符串`);
+    }
   }
 }
 

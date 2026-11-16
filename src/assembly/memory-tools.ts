@@ -27,6 +27,7 @@ import type {
   GatedSearchOutcome,
   GatedStatus,
   MemoryCard,
+  MissGateStatus,
   SerialMap,
 } from '../memory/types.ts';
 import type { RuntimeMemoryHandle, RuntimeSearchQuery } from '../memory/runtime.ts';
@@ -193,6 +194,7 @@ function recordMissOrSwallow(
   missChannel: string,
   text: string,
   atMs: number,
+  gateStatus: MissGateStatus,
 ): void {
   const termNorm = normalizeLexicalText(text);
   if (termNorm === '') {
@@ -206,6 +208,7 @@ function recordMissOrSwallow(
       anchorIds: null,
       returnedCount: 0,
       observedMs: atMs,
+      gateStatus,
     });
   } catch {
     // 落空台账是旁路案底：刻意不重抛，门控视图照常返回；宿主侧可观测性由窄柄实现自行记录。
@@ -239,8 +242,9 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
       const handle = requireHandle();
       const outcome = await runGatedSearch(handle, { text: input.text, atMs }, input.limit);
       // #115 E.5：abstain／no-match 且词面非空即留落空案底；hit 不登记，失败不冒泡。
+      // #117 N-1：门裁决状态原样透传（outcome.status 此刻恰是 'no-match'|'abstain'），分拣缺口类型。
       if (outcome.status === 'abstain' || outcome.status === 'no-match') {
-        recordMissOrSwallow(handle, deps.missChannel, input.text, atMs);
+        recordMissOrSwallow(handle, deps.missChannel, input.text, atMs, outcome.status);
       }
       return toGateView(outcome);
     },

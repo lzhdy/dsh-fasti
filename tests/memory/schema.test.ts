@@ -71,8 +71,9 @@ function columnNamesOf(createSql: string): string[] {
   return names;
 }
 
-test('schema 版本从 1 起', () => {
-  assert.equal(MEMORY_SCHEMA_VERSION, 1);
+test('schema 版本从 1 起，v2 起 mem_miss 增 gate_status（#117 外审 N-1）', () => {
+  // v1 = 首版；v2 = #117 外审裁定，mem_miss 增门语义分拣列（ON 前落地，避免代际混合 schema）。
+  assert.equal(MEMORY_SCHEMA_VERSION, 2);
 });
 
 test('期望表/索引清单与方案 §3.2 一致', () => {
@@ -239,6 +240,66 @@ test('mem_card CHECK 约束真能拦截违约行', async () => {
         attempt({ card_id: 'mc_ok40', discriminator: '字'.repeat(40), display_cues_json: '["a","b","c"]' });
         // 码点口径：emoji（代理对）按 1 码点计，40 个 emoji 合法。
         attempt({ card_id: 'mc_okemoji', discriminator: '😀'.repeat(40) });
+      } finally {
+        db.close();
+      }
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+test('mem_miss gate_status：CHECK 拒绝枚举外值、NOT NULL 拒绝缺值（#117 N-1）', async () => {
+  await withTempRoot(async (root) => {
+    const indexDir = path.join(root, 'projection', 'memory-index');
+    const handle = openMemoryWrite({ indexDir });
+    try {
+      const db = new DatabaseSync(path.join(indexDir, 'memory-index.sqlite'));
+      try {
+        const columns = [
+          'id',
+          'term_norm',
+          'term_hash',
+          'channel',
+          'anchor_event_id',
+          'anchor_json',
+          'returned_count',
+          'observed_ms',
+          'gate_status',
+        ];
+        const insert = db.prepare(
+          `INSERT INTO mem_miss(${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`,
+        );
+        const base: Record<string, unknown> = {
+          id: 'miss-ok',
+          term_norm: '漏召词',
+          term_hash: 'h',
+          channel: 'dsh',
+          anchor_event_id: null,
+          anchor_json: null,
+          returned_count: 0,
+          observed_ms: 1,
+          gate_status: 'no-match',
+        };
+        const attempt = (overrides: Record<string, unknown>): void => {
+          const row = { ...base, ...overrides };
+          insert.run(...columns.map((c) => row[c] as string | number | null));
+        };
+
+        // 两类门语义都是合法值。
+        attempt({});
+        attempt({ id: 'miss-abstain', gate_status: 'abstain' });
+        db.exec("DELETE FROM mem_miss WHERE id IN ('miss-ok','miss-abstain')");
+
+        // 枚举外值（含空串与 hit）必须被 CHECK 拦住，不许混入未分拣的落空行。
+        assert.throws(() => attempt({ id: 'miss-bad-1', gate_status: 'hit' }), /CHECK/);
+        assert.throws(() => attempt({ id: 'miss-bad-2', gate_status: '' }), /CHECK/);
+        // NOT NULL：缺值同样落不了库。
+        assert.throws(() => {
+          db.prepare(
+            'INSERT INTO mem_miss(id, term_norm, term_hash, channel, anchor_event_id, anchor_json, returned_count, observed_ms) VALUES (?,?,?,?,?,?,?,?)',
+          ).run('miss-bad-3', '词', 'h', 'dsh', null, null, 0, 1);
+        }, /NOT NULL|CHECK/);
       } finally {
         db.close();
       }

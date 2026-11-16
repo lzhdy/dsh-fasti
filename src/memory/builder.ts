@@ -36,10 +36,16 @@ import { foldCurrentEvents } from '../projection/event-row.ts';
 import { layoutOf, resolveDataRoot } from '../source/paths.ts';
 import { appendRevision, readDecisions, readRevisions } from './ledger.ts';
 import { MemoryAnchorDanglingError } from './memory-errors.ts';
-import { MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from './schema.ts';
+import { MEMORY_CARD_SCHEMA_VERSION, MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from './schema.ts';
 import { computeContentHash, deriveCardId, sha256Hex } from './content-hash.ts';
 import { classifyAnchors } from './derive.ts';
 import { aliasFromRow, syncFts } from './fts.ts';
+import { appendMissRetentionDecision } from './miss-prune.ts';
+import {
+  MISS_RETENTION_TMP_POLICY,
+  computeMissRetention,
+  type MissRetentionPolicy,
+} from './miss-retention.ts';
 import {
   MEMORY_INDEX_FILE,
   cardFromRow,
@@ -71,6 +77,11 @@ export interface BuildOptions {
   sinceRevision?: number;
   /** 测试注入时钟。 */
   nowMs?: number;
+  /**
+   * 留存策略覆写（#117）：缺省用段一临时策略 + nowMs 作 asOfMs。
+   * 仅供测试与段二工程复核注入，不做 CLI 暴露位（避免运维误改窗口而无 policyVersion 留痕）。
+   */
+  missRetention?: MissRetentionPolicy;
 }
 
 export interface BuildReport {
@@ -84,6 +95,26 @@ export interface BuildReport {
   /** 非空即失败、零写入。 */
   danglingAnchors: string[];
   outputDir: string;
+  /**
+   * 留存对账显影（#117 3.2 第 5 件）：有观测行时才出现。
+   * 高亮口径：`rowsDeletedWithinValidationPeriod`（窗口内被裁的行，属"验证期误删风险"）与
+   * `windowCompressed`（窗口被硬顶压缩，语义不再等于 W 天）。超龄淘汰单列不计入高亮。
+   */
+  missRetention?: MissRetentionReport;
+}
+
+/** 留存对账报告块（dry-run 与 apply 同一口径，只报事实不做判断）。 */
+export interface MissRetentionReport {
+  readonly totalBefore: number;
+  readonly kept: number;
+  readonly droppedAgeOut: number;
+  readonly droppedOverflow: number;
+  readonly rowsDeletedWithinValidationPeriod: number;
+  readonly windowCompressed: boolean;
+  readonly cutoffMs: number;
+  readonly windowDays: number;
+  readonly hardCapK: number;
+  readonly policyVersion: string;
 }
 
 // ── 确定性派生（§4.6 公式）────────────────────────────────────────────────
@@ -164,7 +195,8 @@ export function materializeDrainCardRow(input: DrainCardRowInput): MemoryCard {
     contentHash: summaryHash,
     hitCount: 0,
     lastHitMs: null,
-    schemaVersion: MEMORY_SCHEMA_VERSION,
+    // 卡行戳记用卡片契约版本（与库级版本解耦）：#117 只动 mem_miss 结构，卡片内容未变。
+    schemaVersion: MEMORY_CARD_SCHEMA_VERSION,
   };
 }
 
@@ -334,6 +366,39 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
   // ── 5. 旧库快照 + 决策回放 → 新卡集（内容全部搬运，不生成文本）──
   const decisions = readDecisions(indexDir);
   const existing = readExistingIndex(liveFile);
+
+  // #117 3.2 第 2 件：重建对账走**同一个** miss-retention 纯函数，与 drain 裁剪单一口径。
+  const missRetentionPolicy: MissRetentionPolicy =
+    options.missRetention ?? { ...MISS_RETENTION_TMP_POLICY, asOfMs: nowMs };
+  const retention = computeMissRetention(
+    existing.misses.map((row) => ({
+      ...row,
+      id: String(row['id']),
+      observedMs: Number(row['observed_ms']),
+    })),
+    missRetentionPolicy,
+  );
+  const retainedMissIds = new Set(retention.survivors.map((row) => row.id));
+  const retainedMissRows = existing.misses.filter((row) => retainedMissIds.has(String(row['id'])));
+  const missDropped = retention.droppedAgeOut + retention.droppedOverflow;
+  // 报告块按事实填充：有观测行才带（无观测时保持既有报告形状，零行断言不受影响）。
+  const missRetentionReport: MissRetentionReport | undefined =
+    existing.misses.length === 0
+      ? undefined
+      : {
+          totalBefore: retention.totalBefore,
+          kept: retention.kept,
+          droppedAgeOut: retention.droppedAgeOut,
+          droppedOverflow: retention.droppedOverflow,
+          // 高亮口径：窗口内被裁的行 = 超硬顶所致（超龄淘汰属自然到期，不进高亮）。
+          rowsDeletedWithinValidationPeriod: retention.droppedOverflow,
+          windowCompressed: retention.windowCompressed,
+          cutoffMs: retention.cutoffMs,
+          windowDays: missRetentionPolicy.windowDays,
+          hardCapK: missRetentionPolicy.hardCapK,
+          policyVersion: missRetentionPolicy.policyVersion,
+        };
+
   const outcomes = replayDecisions(decisions);
   const oldCards = new Map(existing.cards.map((card) => [card.cardId, card]));
 
@@ -360,7 +425,8 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
         old.aliasesJson,
         old.discriminator,
       ),
-      schemaVersion: MEMORY_SCHEMA_VERSION,
+      // 同上：沿用卡片契约版本，避免库级版本升级把既有卡误判成 changed。
+      schemaVersion: MEMORY_CARD_SCHEMA_VERSION,
     };
     const outcome = outcomes.get(cardId);
     if (outcome !== undefined) {
@@ -429,7 +495,7 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
     writeCards(db, newCards);
     writeAliases(db, newAliases);
     syncFts(db, newCards.map((card) => card.cardId));
-    copyRows(db, 'mem_miss', existing.misses);
+    copyRows(db, 'mem_miss', retainedMissRows);
     copyRows(db, 'mem_audit_run', existing.auditRuns);
     copyRows(db, 'mem_audit_item', existing.auditItems);
     stampMeta(db, {
@@ -457,13 +523,20 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
       shadowDiff,
       cards: newCards.length,
       aliases: newAliases.length,
-      misses: existing.misses.length,
+      misses: retainedMissRows.length,
       danglingAnchors: [],
       outputDir: shadowDir,
+      ...(missRetentionReport === undefined ? {} : { missRetention: missRetentionReport }),
     };
   }
 
-  // ── 8. apply：fsync → rename 原子换文件 → 追加账本（M8：中途失败旧库完好）──
+  // ── 8. apply：台账先行 → fsync → rename 原子换文件 → 追加账本（M8：中途失败旧库完好）──
+  // N-4 改序（#117）：留存裁剪台账必须先落盘再换库文件 → 崩溃窗只可能"多记未遂"，
+  // 绝无"已删无账"（mem_miss 不可从真源重导出，"已删即毁"）。
+  if (missDropped > 0) {
+    appendMissRetentionDecision(indexDir, missRetentionPolicy, retention);
+  }
+
   try {
     const fd = fs.openSync(shadowFile, 'r+');
     try {
@@ -499,8 +572,9 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
     shadowDiff,
     cards: newCards.length,
     aliases: newAliases.length,
-    misses: existing.misses.length,
+    misses: retainedMissRows.length,
     danglingAnchors: [],
     outputDir: indexDir,
+    ...(missRetentionReport === undefined ? {} : { missRetention: missRetentionReport }),
   };
 }
