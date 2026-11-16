@@ -17,6 +17,8 @@ import { isUlid } from '../core/ulid.ts';
 import { isoToMs } from '../core/time.ts';
 import type { EventRecord } from '../contract/event.ts';
 import { deriveCardId, sha256Hex } from './content-hash.ts';
+import { deriveCuesFromKeyPoints, isCueDerivationEnabled } from './cue-derive.ts';
+import { CURRENT_RULES_VERSION } from './types.ts';
 
 // ── 空锚三分（§2.3）─────────────────────────────────────────────────────────
 
@@ -104,7 +106,7 @@ export function structuralHash(input: StructuralHashInput): string {
 
 // ── 期望态派生（§2.5 / R-01 零漂移）─────────────────────────────────────────
 
-/** 期望态活卡（可导结构子空间；不含 cues/别名等不可导残差）。 */
+/** 期望态活卡（可导结构子空间；cues 为按 rules_version 派生出的期望线索，v1 恒空）。 */
 export interface ExpectedCard {
   readonly cardId: string;
   readonly eventId: string;
@@ -112,6 +114,12 @@ export interface ExpectedCard {
   readonly channel: string;
   readonly startedMs: number;
   readonly endedMs: number;
+  /**
+   * 期望 cue 集（#123 P2）。
+   * `rules-v1` ⇒ 恒 `[]`（表示"无派生，沿用经历快照"），保证接入前后逐字节零漂移；
+   * `rules-v2` ⇒ 由 key_points 确定性派生（见 cue-derive.ts）。
+   */
+  readonly cues: readonly string[];
 }
 
 /** F-B 隔离条目（形态缺陷 / 悬空）。 */
@@ -152,7 +160,14 @@ function isCardEligible(event: EventRecord): boolean {
 export function deriveExpectedProjection(input: {
   readonly events: readonly EventRecord[];
   readonly experienceExists: (id: string) => boolean;
+  /**
+   * 派生口径（缺省 CURRENT_RULES_VERSION）。
+   * 只在测试/未来 rules-v2 显式传入；生产调用面不传，因此 v1 下 cues 恒空、行为不变。
+   */
+  readonly rulesVersion?: string;
 }): ExpectedProjection {
+  const rulesVersion = input.rulesVersion ?? CURRENT_RULES_VERSION;
+  const cueEnabled = isCueDerivationEnabled(rulesVersion);
   const cards: ExpectedCard[] = [];
   const byEvent = new Map<string, ExpectedCard>();
   const quarantined: QuarantineEntry[] = [];
@@ -178,6 +193,9 @@ export function deriveExpectedProjection(input: {
     }
 
     const anchors = [...new Set(event.anchors)].sort();
+    const cues = cueEnabled
+      ? deriveCuesFromKeyPoints({ keyPoints: event.key_points, summary: event.summary }).cues
+      : [];
     const card: ExpectedCard = {
       cardId: deriveCardId(event.id, anchors),
       eventId: event.id,
@@ -185,6 +203,7 @@ export function deriveExpectedProjection(input: {
       channel: event.channel,
       startedMs: isoToMs(event.time_range.started_at),
       endedMs: isoToMs(event.time_range.ended_at),
+      cues,
     };
     cards.push(card);
     byEvent.set(event.id, card);

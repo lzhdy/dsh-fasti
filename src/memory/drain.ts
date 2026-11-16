@@ -23,10 +23,12 @@ import {
   computeRowHashSum,
   computeTruthFingerprint,
   materializeDrainCardRow,
+  normalizeDisplayCues,
 } from './builder.ts';
 import { sha256Hex } from './content-hash.ts';
 import { castDrainDecision } from './decision.ts';
 import { deriveExpectedProjection, structuralHash } from './derive.ts';
+import { cuesHashOf, isCueDerivationEnabled } from './cue-derive.ts';
 import type { AbstainEntry, ExpectedCard, QuarantineEntry } from './derive.ts';
 import { readRevisions } from './ledger.ts';
 import { openDrainObservationStore } from './drain-observations.ts';
@@ -280,7 +282,7 @@ function parseAnchorJson(card: MemoryCard | null): string[] {
   }
 }
 
-function cardToPlanRef(card: MemoryCard): PlanCardRef {
+function cardToPlanRef(card: MemoryCard, cueEnabled: boolean): PlanCardRef {
   return {
     eventId: card.eventId,
     cardId: card.cardId,
@@ -288,18 +290,43 @@ function cardToPlanRef(card: MemoryCard): PlanCardRef {
     channel: card.channel,
     startedMs: card.occurredMs,
     endedMs: card.endedMs,
+    // #123 P2：未启用 cue 派生时不传（两侧恒 undefined ⇒ sameShape 与接入前一致）。
+    ...(cueEnabled ? { cuesHash: displayCuesHash(card.displayCuesJson) } : {}),
   };
 }
 
-/** 期望态卡行落库构造：cue 快照取自经历；行物化与摘要哈希计算在 builder 助手内完成。 */
+/** 库内 `display_cues_json` → 与期望侧同口径的 cue 哈希（空占位 `[""]` 参与比较）。 */
+function displayCuesHash(displayCuesJson: string): string {
+  let parsed: string[] = [''];
+  try {
+    const value: unknown = JSON.parse(displayCuesJson);
+    if (Array.isArray(value)) {
+      parsed = value.map((item) => String(item));
+    }
+  } catch {
+    // 非法 JSON 一律按空线索占位参与比较，宁可多跑一次 update 也不静默漂移。
+    parsed = [''];
+  }
+  return cuesHashOf(parsed.length > 0 ? parsed : ['']);
+}
+
+/** 单卡 cue 取值口径：经历快照优先（#93 解冻后仍以叙事线索为准）；无快照才用 key_points 派生。 */
+function resolveCardCues(
+  expected: ExpectedCard,
+  cueByExperience: ReadonlyMap<string, string | undefined>,
+): string[] {
+  const fromObservation = expected.anchors
+    .map((anchor) => cueByExperience.get(anchor))
+    .filter((cue): cue is string => typeof cue === 'string' && cue.trim() !== '');
+  return fromObservation.length > 0 ? fromObservation : [...expected.cues];
+}
+
+/** 期望态卡行落库构造：cue 取 resolveCardCues；行物化与摘要哈希计算在 builder 助手内完成。 */
 function materializeCard(
   expected: ExpectedCard,
   event: EventRecord,
   cueByExperience: ReadonlyMap<string, string | undefined>,
 ): MemoryCard {
-  const cues = expected.anchors
-    .map((anchor) => cueByExperience.get(anchor))
-    .filter((cue): cue is string => typeof cue === 'string' && cue.trim() !== '');
   return materializeDrainCardRow({
     cardId: expected.cardId,
     eventId: event.id,
@@ -307,7 +334,7 @@ function materializeCard(
     channel: expected.channel,
     startedMs: expected.startedMs,
     endedMs: expected.endedMs,
-    cues,
+    cues: resolveCardCues(expected, cueByExperience),
   });
 }
 
@@ -401,7 +428,10 @@ export function runDrainRound(deps: DrainRoundDeps): DrainRoundReport {
   const expected = deriveExpectedProjection({ events: source.events, experienceExists });
   const eventById = new Map(source.events.map((event) => [event.id, event]));
 
-  const previousRefs = deps.reader.listEffective(Number.MAX_SAFE_INTEGER).map(cardToPlanRef);
+  const cueEnabled = isCueDerivationEnabled(CURRENT_RULES_VERSION);
+  const previousRefs = deps.reader
+    .listEffective(Number.MAX_SAFE_INTEGER)
+    .map((card) => cardToPlanRef(card, cueEnabled));
   const currentRefs: PlanCardRef[] = expected.cards.map((card) => ({
     eventId: card.eventId,
     cardId: card.cardId,
@@ -409,6 +439,14 @@ export function runDrainRound(deps: DrainRoundDeps): DrainRoundReport {
     channel: card.channel,
     startedMs: card.startedMs,
     endedMs: card.endedMs,
+    // 期望侧哈希与落库值同口径（normalizeDisplayCues 单点收口），避免每轮抖动。
+    ...(cueEnabled
+      ? {
+          cuesHash: cuesHashOf(
+            normalizeDisplayCues(resolveCardCues(card, source.cueByExperience)),
+          ),
+        }
+      : {}),
   }));
   const plan = planProjection({
     previous: previousRefs,
@@ -504,7 +542,27 @@ export function runDrainRound(deps: DrainRoundDeps): DrainRoundReport {
       const event = eventById.get(action.eventId);
       const expectedCard = expected.byEvent.get(action.eventId);
       if (event !== undefined && expectedCard !== undefined) {
-        changeCards.push(materializeCard(expectedCard, event, source.cueByExperience));
+        const row = materializeCard(expectedCard, event, source.cueByExperience);
+        changeCards.push(row);
+        // #123 P3：cue 派生启用时，内容更新必须留决策行（此前该分支只换卡不记账）。
+        if (cueEnabled) {
+          planDecisions.push(
+            castDrainDecision({
+              card: row,
+              eventId: event.id,
+              version: event.version,
+              createdAtIso: event.created_at,
+              action: 'update-cues',
+              cardId: row.cardId,
+              anchors: [...expectedCard.anchors],
+              structuralHash: '',
+              modelTag: CURRENT_RULES_VERSION,
+              reason: 'update-cues:drain-projection',
+              // 结构判定路径不得引用 contentHash（护栏铁律），去重键改用事件版本。
+              dedupKey: `update-cues|${event.id}|${row.cardId}|v${event.version}`,
+            }),
+          );
+        }
       }
     }
     // migrate-aliases：别名随 event_id 重绑；本轮无既有别名快照接入，changes.aliases 为空。

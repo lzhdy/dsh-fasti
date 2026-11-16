@@ -347,7 +347,16 @@ test('正常轮：接线就绪且预算充足 → skipped=null，轮报告十字
 // ═══════════════════════════════════════════════════════════════════════════
 
 function expectedCard(eventId: string, anchors: readonly string[], cardId: string): ExpectedCard {
-  return { eventId, cardId, anchors: [...anchors], channel: 'dsh', startedMs: T0, endedMs: T0 + DAY };
+  // #123：ExpectedCard 新增 cues，rules-v1 夹具恒空（与生产零漂移口径一致）。
+  return {
+    eventId,
+    cardId,
+    anchors: [...anchors],
+    channel: 'dsh',
+    startedMs: T0,
+    endedMs: T0 + DAY,
+    cues: [],
+  };
 }
 
 function readMemorySources(): Array<{ relPath: string; text: string }> {

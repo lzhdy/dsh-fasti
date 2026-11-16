@@ -285,10 +285,20 @@ export function writeAliases(db: DatabaseSync, aliases: readonly AliasRow[]): vo
 
 // syncFts 已 N1 抽取至 ./fts.ts（见文件顶部 re-export）。
 
-/** meta stamp 三键（调用方负责事务边界）。 */
+/**
+ * meta stamp 四键（调用方负责事务边界）。
+ *
+ * #123 P4：第四键 `rules_version` 是"本投影由哪套派生规则产出"的唯一印章；
+ * 缺它则 drain 的 `isRulesVersionMismatch` 永远拿到 null、`rebuild-required` 永不触发。
+ */
 export function stampMeta(
   db: DatabaseSync,
-  values: { schema_version: number; stamped_revision: number; truth_fingerprint: string },
+  values: {
+    schema_version: number;
+    stamped_revision: number;
+    truth_fingerprint: string;
+    rules_version: string;
+  },
 ): void {
   const upsert = db.prepare(
     'INSERT INTO schema_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
@@ -296,6 +306,7 @@ export function stampMeta(
   upsert.run('schema_version', String(values.schema_version));
   upsert.run('stamped_revision', String(values.stamped_revision));
   upsert.run('truth_fingerprint', values.truth_fingerprint);
+  upsert.run('rules_version', values.rules_version);
 }
 
 /** 读柄实现（只读打开，不建表、不创建文件）。 */
@@ -444,6 +455,7 @@ class WriteHandle extends ReadHandle implements MemoryWriteHandle {
         schema_version: revision.schema_version,
         stamped_revision: revision.revision,
         truth_fingerprint: revision.truth_fingerprint,
+        rules_version: CURRENT_RULES_VERSION,
       });
       db.exec('COMMIT');
     } catch (error) {
@@ -479,6 +491,7 @@ class WriteHandle extends ReadHandle implements MemoryWriteHandle {
         schema_version: revision.schema_version,
         stamped_revision: revision.revision,
         truth_fingerprint: revision.truth_fingerprint,
+        rules_version: CURRENT_RULES_VERSION,
       });
       db.exec('COMMIT');
     } catch (error) {

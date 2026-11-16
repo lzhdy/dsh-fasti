@@ -28,6 +28,12 @@ export interface PlanCardRef {
   readonly channel: string;
   readonly startedMs: number;
   readonly endedMs: number;
+  /**
+   * cue 集哈希（#123 P2）。
+   * 缺省 `undefined` 表示"本批规则不比较 cue"（rules-v1 两侧都不传，行为与接入前一致）；
+   * rules-v2 下由构造方显式传入（前态=库内 display_cues、现态=期望派生 cue）。
+   */
+  readonly cuesHash?: string;
 }
 
 export interface PlanAliasRef {
@@ -98,7 +104,9 @@ function sameShape(prev: PlanCardRef, cur: PlanCardRef): boolean {
     prev.startedMs === cur.startedMs &&
     prev.endedMs === cur.endedMs &&
     prev.anchors.length === cur.anchors.length &&
-    prev.anchors.every((anchor, index) => anchor === cur.anchors[index])
+    prev.anchors.every((anchor, index) => anchor === cur.anchors[index]) &&
+    // #123 P2：cue 变化必须能被增量面看见，否则"关键词从空到有"永远不触发 update-card。
+    (prev.cuesHash ?? '') === (cur.cuesHash ?? '')
   );
 }
 

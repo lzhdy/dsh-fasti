@@ -38,6 +38,14 @@ import { appendRevision, readDecisions, readRevisions } from './ledger.ts';
 import { MemoryAnchorDanglingError } from './memory-errors.ts';
 import { MEMORY_CARD_SCHEMA_VERSION, MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from './schema.ts';
 import { computeContentHash, deriveCardId, sha256Hex } from './content-hash.ts';
+import {
+  CUE_MAX_CODEPOINTS,
+  CUE_MAX_COUNT,
+  deriveCuesFromKeyPoints,
+  isCueDerivationEnabled,
+} from './cue-derive.ts';
+import { normalizeLexicalText } from './gate.ts';
+import { CURRENT_RULES_VERSION } from './types.ts';
 import { classifyAnchors } from './derive.ts';
 import { aliasFromRow, syncFts } from './fts.ts';
 import { appendMissRetentionDecision } from './miss-prune.ts';
@@ -166,10 +174,35 @@ export interface DrainCardRowInput {
  * 计算（content_hash 生产调用面恒定 builder/alias-write 两处，编排层不直调摘要哈希）。
  * cue 缺失时占位空线索行满足 CHECK 长度约束，不生成叙事文本。
  */
+/**
+ * cue 落库前的单点规范化（#123 P5）。
+ *
+ * 所有 cue（不论来自经历快照还是 key_points 派生）都经此收口：清洗 → 去重保序 →
+ * 超 40 码点整条丢弃 → 取前 3 → 空集回落 `[""]` 占位。
+ * 物化与比对面共用本符号，保证"落库值"与"期望值"同口径、不产生每轮抖动。
+ */
+export function normalizeDisplayCues(cues: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of cues) {
+    if (typeof raw !== 'string') {
+      continue;
+    }
+    const text = normalizeLexicalText(raw);
+    if (text === '' || seen.has(text) || [...text].length > CUE_MAX_CODEPOINTS) {
+      continue;
+    }
+    seen.add(text);
+    normalized.push(text);
+  }
+  const kept = normalized.slice(0, CUE_MAX_COUNT);
+  return kept.length > 0 ? kept : [''];
+}
+
 export function materializeDrainCardRow(input: DrainCardRowInput): MemoryCard {
   const anchorJson = JSON.stringify([...input.anchors]);
-  const cues = [...input.cues].slice(0, 3);
-  const displayCuesJson = JSON.stringify(cues.length > 0 ? cues : ['']);
+  const cues = normalizeDisplayCues(input.cues);
+  const displayCuesJson = JSON.stringify(cues);
   const aliasesJson = '[]';
   const discriminator = '';
   const summaryHash = computeContentHash(anchorJson, displayCuesJson, aliasesJson, discriminator);
@@ -412,6 +445,14 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
       continue;
     }
     const anchorJson = JSON.stringify(effectiveAnchors);
+    // #123 P3：启用 cue 派生的规则版本下，全量重建按 key_points 重派生；v1 原样搬运旧值。
+    const displayCuesJson = isCueDerivationEnabled(CURRENT_RULES_VERSION)
+      ? JSON.stringify(
+          normalizeDisplayCues(
+            deriveCuesFromKeyPoints({ keyPoints: event.key_points, summary: event.summary }).cues,
+          ),
+        )
+      : old.displayCuesJson;
     const card: MemoryCard = {
       ...old,
       eventId: event.id,
@@ -419,9 +460,10 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
       channel: event.channel,
       occurredMs: event.started_ms,
       endedMs: event.ended_ms,
+      displayCuesJson,
       contentHash: computeContentHash(
         anchorJson,
-        old.displayCuesJson,
+        displayCuesJson,
         old.aliasesJson,
         old.discriminator,
       ),
@@ -502,6 +544,8 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
       schema_version: MEMORY_SCHEMA_VERSION,
       stamped_revision: nextRevision,
       truth_fingerprint: fingerprint.aggregate,
+      // #123 P4：位置章写明"本投影由哪套派生规则产出"，供 drain 判 rebuild-required。
+      rules_version: CURRENT_RULES_VERSION,
     });
     db.exec('COMMIT');
   } catch (error) {
