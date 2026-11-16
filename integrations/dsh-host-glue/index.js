@@ -15,8 +15,14 @@ import fastiPlugin, { createDshHostModelRoute } from '/home/user/.doubao/agent_m
 /** 固定摘要路由允许显式给出的键（其余键一律不透传）。 */
 const PINNED_ROUTE_KEYS = ['provider', 'model', 'reasoningEffort'];
 
-/** 转发给适配器的既有配置键（worker 节拍等常量仍以内核 params 单点为准）。 */
-const FORWARD_KEYS = ['dataRoot', 'channel', 'model'];
+/**
+ * 转发给适配器的既有配置键（worker 节拍等常量仍以内核 params 单点为准）。
+ *
+ * memoryGateMode 必须在列：#122 真机放量实证，漏转它会让适配器恒取默认 'off'，
+ * 记忆工具不注册、第七法端口不绑定，worker 每轮 not-wired 静默空轮。合法取值
+ * （off/shadow/on）由适配器 parseAdapterConfig 兜底校验，本胶水只透传不二次校验。
+ */
+const FORWARD_KEYS = ['dataRoot', 'channel', 'model', 'memoryGateMode'];
 
 function readPinnedRoute(rawConfig) {
   const pinned = rawConfig?.['summaryRoute'];
