@@ -26,8 +26,9 @@ import type {
   RuntimeMemoryHandle,
   RuntimeSearchQuery,
 } from '../../src/memory/runtime.ts';
-import { createMemoryTools } from '../../src/assembly/memory-tools.ts';
+import { createMemoryTools, observeShadowOnce } from '../../src/assembly/memory-tools.ts';
 import type {
+  CreateMemoryToolsDeps,
   MemoryGateMode,
   ShadowFact,
   ShadowSink,
@@ -317,4 +318,81 @@ test('GatedStatus 三态观测口径：空查询在 on 态归 no-match/empty-que
   assert.equal(view.status, 'no-match');
   assert.equal(view.reason, 'empty-query');
   assert.equal(view.cards.length, 0);
+});
+
+// ── 影子回放只写观测端口 observeShadowOnce（离线回放/监控用，与 gate mode 解耦） ────
+
+const REPLAY_AT = NOW - 5 * 24 * 3600 * 1000;
+
+function makeDeps(
+  mode: MemoryGateMode,
+  handle: RuntimeMemoryHandle | null,
+  sink: ShadowSink,
+): CreateMemoryToolsDeps {
+  return { mode, now: fixedNow, handle, sink, missChannel: 'dsh' };
+}
+
+test('影子回放observeShadowOnce：hit 态组装六字段，atMs 用传入回放时间而非注入时钟', async () => {
+  const sinkBox = makeSink();
+  const handle = makeFakeHandle({ explained: strongThenWeak(), addCalls: [], missCalls: [] });
+  await observeShadowOnce(makeDeps('off', handle, sinkBox.sink), 'cat', REPLAY_AT, 2);
+  assert.equal(sinkBox.records.length, 1, 'off 态显式调用端口仍须写观测：端口与 gate mode 解耦');
+  const fact = sinkBox.records[0]!;
+  assert.equal(fact.atMs, REPLAY_AT, '回放时间原样透传，绝不读 deps.now/系统时钟');
+  assert.equal(fact.gatedStatus, 'hit');
+  assert.equal(fact.candidateCount, 2, '门过滤前全集含被拒弱卡');
+  assert.equal(fact.acceptedCount, 1);
+  assert.equal(fact.countScope, 'gated-full');
+  assert.equal(fact.termNorm, 'cat');
+  assert.deepEqual(Object.keys(fact).sort(), [
+    'acceptedCount',
+    'atMs',
+    'candidateCount',
+    'countScope',
+    'gatedStatus',
+    'rejectedReasonCodes',
+    'termNorm',
+  ]);
+});
+
+test('影子回放observeShadowOnce：候选全被弱匹配拒绝时 gatedStatus=abstain 且原因码落 fact', async () => {
+  const sinkBox = makeSink();
+  const onlyWeak = [mkExplained('mc_weak', ['like-fallback'])];
+  const handle = makeFakeHandle({ explained: onlyWeak, addCalls: [], missCalls: [] });
+  await observeShadowOnce(makeDeps('shadow', handle, sinkBox.sink), '冷词', REPLAY_AT);
+  assert.equal(sinkBox.records.length, 1);
+  const fact = sinkBox.records[0]!;
+  assert.equal(fact.gatedStatus, 'abstain');
+  assert.equal(fact.candidateCount, 1, '弱候选计入过滤前全集');
+  assert.equal(fact.acceptedCount, 0);
+  assert.ok(fact.rejectedReasonCodes.includes('like-only-weak-match'));
+});
+
+test('影子回放observeShadowOnce：空库无候选归 no-match 并对词面做规范化', async () => {
+  const sinkBox = makeSink();
+  const handle = makeFakeHandle({ explained: [], addCalls: [], missCalls: [] });
+  await observeShadowOnce(makeDeps('on', handle, sinkBox.sink), '  XYZ  ', REPLAY_AT);
+  assert.equal(sinkBox.records.length, 1);
+  assert.equal(sinkBox.records[0]!.gatedStatus, 'no-match');
+  assert.equal(sinkBox.records[0]!.termNorm, 'xyz');
+});
+
+test('影子回放observeShadowOnce：handle=null 静默不写、不抛', async () => {
+  const sinkBox = makeSink();
+  await observeShadowOnce(makeDeps('shadow', null, sinkBox.sink), '猫', REPLAY_AT);
+  assert.equal(sinkBox.records.length, 0);
+});
+
+test('影子回放observeShadowOnce：门抛错时失败隔离不冒泡、不伪造 fact', async () => {
+  const sinkBox = makeSink();
+  const throwing: RuntimeMemoryHandle = {
+    ...makeFakeHandle({ addCalls: [], missCalls: [] }),
+    async searchExplained(): Promise<never> {
+      throw new Error('boom');
+    },
+  };
+  await assert.doesNotReject(() =>
+    observeShadowOnce(makeDeps('shadow', throwing, sinkBox.sink), '猫', REPLAY_AT),
+  );
+  assert.equal(sinkBox.records.length, 0);
 });

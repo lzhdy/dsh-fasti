@@ -293,5 +293,76 @@ test('WP4b 装配工厂：返回对象满足装配面契约（四方法可读、
   }
 });
 
+test('影子回放装配端口 observeShadow：off 态显式调用也旁路落盘，observedMs 用回放时间且与 mode 解耦', async () => {
+  const root = makeTempRoot('wp4b-observe-');
+  try {
+    const indexDir = seedOneCard(root);
+    // 回放时间须晚于卡的 validMs=T0 且卡未失效，门的时间窗才放行；取 FIXED_NOW 之后 7 天，
+    // 同时证明端口用的是调用方给定时间而非注入时钟。
+    const replayAt = FIXED_NOW + 7 * DAY;
+    const rt = openAssembledMemoryTools({
+      indexDir,
+      mode: 'off',
+      now: () => FIXED_NOW,
+      missChannel: 'dsh',
+    });
+    assert.equal(rt.indexReady, true);
+    await rt.observeShadow({ text: '咖啡馆', atMs: replayAt });
+    await rt.dispose();
+
+    const shadowFile = path.join(root, 'projection', SHADOW_DIRNAME, SHADOW_LOG_FILE);
+    const lines = fs
+      .readFileSync(shadowFile, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 1, '一次显式观测恰好落一行');
+    const row = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    assert.equal(row.observedMs, replayAt, '落盘 observedMs 必须是传入回放时间，不是注入时钟 FIXED_NOW');
+    assert.equal(row.gatedStatus, 'hit');
+    assert.ok(!('termNorm' in row), '落盘侧只存不可逆 termHash，不存明文词面');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('影子回放装配端口 observeShadow：缺库 handle=null 时不抛、不侧建影子目录', async () => {
+  const root = makeTempRoot('wp4b-observe-missing-');
+  try {
+    const rt = openAssembledMemoryTools({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'shadow',
+      now: () => FIXED_NOW,
+      missChannel: 'dsh',
+    });
+    assert.equal(rt.indexReady, false);
+    await assert.doesNotReject(() => rt.observeShadow({ text: '任意', atMs: FIXED_NOW }));
+    assert.ok(!fs.existsSync(path.join(root, 'projection', SHADOW_DIRNAME)), '无窄柄不得侧建影子目录');
+    await rt.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('影子回放装配面契约：observeShadow 为装配面函数，且不混入模型可见工具集', () => {
+  const root = makeTempRoot('wp4b-observe-shape-');
+  try {
+    const rt: AssembledMemoryRuntime = openAssembledMemoryTools({
+      indexDir: path.join(root, 'projection', 'memory-index'),
+      mode: 'off',
+      now: () => FIXED_NOW,
+      missChannel: 'dsh',
+    });
+    assert.equal(typeof rt.observeShadow, 'function');
+    assert.deepEqual(
+      Object.keys(rt.tools).sort(),
+      ['addMissAlias', 'gatedSearch', 'getCardsByAnchor', 'resolvePointer'].sort(),
+    );
+    assert.ok(!('observeShadow' in rt.tools), '观测口挂装配面，绝不进模型工具集（六工具之外的独立只写口）');
+    void rt.dispose();
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
 // 仅引用 openMemoryRuntime 以保持与窄柄同源夹具的显式依赖说明（类型/用途对照）。
 void openMemoryRuntime;

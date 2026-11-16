@@ -150,8 +150,14 @@ function observingView(): GatedSearchView {
  * 传 limit 是口径要求：acceptedCount 必须与真实 on 响应一致（limit 只截断 accepted，
  * candidateCount 恒为门过滤前全集）；不传会让影子系统性高报过门数（S4 因果对照）。
  * 任何异常就地吞掉——影子是旁路，失败只意味着少一条观测，绝不影响主链路。
+ *
+ * 影子回放只写观测端口（离线题库回放 / 网页监控的正式入口，非模型可见工具）：
+ *  - 与 `deps.mode` 解耦：off/shadow/on 下被显式调用都会旁路写一条观测，但绝不建卡、
+ *    不写 mem_miss、不返回召回结果，也不存在任何自动触发，线上对话路径零变化；
+ *  - `atMs` 必填且由调用方给定（回放时间线），函数体不读 `deps.now`/系统时钟；
+ *  - 窄柄缺失（handle=null）直接返回，不侧建任何文件。
  */
-async function runShadowObservation(
+export async function observeShadowOnce(
   deps: CreateMemoryToolsDeps,
   text: string,
   atMs: number,
@@ -234,7 +240,7 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
 
       // shadow：对外恒定 observing 空信封；内部空跑分流门并旁路写观测（窄柄缺失则只回空信封）。
       if (deps.mode === 'shadow') {
-        await runShadowObservation(deps, input.text, atMs, input.limit);
+        await observeShadowOnce(deps, input.text, atMs, input.limit);
         return observingView();
       }
 

@@ -19,7 +19,7 @@ import type { RuntimeMemoryHandle } from '../memory/runtime.ts';
 import { isSerialRefusable } from '../memory/serial.ts';
 import type { ShadowObservationInput } from '../memory/shadow-write.ts';
 import type { GateReasonCode, MemoryCard } from '../memory/types.ts';
-import { createMemoryTools } from './memory-tools.ts';
+import { createMemoryTools, observeShadowOnce } from './memory-tools.ts';
 import type { SourceLookupPort } from './source-lookup.ts';
 import type {
   MemoryGateMode,
@@ -58,6 +58,13 @@ export interface AssembledMemoryRuntime {
   readonly sourceLookup: SourceLookupPort | null;
   /** 绑到 runtime 窄柄的记忆投影第七法端口；窄柄不可用时为 null（DI 只绑定，不编排业务）。 */
   readonly memoryProjection: Pick<RuntimeMemoryHandle, 'drainProjection'> | null;
+  /**
+   * 影子回放只写观测端口（离线题库回放 / 网页监控用，独立于模型可见的六工具）：
+   * 跑一次与 on 态同参的门并旁路落一条影子观测，不建卡、不写 mem_miss、不返回召回。
+   * 与 mode 解耦、仅在显式调用时触发（无任何自动跑门）；`atMs` 必填由调用方给定回放时间，
+   * 内核不读系统时钟；窄柄未就绪（indexReady=false）时静默不写、不抛。
+   */
+  observeShadow(input: { readonly text: string; readonly atMs: number; readonly limit?: number }): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -184,13 +191,16 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
     },
   };
 
-  const tools = createMemoryTools({
+  // 同一份 deps 既喂模型工具集，也喂 影子回放观测端口：两条路径复用同一个门柄/影子 sink，
+  // 保证离线回放与线上 shadow 工具的六字段口径零漂移。
+  const toolDeps = {
     mode: input.mode,
     now: input.now,
     handle,
     sink,
     missChannel: input.missChannel,
-  });
+  };
+  const tools = createMemoryTools(toolDeps);
 
   let closed = false;
   const dispose = async (): Promise<void> => {
@@ -209,5 +219,17 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
       ? null
       : { drainProjection: (budgetMs: number) => handleRef.drainProjection(budgetMs) };
 
-  return { tools, indexReady, sourceLookup: input.sourceLookup ?? null, memoryProjection, dispose };
+  // 影子回放端口由装配面（handle/sink 的实际持有者）直接暴露；调用方只给文本与回放时间，
+  // 无需也无法接触内部窄柄。observeShadowOnce 内部已处理 handle=null 与失败隔离。
+  const observeShadow: AssembledMemoryRuntime['observeShadow'] = (observeInput) =>
+    observeShadowOnce(toolDeps, observeInput.text, observeInput.atMs, observeInput.limit);
+
+  return {
+    tools,
+    indexReady,
+    sourceLookup: input.sourceLookup ?? null,
+    memoryProjection,
+    observeShadow,
+    dispose,
+  };
 }
