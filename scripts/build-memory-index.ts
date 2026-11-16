@@ -284,7 +284,7 @@ function runDumpMisses(dataRoot: string, outFile: string, options: CliOptions): 
           `行数        ：${report.rows}`,
           `列数        ：${report.columnCount}`,
           `输出文件    ：${report.file}`,
-          `来源库      ：${report.indexDir}${MEMORY_INDEX_FILE}`.replace(/\\/g, '/'),
+          `来源库      ：${path.join(report.indexDir, MEMORY_INDEX_FILE)}`,
           '库未被写入；该文件是裁剪前唯一的事件级证据留存。',
           '',
         ].join('\n'),
