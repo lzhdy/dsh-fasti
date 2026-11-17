@@ -284,3 +284,16 @@
 
 **仍挂账（不在本卡编码范围）**：两份 gitignore 锁死的 *.log.txt 旧名由段4 探针重跑刷新或显式授权删除；冷备 tar 补做＋sha256；真机 v3 原子切换为独立第三道授权门；untracked 在制品入库范围须显式授权。本卡编码全程真实数据根零写入。
 
+### 10.5 真机 v3 原子切换记录（2026-11-17，主控授权后执行）
+
+| 项 | 结果 |
+|---|---|
+| 冷备 | `/home/user/.dsh/fasti-reset-20261117.tar.gz`（15.5 KB，13 文件全收）；sha256 `8cf3c6c2d0bb4690f51ed0fa3de70f130f8b0dc4750c5b8424691dd9937c703b`，切换前 `sha256sum -c` 通过 |
+| 切换前旧库 | schema_version=2、tokenizer=trigram |
+| 切换动作 | `build-memory-index.ts --data-root /home/user/.dsh/fasti --apply --yes`，影子库单事务＋fsync＋rename 原子替换；revision 4、slug=rebuild、shadowDiff 全 0 |
+| 切换后新库 | schema_version=3、tokenizer=unicode61、卡 2 / 别名 0 / FTS 行 2；新代码 `assertGeometryCurrent` 放行并检索成功 |
+| 真源影响 | events/experiences 全部零写入（mtime 复核 0 处变化），旧库由原子替换单点覆盖 |
+| 回滚路径 | 解包冷备 tar 覆盖 `projection/memory-index/` 即回到 v2 可运行态 |
+
+**体积红线口径变更（重要）**：切换时真机库内 2 张卡的 cue 文本均为空串，体积算式为 `0/0`，**真机无从实测**。故 1.95× 红线由"切换前实测"改为**"切换后首周随真实数据增长复测"**并挂账：一旦真实 cue 写入，须在真机整库复跑体积比（生产路径 mini-bench 现有 1.937× 仅来自 8 卡合成样本，不作上线背书）。此项列入 #123/#124 后续复盘清单。
+
