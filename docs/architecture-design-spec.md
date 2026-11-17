@@ -998,6 +998,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 
 - **#124 体积红线复测（2026-11-17 新增挂账）**：真机 v3 切换时库内 2 张卡 `display_cues_json` 均为空串，体积算式 `0/0`，1.95× **在切换时无从实测**，口径由"切换前实测"改为**"切换后首周随真实数据增长复测"**；生产路径 mini-bench 的 1.937×（463／239，8 卡合成样本）**不作上线背书**。复测落点：真机 `memory-index.sqlite` 内 `mem_card_fts.cue_text` 总字符数 ÷ `cueTextOf` 原文总字符数，一旦真实 cue 入库即测，超限则回退冷备并回头收几何。
 - **#116 窗口运行期接线未做（实证 2026-11-17）**：`src/memory/window.ts:47` 的 `assembleWindow` 全仓**仅定义、零调用点**，故窗口未进入运行回路；连带本节"miss 锚点 v1 恒 null"缺口照旧成立，两者是同一笔账的两面。
+- **旧总设计文档归档（2026-11-17 主控指令）**：dsh-persona-innate 时期 `mechanism-design.md`（v1.0.0，2026-11-05）原文入 `docs/history/2026-11-05-mechanism-design-v1.0.0-archived.md`（篇首钉"不具约束力"标记），淘汰项死因与代码残留审计见 `docs/history/新旧对照与淘汰说明.md`。审计结论：旧人格机器（情绪状态机／self_model／发展阶段／头部拦截／输出不完美层等）在现行代码零实现残留；挂账两项——R1 `experience.agent_meta.persona_version` 字段待平台独立化契约重议时改名或删除（不得顺手改），R2 五槽随 #116 重议处置。
 
 `#112` 的职责就是防止这些欠账被叙事成"已闭环"；挂账不占 30 张卡额度，也不单独建卡。
 
