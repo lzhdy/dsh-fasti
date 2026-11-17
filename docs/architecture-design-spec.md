@@ -862,9 +862,9 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 | 唯一设计正本 | 本文件 `docs/architecture-design-spec.md` | 机制、契约、施工调度三者合一；不再维护第二份架构文档 |
 | 最高准则 | 本文件 1.8 节理念红线锚点 | 原 `philosophy-and-five-block-redlines.md` 已迁入本节（条款正文逐字保留、标题与导语按节点调整，迁移记账见 11.6）；与本文件其余部分冲突时以 1.8 为准 |
 | 专项裁决 | 本文件附录 E | 原 `memory-recall-legacy-removal-decision.md` 已并入本附录：裁决正文逐字保留（自指与编号随合并更新），施工期增补条目以 E.2.4／E.4.2／E.5／E.6 显式登记；召回两分法定稿与绕门旧路拆除、#114/#115 的唯一依据，与历史提案冲突时以附录 E 为准 |
-| 代码快照 | `HEAD = origin/main = 0de2200` | 工作区仅 `docs/` 未跟踪文件，代码零改动 |
-| 规模口径（实测） | `src/` 79 个跟踪 `.ts` ／17,455 行；测试 63 文件／24,028 行／811 用例；全仓 192 跟踪文件／57,309 行 | 任何文档引用规模一律以此为准 |
-| 已废止口径 | 71 文件／19,320 行 | 历史过期快照，仓库查无出处；出现即视为错误 |
+| 代码快照 | `HEAD = origin/main = 6289f05` | 工作区仅 11 项未跟踪在制品（C 堆探针 7 ＋ D 堆 P6 资产 4），无未提交的已跟踪改动 |
+| 规模口径（实测，2026-11-17） | `src/` 96 个跟踪 `.ts` ／22,344 行；测试 102 文件／36,625 行／**1254 用例（`npm test` 1254 pass／0 fail）**；全仓 270 跟踪文件／79,488 行 | 任何文档引用规模一律以此为准 |
+| 已废止口径 | src 79 文件／17,455 行；测试 63 文件／24,028 行／811 用例；全仓 192 文件／57,309 行 | 历史过期快照，出现即视为错误 |
 
 ## 11.2 施工流程与取号规则
 
@@ -900,10 +900,10 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 | **#120** | 占位号（主控已确认锁定，待立项） | **漏召别名建议器**：通道二成功反馈 ＋ 建议清单 ＋ 她的裁决留痕 | 待立项；数据面口径（`mem_miss` 无 `card_id`、只记落空不记命中）未定前不得实现 | 11.6 挂账、任务台账 #105 |
 | **#121** | 正式卡号（主控已确认取号） | **影子观测端口 ＋ 离线影子回放**：装配面 `observeShadow`／内核 `observeShadowOnce` ＋ `replay-shadow-observations` CLI | 已实现并入库（commit `6cc263e`，登记见 11.11）；代码与测试注释已回填 #121 | 11.11 |
 | **#122** | 正式卡号（主控已确认取号） | **记忆装配断口修复（真机永久空轮／记忆本无法建卡）**，含两个串联成因：①插件→桥接→装配→runtime 的 **dataRoot 断口**，使第七法 drain 在真机能折叠真源 ready 事件建卡；②web 宿主胶水 **memoryGateMode 转发断口**，`dsh-host-glue` 白名单漏转门模式致适配器恒取 off、工具不注册、第七法端口不绑定 | ⑤已实现并真机验收通过（本地提交、**未 push**）：成因①三层接口加**可选** dataRoot 透传（插件取 `fasti.paths.root`），commit `d70575d`；成因②胶水 `FORWARD_KEYS` 补 `memoryGateMode`（合法值仍由适配器校验），commit `4b470af`。全量门 **1199/1199**、双 tsc、静态门 75 全绿；新增 7 测（装配/桥接透传建卡、缺省空轮回归、真机无 cue 占位、glue apply 透传 3 条）。真机重启放量后 gateMode=shadow 生效，worker 首轮 drain 建出 **2 张 active 卡**、revisions 增 `drain-projection` 条（added=2），多轮幂等零报错；两卡无 cue 落 `[""]` 占位，可召回性依赖 #120 | plugin.ts wireMemoryTools／memory-tool-bridge.ts 两接口两调用／host-tool-runtime.ts 接口与 openMemoryRuntime／drain.ts:250／**integrations/dsh-host-glue/index.js FORWARD_KEYS**；测试 host-tool-runtime.test、memory-tool-bridge.test、**host-glue.test** |
-| **#123** | 正式卡号（事后追认，2026-11-17） | **key_points→cue 保底派生（A 路线，P1–P6）**：闭合事件 key_points 经纯函数确定性投影 display_cues，不调 LLM、不读 raw、H7 双形态过滤 | P1–P5 已实现并入库（commit `b41ab21`，rules_version 落章点已补）；P6 五层金标未达标（现 fixtures 仅 C5 骨架），CURRENT_RULES_VERSION 仍 rules-v1、解冻前生产零行为变化 | 双路线裁定稿 Q1–Q10、`src/memory/cue-derive.ts`；落地登记章节待补 |
-| **#124** | 正式卡号（主控确认取号，待立项） | **记忆索引 bigram 化（窄卡）**：应用层 CJK bigram（孤立单字段 unigram 补底）＋ASCII 整词，FTS tokenizer trigram→unicode61，记忆侧准入阈值 3→2（与经历库常量拆分、experience_fts 不动），命中复核改对原文且三侧归一化同源；库级 schema 升 v3 带影子库整库重建；整句片段枚举（拆句工）明确不在本卡 | 待立项；charter 已主控签认冻结（`docs/task124-bigram-index-charter.md`），四份外审与处置裁定同批入库；取号在 #123 之后，不重排历史号 | task124 charter 与外审裁定文档、检索学术 grounding 第 5 节、双路线裁定稿 Q5、bigram 探针 |
+| **#123** | 正式卡号（事后追认，2026-11-17） | **key_points→cue 保底派生（A 路线，P1–P6）**：闭合事件 key_points 经纯函数确定性投影 display_cues，不调 LLM、不读 raw、H7 双形态过滤 | P1–P5 已实现并入库（commit `b41ab21`，rules_version 落章点已补）；P6 五层金标未达标（现 fixtures 仅 C5 骨架），CURRENT_RULES_VERSION 仍 rules-v1、解冻前生产零行为变化 | 双路线裁定稿 Q1–Q10、`src/memory/cue-derive.ts`；**落地登记见 11.12**（2026-11-17 补） |
+| **#124** | 正式卡号（主控确认取号） | **记忆索引 bigram 化（窄卡）**：应用层 CJK bigram（孤立单字段 unigram 补底）＋ASCII 整词，FTS tokenizer trigram→unicode61，记忆侧准入阈值 3→2（与经历库常量拆分、experience_fts 不动），命中复核改对原文且三侧归一化同源；库级 schema 升 v3 带影子库整库重建；整句片段枚举（拆句工）明确不在本卡 | **④实现完成·已验收**（主控 2026-11-17 逐门签认：提交 `6b72870` → push `6289f05` → 真机 v3 原子切换）。实际可验范围＝写入几何与 off／shadow 态检索几何（短词召回、门后错卡 0、FTS 体积）；on 态生产检索随 #91 放开后另验。局部挂账：真机 2 卡 cue 全空致体积比 `0/0`，1.95× 改为首周随真实数据复测（见 11.6） | task124 charter（§10 施工增补）与外审裁定文档、检索学术 grounding 第 5 节、双路线裁定稿 Q5、bigram 探针 |
 
-**号段现状一句话**：已取号到 **#124**；#118 是**预留**而非空号；#119 插队号、#120 锁定给漏召别名建议器（待立项）、#121 影子观测端口（已实现）、#122 记忆装配断口修复（已实现并真机验收）、#123 key_points cue 派生（P1–P5 已实现、P6 待金标未解冻，2026-11-17 事后追认补登）、#124 bigram 索引几何卡（charter 已签认冻结、待编码，外审已闭合）；**下一可分配空号是 #125**，取号即在本表续行占位，禁止凭上一号线性 +1。
+**号段现状一句话**：已取号到 **#124**；#118 是**预留**而非空号；#119 插队号、#120 锁定给漏召别名建议器（待立项）、#121 影子观测端口（已实现）、#122 记忆装配断口修复（已实现并真机验收）、#123 key_points cue 派生（P1–P5 已实现、P6 待金标未解冻，2026-11-17 事后追认补登，落地登记见 11.12）、#124 bigram 索引几何卡（**已④实现完成·已验收并 push、真机 v3 已切换**，2026-11-17）；**下一可分配空号是 #125**，取号即在本表续行占位，禁止凭上一号线性 +1。
 
 ### 11.4.1 待建卡详表（#88–#117 共 30 张；#119 插队切片见末行）
 
@@ -995,6 +995,9 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
   **不可测边界（如实登记，不用弱断言凑数）**：事务中途故障回滚与 `drain-permanent-tx` 观测缺故障注入 seam；worker"closure 先行"为 `plugin.ts` 源码顺序静态守卫，非运行时断言。
   **verify 口径纪律（2026-11-15 新增）**：全量测试唯一口径固定为 `npm test`；`node --test --test-force-exit "tests/**/*.test.ts"` 的引号 glob 存在**漏收**（实测两次分别收到 920／977／1000，fail 均 0，属漏收而非失败），不得作为唯一数字来源。此项已两次救回假绿数字。
 - **空白重启记账（2026-11-15 主控裁定，已执行）**：真实数据根整体清零、从完全空白的她重新开始。① 冷备：`~/.dsh/fasti-reset-20261115.tar.gz`（sha256 `91ae09d1b44ae5b44ee83db89939721ba7480d889c297c1e628a162c8a8cc587`），原目录改名 `~/.dsh/fasti.pre-reset-20261115` 保留可回滚，**物理删除须另行显式授权**；清零对象含 252 条经历、272 行事件版本（其中 7 行携带 34 个语义标签悬空锚点、1 个空 anchors 事件）、L1 投影、checkpoint 游标与 channels 注册，插件下次启动自建空结构。② 旧沙箱 `fake-home/`（含 persona-innate 真实对话 jsonl）移入本机会话工作区 `_quarantine-20261115/` 隔离，同样不物理删除。③ 仓库侧退役阶段 3 一次性脚本 `scripts/migrate-raw-turns.ts`、`scripts/selftest-migration.ts`（零数据入库史，全历史 28 提交无 jsonl/sqlite，不重写 git 历史）；`backfill-events.ts` 因被现行切分器特征测试依赖而保留，将来退役单独立项；两处注释口径同步改写。④ 范围影响：#42 不再承担"消解 34 个存量悬空锚点"义务（存量随清零消失），但运行期自动建卡目标不变；**增量风险仍在**——#90 锚点写入闸（L1/L2/L3）落地前，摘要 LLM 仍可能产出自由文本锚点，#42→#90 排期不变。⑤ GitHub 远端从未入库真实数据（.gitignore 长期排除 fasti/raw-data/backup），本次无远端数据泄露需要处置。
+
+- **#124 体积红线复测（2026-11-17 新增挂账）**：真机 v3 切换时库内 2 张卡 `display_cues_json` 均为空串，体积算式 `0/0`，1.95× **在切换时无从实测**，口径由"切换前实测"改为**"切换后首周随真实数据增长复测"**；生产路径 mini-bench 的 1.937×（463／239，8 卡合成样本）**不作上线背书**。复测落点：真机 `memory-index.sqlite` 内 `mem_card_fts.cue_text` 总字符数 ÷ `cueTextOf` 原文总字符数，一旦真实 cue 入库即测，超限则回退冷备并回头收几何。
+- **#116 窗口运行期接线未做（实证 2026-11-17）**：`src/memory/window.ts:47` 的 `assembleWindow` 全仓**仅定义、零调用点**，故窗口未进入运行回路；连带本节"miss 锚点 v1 恒 null"缺口照旧成立，两者是同一笔账的两面。
 
 `#112` 的职责就是防止这些欠账被叙事成"已闭环"；挂账不占 30 张卡额度，也不单独建卡。
 
@@ -1494,6 +1497,50 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 - 原监督视图与工程施工图已于 2026-11-14 废止并删除，内容全部并入本文件，不再单独维护；
 - 历史提案（含 `memory-runtime-q3-runbook.md`）仓规不改写，其与本附录冲突的五处旧口径已在 E.2.4 显式登记，runbook 修订随 #114／#115 交付；
 - 理念红线条款正文已逐字迁入第 1.8 节（标题与导语按节点调整，迁移记账见 11.6）；本裁决与理念红线冲突时，解释权归 1.8。
+
+---
+
+## 11.12 #123 key_points→cue 保底派生（P1–P5）落地登记（2026-11-17）
+
+> 依 #123 双路线裁定稿 Q1–Q10。本节只登记已落地口径与未达标边界，机制以 `src/memory/cue-derive.ts` 与 `tests/memory/cue-derive.test.ts` 为准；不得据此把 P6 未达标叙事成已闭环。
+
+### 11.12.1 机制命题
+
+闭合事件的 `key_points` 经**纯函数确定性投影**得到 `display_cues`：不调 LLM、不读 raw 正文、无随机性、无 I/O。算法顺序（外审裁定 P1）：
+
+1. NFKC 清洗；
+2. 去重保序；
+3. 超 `CUE_MAX_CODEPOINTS = 40` 码点**整条丢弃**（不截断）；
+4. **H7 双形态反查丢弃**：cue 码点 ≥ `H7_MIN_CODEPOINTS = 20` 时，用原始形态与 NFKC 形态分别对 `summary` 做字面子串反查，任一命中即丢（防止把摘要整句搬进 cue）；
+5. 保序取前 `CUE_MAX_COUNT = 3` 条。
+
+遥测两个计数随结果返回：`droppedTooLong`（≥40 码点丢弃数，上游摘要 prompt 漂移信号）、`droppedH7`（H7 反查丢弃数）。两数只作观测，不参与决策。
+
+### 11.12.2 冷启动闸：生产恒不派生
+
+- 白名单 `CUE_DERIVATION_RULES` **只含 `rules-v2`**；`CURRENT_RULES_VERSION = 'rules-v1'`（`types.ts:19`），故 `isCueDerivationEnabled('rules-v1') === false`，生产侧期望 cue 恒为空（新卡落 `[""]` 占位以满足 CHECK）。
+- 加版本只改白名单，**不加任何运行期 flag**（R3 条件二：生产只认 `rules_version`）。
+- 因此 rules-v1 下"cue 恒空"是**闸的设计态**，不是机制失效；两者严禁混叙。
+
+### 11.12.3 落地点
+
+| 位置 | 职责 |
+|---|---|
+| `src/memory/builder.ts:449` | 按 `CURRENT_RULES_VERSION` 判定是否派生（唯一启用判定点） |
+| `src/memory/builder.ts:548` | `rules_version` 落章点，版本随账本行写入 |
+| `src/memory/derive.ts:165`／`planner.ts:34` | rules-v2 入口只由构造方显式传入；**生产调用面不传**，故 v1 下零漂移 |
+
+### 11.12.4 验证证据
+
+- `tests/memory/cue-derive.test.ts` 8 条纯函数测（含 H7 双形态、超长整条丢弃、去重保序、前 3 截取）。
+- `tests/memory/cue-backfill.test.ts` 覆盖 rules 双态：`rules-v2` 从 key_points 派生期望 cue；`rules-v1` 期望恒空（零漂移前提）。
+- 当前全量口径：`npm test` **1254 pass／0 fail**（2026-11-17 实测，含 #124 净增 23 条）。
+
+### 11.12.5 未达标与解冻条件
+
+- **P6 五层金标未达标**：现 fixtures 仅 C5 骨架，五层金标样本未建。
+- 解冻（发布 `rules-v2`、改 `CURRENT_RULES_VERSION`）前置：P6 五层金标全过 ＋ 主控显式授权。任一条不满足，`rules-v1` 冻结继续生效。
+- 解冻前生产零行为变化是**验收条件**，不是可放宽项；任何为"让 cue 有内容"而绕过白名单的改动一律驳回。
 
 ---
 
