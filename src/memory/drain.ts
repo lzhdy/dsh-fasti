@@ -422,6 +422,10 @@ export function runDrainRound(deps: DrainRoundDeps): DrainRoundReport {
     );
   }
 
+  // #124 几何版本窗口：schema 版本或 FTS tokenizer 不符直接硬拒（抛错、零写入），
+  // 不允许在旧几何库上继续 drain；修复路径只有离线影子库整库重建＋原子切换。
+  deps.reader.assertGeometryCurrent();
+
   // 事务外只读读真源；折叠当前态（同 id 取最大 version）。
   const source = readSource(deps.dataRoot);
   const experienceExists = (id: string): boolean => source.cueByExperience.has(id);

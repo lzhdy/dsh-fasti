@@ -30,6 +30,7 @@ import {
   deriveCardId,
 } from '../../src/memory/builder.ts';
 import { cueTextOf } from '../../src/memory/fts.ts';
+import { indexTextOf } from '../../src/memory/bigram.ts';
 import { MEMORY_INDEX_FILE, openMemoryRead, openMemoryWrite } from '../../src/memory/store.ts';
 import type { AliasRow, DecisionRecord, MemoryCard, RevisionRecord } from '../../src/memory/types.ts';
 import { cleanupTempRoot, makeExperience, makeTempRoot } from '../helpers.ts';
@@ -446,7 +447,7 @@ async function seedIndex(
       revision: 1,
       slug: 'build',
       at_ms: atMs,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: computeTruthFingerprint(root).aggregate,
       prior_revision: null,
       card_count: cards.filter((c) => c.status === 'active').length,
@@ -530,7 +531,7 @@ test('R-01 零漂移：derive 期望态卡集合/身份/锚点/通道/时间窗/
   }
 });
 
-test('R-01 零漂移：FTS 文本与共享 cueTextOf 口径一致（cues + 活跃非敏感别名）', async () => {
+test('R-01 零漂移：FTS 文本＝cueTextOf 原文经 bigram.indexTextOf 的单元序列（#124 几何）', async () => {
   const root = makeTempRoot('task42-derive-fts-');
   try {
     const eventA = makeEvent('ev-A', [EXP_A]);
@@ -569,9 +570,11 @@ test('R-01 零漂移：FTS 文本与共享 cueTextOf 口径一致（cues + 活�
           lastHitMs: null,
         }),
       );
-      const expected = cueTextOf(row.display_cues_json, aliases);
-      assert.equal(row.cue_text, expected, 'FTS 文本 = cues + 活跃非敏感别名（共享低层口径）');
-      assert.ok(!row.cue_text.includes('隐私词'), '敏感别名不进 FTS');
+      const expected = indexTextOf(cueTextOf(row.display_cues_json, aliases));
+      assert.equal(row.cue_text, expected, 'FTS 文本 = 原文串经 bigram 单元化后的空格序列（#124 共享低层口径）');
+      assert.ok(!row.cue_text.includes('隐私词'), '敏感别名不进 FTS（原文整词）');
+      assert.ok(!row.cue_text.includes('隐私'), '敏感别名不进 FTS（bigram 单元亦不可见）');
+      assert.ok(!row.cue_text.includes('私词'), '敏感别名不进 FTS（bigram 单元亦不可见）');
     } finally {
       db.close();
       cleanupTempRoot(report.outputDir);

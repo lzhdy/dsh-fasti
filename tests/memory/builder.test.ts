@@ -34,7 +34,10 @@ import {
   deriveCardId,
 } from '../../src/memory/builder.ts';
 import { appendDecision, readDecisions, readRevisions } from '../../src/memory/ledger.ts';
+import { emitUnits, ftsPhraseOf, indexTextOf } from '../../src/memory/bigram.ts';
+import { aliasFromRow, cueTextOf } from '../../src/memory/fts.ts';
 import { MemoryAnchorDanglingError, MemoryIndexStaleError } from '../../src/memory/memory-errors.ts';
+import { MEMORY_SCHEMA_VERSION } from '../../src/memory/schema.ts';
 import { MEMORY_INDEX_FILE, openMemoryRead, openMemoryWrite } from '../../src/memory/store.ts';
 import type { AliasRow, DecisionRecord, MemoryCard, RevisionRecord } from '../../src/memory/types.ts';
 import { cleanupTempRoot, countLines, listTree, makeExperience, makeTempRoot } from '../helpers.ts';
@@ -176,7 +179,7 @@ async function seedIndex(
       revision: 1,
       slug: 'build',
       at_ms: atMs,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: computeTruthFingerprint(root).aggregate,
       prior_revision: null,
       card_count: cards.filter((c) => c.status === 'active').length,
@@ -364,15 +367,20 @@ test('apply：种子卡原样搬运、revision 盖章、账本前缀 preserved�
       assert.equal(card.displayCuesJson, seeded.card.displayCuesJson);
       assert.equal(card.discriminator, seeded.card.discriminator);
       assert.equal(card.occurredMs, Date.parse(t.eventA.time_range.started_at));
-      // FTS 文本 = cues + 活跃非敏感别名；敏感词不进 FTS。
+      // FTS 文本（#124）：cues + 活跃非敏感别名经 bigram 单元化；敏感词不进 FTS。
       const db = new DatabaseSync(path.join(indexDir, MEMORY_INDEX_FILE), { readOnly: true });
       try {
         const fts = db
           .prepare('SELECT cue_text FROM mem_card_fts WHERE card_id = ?')
           .get(seeded.card.cardId) as { cue_text: string };
-        assert.ok(fts.cue_text.includes('线索甲'));
-        assert.ok(fts.cue_text.includes('别名甲'));
-        assert.ok(!fts.cue_text.includes('隐私词'), '敏感别名不得进 FTS 文本');
+        assert.equal(
+          fts.cue_text,
+          indexTextOf('线索甲 线索乙 别名甲'),
+          'FTS 列＝原文串 bigram 单元序列（敏感别名已剔除）',
+        );
+        assert.ok(!fts.cue_text.includes('隐私词'), '敏感别名不得进 FTS 文本（原文整词）');
+        assert.ok(!fts.cue_text.includes('隐私'), '敏感别名不得进 FTS 文本（bigram 单元亦不可见）');
+        assert.ok(!fts.cue_text.includes('私词'), '敏感别名不得进 FTS 文本（bigram 单元亦不可见）');
       } finally {
         db.close();
       }
@@ -420,6 +428,91 @@ test('M4 幂等：同真值同决策连跑两次，row_hash_sum 与逐行 card_i
 });
 
 // ── M1：悬空锚点 ──────────────────────────────────────────────────────────
+
+test('#124 红测10：影子库重建验收——unicode61 几何、FTS 列逐字节重算、提交后 MATCH 抽样、戳记与 row_hash_sum 对账', async () => {
+  const t = makeTruth();
+  try {
+    const seededA = cardFor(
+      t.eventA,
+      ['哈尔滨冰雪节', '线索乙'],
+      [
+        { term: '别名甲', sensitive: 0 },
+        { term: '隐私词', sensitive: 1 },
+      ],
+      '区别于乙',
+      T0,
+    );
+    const seededB = cardFor(t.eventB, ['通货膨胀控制'], [], '区别于甲', T0);
+    await seedIndex(t.root, [seededA, seededB], T0);
+    const indexDir = indexDirOf(t.root);
+
+    const report = await buildMemoryIndex({ dataRoot: t.root, dryRun: false, nowMs: T0 + DAY });
+    assert.equal(report.cards, 2, '两卡均经影子库整库搬运');
+
+    const db = new DatabaseSync(path.join(indexDir, MEMORY_INDEX_FILE), { readOnly: true });
+    try {
+      // ① 重建后实际几何为 unicode61（非仅戳记声称）。
+      const ddl = db
+        .prepare("SELECT sql FROM sqlite_master WHERE name = 'mem_card_fts'")
+        .get() as { sql: string };
+      assert.match(ddl.sql, /tokenize\s*=\s*'unicode61'/i);
+      assert.doesNotMatch(ddl.sql, /trigram/i);
+
+      // ② FTS 文本列按新几何逐字节重算：与 indexTextOf(cueTextOf(...)) 全等，敏感别名剔除。
+      for (const seeded of [seededA, seededB]) {
+        const aliasRaws = db
+          .prepare('SELECT * FROM mem_alias WHERE card_id = ?')
+          .all(seeded.card.cardId) as Array<Record<string, unknown>>;
+        const publicAliases = aliasRaws
+          .map(aliasFromRow)
+          .filter((alias) => alias.status === 'active' && alias.sensitive === 0);
+        const expected = indexTextOf(cueTextOf(seeded.card.displayCuesJson, publicAliases));
+        const row = db
+          .prepare('SELECT cue_text FROM mem_card_fts WHERE card_id = ?')
+          .get(seeded.card.cardId) as { cue_text: string };
+        assert.equal(row.cue_text, expected, `FTS 文本列重算逐字节一致：${seeded.card.cardId}`);
+      }
+      const allFts = db.prepare('SELECT cue_text FROM mem_card_fts').all() as Array<{ cue_text: string }>;
+      for (const row of allFts) {
+        assert.ok(!row.cue_text.includes('隐私'), '敏感别名整词不入 FTS');
+        assert.ok(!row.cue_text.includes('私词'), '敏感别名 bigram 单元不入 FTS');
+      }
+
+      // ③ 提交后 MATCH 抽样：每卡首个 bigram 单元的 phrase 必须能在新库真实命中本卡。
+      for (const seeded of [seededA, seededB]) {
+        const firstCue = JSON.parse(seeded.card.displayCuesJson)[0] as string;
+        const unit = emitUnits(firstCue)[0];
+        assert.ok(unit, '前提：抽样 cue 至少产出一个 bigram 单元');
+        const hits = db
+          .prepare('SELECT card_id FROM mem_card_fts WHERE mem_card_fts MATCH ?')
+          .all(ftsPhraseOf([unit])) as Array<{ card_id: string }>;
+        assert.ok(
+          hits.some((hit) => hit.card_id === seeded.card.cardId),
+          `提交后 MATCH 抽样命中：${seeded.card.cardId} / ${unit}`,
+        );
+      }
+    } finally {
+      db.close();
+    }
+
+    // ④ 新库戳记为当前版本、几何窗口放行；row_hash_sum 与库内有效卡同口径对账。
+    const read = openMemoryRead({ indexDir });
+    try {
+      assert.doesNotThrow(() => read.assertGeometryCurrent());
+      const effective = read.listEffective(T0 + 10 * DAY);
+      assert.equal(effective.length, 2);
+      const revisions = readRevisions(indexDir);
+      const stamped = revisions.at(-1);
+      assert.equal(stamped?.schema_version, MEMORY_SCHEMA_VERSION);
+      assert.equal(stamped?.row_hash_sum, computeRowHashSum(effective));
+    } finally {
+      await read.close();
+    }
+  } finally {
+    cleanupTempRoot(t.root);
+  }
+});
+
 
 test('M1：篡改经历行致锚点悬空 → MemoryAnchorDanglingError、旧库完好、账本不增行、无 tmp 残留', async () => {
   const t = makeTruth();

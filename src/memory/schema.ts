@@ -55,12 +55,16 @@ CREATE INDEX IF NOT EXISTS idx_memcard_time ON mem_card(occurred_ms);
 CREATE INDEX IF NOT EXISTS idx_memcard_status ON mem_card(status, invalid_ms);
 `;
 
-/** 卡的 FTS：索引文本仅由 display_cues + 活跃 aliases 拼成，绝无正文/摘要。 */
+/**
+ * 卡的 FTS（v3，#124）：索引文本仅由 display_cues + 活跃非敏感 aliases 拼成，绝无正文/摘要。
+ * tokenizer 显式声明 unicode61（不依赖环境默认）；写入侧先把原文 bigram 化为空格连接的单元
+ * 序列（fts.ts indexTextOf），unicode61 再按空格把每个 bigram/整词切成独立 token。
+ */
 export const SQL_MEM_CARD_FTS = `
 CREATE VIRTUAL TABLE IF NOT EXISTS mem_card_fts USING fts5(
   card_id UNINDEXED,
   cue_text,
-  tokenize='trigram');
+  tokenize='unicode61');
 `;
 
 /** 别名词表（词级命中统计与漏召回填用；与卡内 aliases_json 保持同一数据源）。 */
@@ -136,9 +140,11 @@ export const MEMORY_SCHEMA = [
 
 /**
  * schema 版本（从 1 起，§3.2；只增不改）。
- * v1 首版；v2 = #117 外审 N-1：mem_miss 增 gate_status（门语义分拣，避免 ON 后代际混合 schema）。
+ * v1 首版；v2 = #117 外审 N-1：mem_miss 增 gate_status（门语义分拣，避免 ON 后代际混合 schema）；
+ * v3 = #124：mem_card_fts tokenizer trigram→unicode61 且 cue_text 改存 bigram 单元序列。
+ * 几何变更不可原地迁移，版本不符的既有库必须经影子库整库重建（charter §3.6）。
  */
-export const MEMORY_SCHEMA_VERSION = 2;
+export const MEMORY_SCHEMA_VERSION = 3;
 
 /**
  * 卡片契约版本（mem_card / mem_alias 的行级戳记，与库级 schema 版本解耦）。

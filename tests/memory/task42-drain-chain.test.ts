@@ -95,7 +95,7 @@ function buildSeedRevision(): RevisionRecord {
     revision: 1,
     slug: 'build',
     at_ms: T0,
-    schema_version: 1,
+    schema_version: 3,
     truth_fingerprint: 'fp-chain',
     prior_revision: null,
     card_count: 0,

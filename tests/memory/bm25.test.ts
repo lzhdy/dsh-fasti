@@ -15,15 +15,18 @@ import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
 import { UnavailableError } from '../../src/core/errors.ts';
+import { emitUnits, ftsPhraseOf } from '../../src/memory/bigram.ts';
 import {
   HALF_LIFE_MS,
   LAMBDA,
+  MIN_FTS_CODEPOINTS,
   normalizeQuery,
   recencyScore,
   searchCards,
   searchCardsExplained,
 } from '../../src/memory/bm25.ts';
 import { computeContentHash } from '../../src/memory/builder.ts';
+import { indexTextOf } from '../../src/memory/bigram.ts';
 import { isEffectiveAt } from '../../src/memory/invalidate.ts';
 import {
   MEMORY_INDEX_FILE,
@@ -133,7 +136,7 @@ async function seedCorpus(): Promise<Seeded> {
       revision: 1,
       slug: 'build',
       at_ms: T0,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: 'fp-bm25-test',
       prior_revision: null,
       card_count: cards.length,
@@ -220,7 +223,7 @@ test('观测初值常量：LAMBDA=0.15、HALF_LIFE_MS=30 天（§4.4②）', () 
   assert.equal(HALF_LIFE_MS, 30 * 24 * 3600 * 1000);
 });
 
-// ── FTS 路径（≥3 码点）────────────────────────────────────────────────────
+// ── FTS 路径（≥2 码点，#124 bigram 几何）──────────────────────────────────
 
 test('FTS 路径：命中、scoreParts.bm25=-bm25Raw>0、recency 为 exp 衰减值、matchedTerms=[规范化查询]', async () => {
   const { root, file } = await seedCorpus();
@@ -242,18 +245,20 @@ test('FTS 路径：命中、scoreParts.bm25=-bm25Raw>0、recency 为 exp 衰减�
   }
 });
 
-test('MATCH 后精确复核：trigram 超集命中被 matchesSubstring 收口（L1 同款语义）', async () => {
+test('bigram/unicode61 召回经原文 matchesSubstring 收口（#124：复核靶是原文字段而非 FTS 列）', async () => {
   const { root, file } = await seedCorpus();
   const db = new DatabaseSync(file, { readOnly: true });
   try {
-    // trigram 折叠 Unicode 大小写：原始 MATCH 能命中 ÄPFEL（超集事实）。
+    // 新几何超集事实：查询 'äpfel' 切词时词首非 ASCII 的 ä 落为分隔，FTS 单元只剩 'pfel'，
+    // 原始 phrase MATCH 仍能物理召回 mc_d（其 cue 为 'ÄPFEL 果园'）。
+    const rawPhrase = ftsPhraseOf(emitUnits(normalizeQuery('äpfel')));
     const raw = db
       .prepare('SELECT card_id FROM mem_card_fts WHERE mem_card_fts MATCH ?')
-      .all('"äpfel"') as Array<{ card_id: string }>;
-    assert.deepEqual(raw.map((r) => r.card_id), ['mc_d'], '前提：trigram MATCH 是超集');
-    // 精确判定（ASCII-only 小写）不认 Ä≠ä → 检索结果必须为空。
-    assert.deepEqual(searchCards(db, { text: 'äpfel', atMs: AT }), [], '超集命中被精确复核排除');
-    // 同词 ASCII 部分大小写不敏感 → 命中。
+      .all(rawPhrase) as Array<{ card_id: string }>;
+    assert.deepEqual(raw.map((r) => r.card_id), ['mc_d'], '前提：FTS phrase 物理召回是超集');
+    // 原文精确复核（ASCII-only 小写）不认 Ä≠ä → 检索结果必须为空（拒收不由 FTS 列自证）。
+    assert.deepEqual(searchCards(db, { text: 'äpfel', atMs: AT }), [], '超集命中被原文复核排除');
+    // 同词 ASCII 部分大小写不敏感 → 原文复核通过，命中。
     assert.deepEqual(ids(searchCards(db, { text: 'ÄPFEL', atMs: AT })), ['mc_d']);
   } finally {
     db.close();
@@ -261,7 +266,7 @@ test('MATCH 后精确复核：trigram 超集命中被 matchesSubstring 收口（
   }
 });
 
-// ── 回退路径（<3 码点）与敏感词 ───────────────────────────────────────────
+// ── 回退路径（纯单字 1 码点/空单元）与敏感词 ──────────────────────────────
 
 test('短词回退：精确+LIKE 命中、bm25=0、按近因排序、matchedTerms 为命中别名集', async () => {
   const { root, file } = await seedCorpus();
@@ -280,11 +285,12 @@ test('短词回退：精确+LIKE 命中、bm25=0、按近因排序、matchedTerm
     assert.ok(second);
     assert.deepEqual(first.matchedTerms, ['猫', '猫咪咖啡'], 'LIKE 命中别名集去重字典序');
     assert.deepEqual(second.matchedTerms, ['猫']);
-    // trigram 对短词无能为力 → 回退是义务（原始 MATCH 零行）。
-    const raw = db
-      .prepare('SELECT card_id FROM mem_card_fts WHERE mem_card_fts MATCH ?')
-      .all('"猫"') as Array<{ card_id: string }>;
-    assert.equal(raw.length, 0, '短词 trigram 无法命中');
+    // 纯单字（1 码点 < MIN_FTS_CODEPOINTS）门槛上不发起 FTS：即便 unigram 在列中物理可 MATCH，
+    // 通道也只能是精确/LIKE 回退（回退是义务，不靠 FTS 几何施舍）。
+    assert.equal([...'猫'].length < MIN_FTS_CODEPOINTS, true);
+    for (const hit of searchCardsExplained(db, { text: '猫', atMs: AT })) {
+      assert.ok(!hit.matchKinds.includes('fts-substring'), '单字查询不得挂 fts-substring 通道');
+    }
   } finally {
     db.close();
     cleanupTempRoot(root);
@@ -298,7 +304,9 @@ test('敏感词：FTS 恒不可见、精确路径任意长度可达、LIKE 不�
     const ftsC = db
       .prepare('SELECT cue_text FROM mem_card_fts WHERE card_id = ?')
       .get('mc_c') as { cue_text: string };
-    assert.ok(!ftsC.cue_text.includes('私密词'), 'sensitive=1 不进 FTS 文本');
+    assert.ok(!ftsC.cue_text.includes('私密词'), 'sensitive=1 不进 FTS 文本（原文整词）');
+    assert.ok(!ftsC.cue_text.includes('私密'), 'sensitive=1 不进 FTS 文本（bigram 单元亦不可见）');
+    assert.ok(!ftsC.cue_text.includes('密词'), 'sensitive=1 不进 FTS 文本（bigram 单元亦不可见）');
 
     // 3 码点敏感词：FTS 无命中，精确路径可达。
     const hit3 = searchCards(db, { text: '私密词', atMs: AT });
@@ -315,7 +323,11 @@ test('敏感词：FTS 恒不可见、精确路径任意长度可达、LIKE 不�
     const ftsF = db
       .prepare('SELECT cue_text FROM mem_card_fts WHERE card_id = ?')
       .get('mc_f') as { cue_text: string };
-    assert.equal(ftsF.cue_text, '私教课训练', '敏感别名不追加进 FTS 文本（cue 本身含同词另当别论）');
+    assert.equal(
+      ftsF.cue_text,
+      indexTextOf('私教课训练'),
+      '敏感别名不追加进 FTS 文本；cue 本身按 bigram 单元序列存储（cue 含同词另当别论）',
+    );
     const hitF = searchCards(db, { text: '私教课', atMs: AT });
     assert.deepEqual(ids(hitF), ['mc_f']);
     const onlyF = hitF[0];
@@ -330,28 +342,27 @@ test('敏感词：FTS 恒不可见、精确路径任意长度可达、LIKE 不�
 
 // ── M12：两路径结果集合一致（不断言分数相等，G12）─────────────────────────
 
-test('M12：同一组词走 trigram MATCH 与精确/LIKE 回退，结果集合一致', async () => {
+test('M12：同一组词走 bigram FTS 与精确/LIKE 回退，结果集合一致（#124 几何）', async () => {
   const { root, file } = await seedCorpus();
   const db = new DatabaseSync(file, { readOnly: true });
   try {
-    // ≥3 码点别名承载词：searchCards 走 FTS，参照走回退 SQL。
+    // ≥2 码点别名承载词：searchCards 走 FTS（bigram phrase），参照走回退 SQL。
     for (const word of ['咖啡馆', '深夜食堂', '猫咪咖啡']) {
       const viaSearch = ids(searchCards(db, { text: word, atMs: AT })).sort();
       const viaFallback = fallbackReference(db, word, AT);
       assert.ok(viaSearch.length > 0, `「${word}」须有命中（避免空集假阳性）`);
       assert.deepEqual(viaSearch, viaFallback, `M12 集合不一致：${word}`);
     }
-    // 短词：searchCards 走回退，参照走语义判定（精确 或 ASCII 子串）。
+    // 纯单字：searchCards 门槛上走回退，参照走语义判定（精确 或 ASCII 子串）。
     for (const word of ['猫', '论文']) {
       const viaSearch = ids(searchCards(db, { text: word, atMs: AT })).sort();
       const viaSemantic = semanticReference(db, word, AT);
-      assert.deepEqual(viaSearch, viaSemantic, `M12 短词集合不一致：${word}`);
-      const raw = db
-        .prepare('SELECT card_id FROM mem_card_fts WHERE mem_card_fts MATCH ?')
-        .all(`"${word}"`) as Array<{ card_id: string }>;
-      assert.equal(raw.length, 0, `短词「${word}」trigram 零命中（回退义务）`);
+      assert.deepEqual(viaSearch, viaSemantic, `M12 单字集合不一致：${word}`);
+      for (const hit of searchCardsExplained(db, { text: word, atMs: AT })) {
+        assert.ok(!hit.matchKinds.includes('fts-substring'), `单字「${word}」不得走 FTS 通道`);
+      }
     }
-    assert.ok(searchCards(db, { text: '猫', atMs: AT }).length > 0, '短词须有命中（避免空集假阳性）');
+    assert.ok(searchCards(db, { text: '猫', atMs: AT }).length > 0, '单字须有命中（避免空集假阳性）');
   } finally {
     db.close();
     cleanupTempRoot(root);
@@ -435,9 +446,15 @@ test('limit：排序后截断、缺省不截断（top-k 由调用方传入，§6
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     const query: SearchQuery = { text: '咖啡', atMs: AT };
-    assert.deepEqual(ids(searchCards(db, query)), ['mc_b', 'mc_a'], '缺省不截断');
-    assert.deepEqual(ids(searchCards(db, { ...query, limit: 1 })), ['mc_b'], 'limit=1 取排序后首张');
-    assert.deepEqual(ids(searchCards(db, { ...query, limit: 3 })), ['mc_b', 'mc_a'], 'k=3 调用方策略');
+    // #124 后 2 码点走 FTS（bm25 计分通道），次序由“排序”专测守护；本测只验集合与截断语义。
+    assert.deepEqual(ids(searchCards(db, query)).sort(), ['mc_a', 'mc_b'], '缺省不截断');
+    assert.equal(searchCards(db, { ...query, limit: 1 }).length, 1, 'limit=1 截断为 1 张');
+    assert.equal(searchCards(db, { ...query, limit: 3 }).length, 2, 'k=3 大于结果集时不补齐');
+    assert.deepEqual(
+      ids(searchCards(db, { ...query, limit: 1 })),
+      [ids(searchCards(db, query))[0]],
+      'limit=1 取排序后首张',
+    );
   } finally {
     db.close();
     cleanupTempRoot(root);
@@ -474,7 +491,7 @@ test('G2：handle.search 委托 searchCards；写柄经类继承获得（零新�
       revision: 1,
       slug: 'build',
       at_ms: T0,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: 'fp-bm25-handle',
       prior_revision: null,
       card_count: cards.length,
@@ -546,8 +563,8 @@ test('explained 通道标记：纯 FTS 携 cueText、纯短词 LIKE 无 cueText�
     assert.equal(typeof ftsOnly[0]?.cueText, 'string');
     assert.ok(ftsOnly[0]?.cueText?.includes('咖啡馆约'));
 
-    // 纯 LIKE：短词（<3 码点）非完整别名，但为某非敏感别名的子串 → 仅 like-fallback、无 cueText。
-    const likeOnly = searchCardsExplained(db, { text: '猫咪', atMs: AT });
+    // 纯 LIKE：纯单字（1 码点门槛不过 FTS）且为某非敏感别名的子串、非完整等值 → 仅 like-fallback、无 cueText。
+    const likeOnly = searchCardsExplained(db, { text: '夜', atMs: AT });
     assert.deepEqual(ids(likeOnly), ['mc_b']);
     assert.deepEqual(likeOnly[0]?.matchKinds, ['like-fallback']);
     assert.equal(likeOnly[0]?.cueText, undefined);
@@ -564,20 +581,20 @@ test('explained 通道标记：纯 FTS 携 cueText、纯短词 LIKE 无 cueText�
   }
 });
 
-test('ftsOk 两路控制流：≥3 码点零命中不产生 like-fallback；<3 码点确走 LIKE 分支', async () => {
+test('ftsOk 两路控制流：≥2 码点零命中不产生 like-fallback；纯单字确走 LIKE 分支', async () => {
   const { root, file } = await seedCorpus();
   const db = new DatabaseSync(file, { readOnly: true });
   try {
-    // 不存在的长词（≥3 码点）：FTS MATCH 正常执行但零行、不抛错 → ftsOk=true，不得追加 LIKE 候选。
+    // 不存在的长词（≥2 码点）：FTS MATCH 正常执行但零行、不抛错 → ftsOk=true，不得追加 LIKE 候选。
     const longMiss = searchCardsExplained(db, { text: 'nosuchterm', atMs: AT });
     assert.ok(longMiss.every((h) => !h.matchKinds.includes('like-fallback')));
     assert.deepEqual(longMiss, []);
 
-    // 对照：同库 <3 码点查询确会启用 LIKE 并标注 like-fallback，证明 LIKE 分支只在 !ftsOk 时触发。
+    // 对照：同库纯单字查询确会启用 LIKE 并标注 like-fallback，证明 LIKE 分支只在 !ftsOk 时触发。
     const shortFallback = searchCardsExplained(db, { text: '猫', atMs: AT });
     assert.ok(shortFallback.every((h) => h.matchKinds.includes('like-fallback')));
 
-    // 不存在的单码点查询走 LIKE 也安全返回空、不抛错。
+    // 不存在的单字母查询（空单元，不发 MATCH）走 LIKE 也安全返回空、不抛错。
     assert.deepEqual(searchCardsExplained(db, { text: 'z', atMs: AT }), []);
   } finally {
     db.close();

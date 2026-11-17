@@ -181,7 +181,7 @@ async function seedCorpus(): Promise<{ root: string; indexDir: string; file: str
       revision: 1,
       slug: 'build',
       at_ms: T0,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: 'fp-runtime-wp1',
       prior_revision: null,
       card_count: cards.length,

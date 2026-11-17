@@ -71,9 +71,10 @@ function columnNamesOf(createSql: string): string[] {
   return names;
 }
 
-test('schema 版本从 1 起，v2 起 mem_miss 增 gate_status（#117 外审 N-1）', () => {
-  // v1 = 首版；v2 = #117 外审裁定，mem_miss 增门语义分拣列（ON 前落地，避免代际混合 schema）。
-  assert.equal(MEMORY_SCHEMA_VERSION, 2);
+test('schema 版本从 1 起，v3 起 FTS 改 unicode61+bigram 几何（#117→v2，#124→v3）', () => {
+  // v1 = 首版；v2 = #117 外审裁定，mem_miss 增门语义分拣列；
+  // v3 = #124 bigram 卡：mem_card_fts tokenizer trigram→unicode61、cue_text 改存 bigram 单元序列。
+  assert.equal(MEMORY_SCHEMA_VERSION, 3);
 });
 
 test('期望表/索引清单与方案 §3.2 一致', () => {

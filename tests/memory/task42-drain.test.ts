@@ -133,7 +133,7 @@ async function seedBlankIndex(): Promise<Seeded> {
       revision: 1,
       slug: 'build',
       at_ms: T0,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: 'fp-drain-b2',
       prior_revision: null,
       card_count: 0,

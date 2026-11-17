@@ -3,7 +3,8 @@
  *
  * 端到端走真实链路：openMemoryRuntime 窄柄 → runGatedSearch（窄柄取全集 + applyGate 裁决），
  * 验证装配编排把“未截断全集”交给门、top-k 仅在门后生效，且 N9 弱尾强卡反例在接线层成立：
- *  - ASCII 非词边界子串（cat∈concatenate）仅 fts-substring 弱命中，被 ascii-no-word-boundary 拒绝；
+ *  - ASCII 非词边界子串（cat∈concatenate）在 #124 unicode61 整词几何下于 FTS 召回层即被闭合，
+ *    弱卡不入场；gate 的 ascii-no-word-boundary 规则保留为纵深防御（gate.test 纯函数守护）；
  *  - exact-alias 强通道卡即使与弱卡同处候选全集，门后 accepted 只取强卡，limit=1 不拿弱尾凑数；
  *  - 多卡同别名（multi-accept）时门后截断数量随 limit 正确变化，装配层不预切片；
  *  - 空查询归一为 no-match/empty-query。
@@ -89,7 +90,7 @@ async function seed(specs: SeedSpec[]): Promise<{ root: string; indexDir: string
       revision: 1,
       slug: 'build',
       at_ms: T0,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: 'fp-assembly-wp3',
       prior_revision: null,
       card_count: cards.length,
@@ -132,9 +133,11 @@ test('N9 接线反例：弱子串卡被门拒，limit=1 的 accepted 只取 exac
       assert.ok(strong);
       assert.ok(strong.gateReasons.includes('exact-alias-pass'));
 
-      const weak = outcome.rejected.find((c) => c.card.cardId === 'mc_weak');
-      assert.ok(weak, '弱子串卡必须出现在 rejected 而非被截断丢弃');
-      assert.ok(weak.gateReasons.includes('ascii-no-word-boundary'));
+      // #124 unicode61 整词几何：'cat' 与 'concatenate' 是不同整词 token，弱卡物理上不被 FTS 召回，
+      // 故不进任何门后集合（trigram 时代它经 fts-substring 入场再被 ascii-no-word-boundary 拒收；
+      // 词边界规则仍保留为纵深防御，纯函数守护在 gate.test.ts）。门后唯一席位给强卡的安全目标不变。
+      const surfaced = [...outcome.accepted, ...outcome.rejected].map((c) => c.card.cardId);
+      assert.ok(!surfaced.includes('mc_weak'), '弱子串卡不得混入门后任何集合');
     } finally {
       await handle.close();
     }

@@ -1,16 +1,20 @@
 /**
  * 记忆层 FTS 快照共享低层（N1 无环抽取，自 store.ts 原样搬入）。
  *
- * 无环纪律：本模块只依赖 node:sqlite 的类型、memory 纯类型 types.ts 与字符串/JSON 全局，
- * **不 import 任何能到达 store 的 memory 模块**（不依赖 store/builder/bm25），供 builder/store 及
- * 别名窄写共同引用。tests/memory/layer-imports.test.ts 对该约束做静态断言与投毒自证。
+ * 无环纪律：本模块只依赖 node:sqlite 的类型、memory 纯类型 types.ts、同为无环 leaf 的
+ * bigram.ts 与字符串/JSON 全局，**不 import 任何能到达 store 的 memory 模块**
+ * （不依赖 store/builder/bm25），供 builder/store 及别名窄写共同引用。
+ * tests/memory/layer-imports.test.ts 对该约束做静态断言与投毒自证。
  *
- * 本模块为纯移动：行映射、cue_text 拼接规则、FTS 重建 SQL 与抽取前逐字一致（零漂移）。
+ * #124 bigram 几何（charter §3.2/3.4）：{@link cueTextOf} 仍输出**原文**拼接串（bm25 复核、
+ * gate 词边界与下游 cueText 字段继续消费原文，接口零漂移）；写入 FTS 列时经 bigram.indexTextOf
+ * 转为归一化 bigram 单元序列，unicode61 按空格把每个 bigram/整词切成独立 token。
  * 库柄由调用方传入，本模块不自开连接。
  */
 
 import type { DatabaseSync } from 'node:sqlite';
 
+import { indexTextOf } from './bigram.ts';
 import type { AliasRow } from './types.ts';
 
 /** 行 → 别名（可空列归一为 null）。 */
@@ -53,6 +57,7 @@ export function syncFts(db: DatabaseSync, cardIds: Iterable<string>): void {
       continue;
     }
     const aliases = (aliasStmt.all(cardId) as Array<Record<string, unknown>>).map(aliasFromRow);
-    ins.run(cardId, cueTextOf(cardRow.display_cues_json, aliases));
+    // FTS 列存 bigram 单元序列；原文串由 cueTextOf 保留给复核/裁决侧。
+    ins.run(cardId, indexTextOf(cueTextOf(cardRow.display_cues_json, aliases)));
   }
 }

@@ -57,6 +57,7 @@ function extractImportSpecifiers(text: string): string[] {
  */
 const ACYCLIC_LEAF_FILES = [
   'content-hash.ts',
+  'bigram.ts',
   'fts.ts',
   'gate.ts',
   'alias-write.ts',

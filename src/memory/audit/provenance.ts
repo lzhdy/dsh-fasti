@@ -9,11 +9,10 @@
  *  - 成功率<100% 或悬空锚点 → failed（硬失败，区别于观测红线）；纯离线、无网络；顶层零求值。
  */
 
-import { normalizeQuery } from '../bm25.ts';
+import { emitUnits } from '../bigram.ts';
 import type { Pointer } from '../../contract/experience.ts';
 import type { ResolvedPointer } from '../../contract/primitives.ts';
 import type { MemoryCard } from '../types.ts';
-import { cardTermSet } from './decoy.ts';
 import type { Rng } from './metrics.ts';
 
 /** 指针解析回调（编排层装配 (p)=>fasti.resolvePointer(p)；必填、无缺省）。 */
@@ -83,18 +82,25 @@ function stratifiedSample(cards: readonly MemoryCard[], ratio: number, rng: Rng)
   return sampled;
 }
 
-/** FTS 溯源③：cue_text 每个词项（规范化后）须来自卡的 cue/alias，杜绝正文泄露。 */
+/**
+ * FTS 溯源③（#124 bigram 几何）：cue_text 中每个单元都必须能由本卡 display_cues 与
+ * 非敏感别名经同一 emitUnits 重算产出，杜绝正文/敏感别名泄露。单向“列单元 ⊆ 可推导单元集”，
+ * 与旧 trigram 时代“列词项 ⊆ 卡词项”同强度；敏感别名先剔除再重算，故其 bigram 单元必然缺席。
+ */
 function ftsTraceable(card: MemoryCard, ftsText: string | undefined): boolean {
   if (ftsText === undefined) {
     return false;
   }
-  const terms = cardTermSet(card);
+  const cues = JSON.parse(card.displayCuesJson) as string[];
+  const safeAliasTerms = (JSON.parse(card.aliasesJson) as Array<{ term: string; sensitive: 0 | 1 }>)
+    .filter((alias) => alias.sensitive === 0)
+    .map((alias) => alias.term);
+  const allowed = new Set(emitUnits([...cues, ...safeAliasTerms].join(' ')));
   for (const raw of ftsText.split(/\s+/)) {
     if (raw === '') {
       continue;
     }
-    const norm = normalizeQuery(raw);
-    if (norm !== '' && !terms.has(norm)) {
+    if (!allowed.has(raw)) {
       return false;
     }
   }

@@ -6,7 +6,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import { normalizeBigramText } from '../../src/memory/bigram.ts';
 import { normalizeQuery } from '../../src/memory/bm25.ts';
 import {
   GATE_POLICY,
@@ -95,12 +99,23 @@ test('hasAsciiWordBoundary：多次出现任一成立即过；全部非边界才
   assert.equal(hasAsciiWordBoundary('git', 'git'), true, '整串严格相等，首尾皆边界');
 });
 
-test('N3 同构锁定：normalizeLexicalText 与 bm25.normalizeQuery 在各类输入下逐字相等', () => {
+test('N3 同构锁定：gate / bm25 / bigram 三方归一化在各类输入下逐字相等（#124 红测11）', () => {
   const samples = ['Git', '  GIT ', 'ＧＩＴ', 'Ｇｉｔ hub', '记账 Book', 'a　b', 'mixedCase123_', ''];
   for (const sample of samples) {
     assert.equal(normalizeLexicalText(sample), normalizeQuery(sample), `同构失败：${JSON.stringify(sample)}`);
+    assert.equal(normalizeLexicalText(sample), normalizeBigramText(sample), `bigram 同构失败：${JSON.stringify(sample)}`);
   }
   assert.ok(GATE_POLICY.asciiWordBoundary === true);
+});
+
+test('#124 红测11 静态扫描：gate/rules 不引用任何索引几何常量或 bigram/bm25 模块（B8 依赖方向）', () => {
+  const gateSource = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src/memory/gate.ts'),
+    'utf8',
+  );
+  assert.ok(!/MIN_FTS_CODEPOINTS|MIN_TRIGRAM_LENGTH/.test(gateSource), 'gate 不得出现几何阈值常量');
+  assert.ok(!/from '\.\/bigram\.ts'/.test(gateSource), 'gate 不得 import bigram 纯函数模块');
+  assert.ok(!/from '\.\/bm25\.ts'/.test(gateSource), 'gate 不得 import bm25（无环纪律，裁决独立于索引几何）');
 });
 
 // ── 三态与原因码 ──────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ function revision(overrides: Partial<RevisionRecord> = {}): RevisionRecord {
     revision: 1,
     slug: 'build',
     at_ms: T0,
-    schema_version: 1,
+    schema_version: 3,
     truth_fingerprint: 'fp-1',
     prior_revision: null,
     card_count: 0,

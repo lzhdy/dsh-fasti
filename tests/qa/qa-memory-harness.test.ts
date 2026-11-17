@@ -1003,7 +1003,7 @@ async function seedCards(root: string): Promise<void> {
       revision: 1,
       slug: 'build',
       at_ms: atMs,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: computeTruthFingerprint(root).aggregate,
       prior_revision: null,
       card_count: cards.length,

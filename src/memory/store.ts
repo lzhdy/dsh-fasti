@@ -82,6 +82,8 @@ export interface MemoryReadHandle {
    */
   getCardsByAnchor(experienceId: string): MemoryCard[];
   search(query: SearchQuery): Promise<RankedCard[]>;
+  /** 几何版本窗口校验：版本/tokenizer 不符抛 MemoryIndexStaleError（#124，检索与 drain 入口调用）。 */
+  assertGeometryCurrent(): void;
   listEffective(atMs: number): MemoryCard[];
   /** 真值指纹与 stamp 不符抛 MemoryIndexStaleError（读操作拒绝服务）。 */
   verifyStampedFingerprint(current: TruthFingerprint): void;
@@ -309,6 +311,35 @@ export function stampMeta(
   upsert.run('rules_version', values.rules_version);
 }
 
+/**
+ * 几何版本窗口硬校验（#124 charter §3.6，全新机制）。
+ *
+ * 双项核对，任一不符抛 {@link MemoryIndexStaleError}（显式“须离线重建”，禁静默返空）：
+ *  1. schema_meta.schema_version 戳记 === 当前代码 {@link MEMORY_SCHEMA_VERSION}；
+ *  2. sqlite_master 中 mem_card_fts 的实际 DDL 声明确为 unicode61（防戳记被手工改写但几何仍旧）。
+ * 纯只读、事务外、无写入；卡片读取路径（getCard/listEffective）不挂本断言，仅检索入口与 drain 挂。
+ */
+export function assertMemoryGeometryCurrent(db: DatabaseSync, file: string): void {
+  const meta = db
+    .prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'")
+    .get() as { value: string } | undefined;
+  const stamped = meta === undefined ? null : Number(meta.value);
+  if (stamped !== MEMORY_SCHEMA_VERSION) {
+    throw new MemoryIndexStaleError(
+      `记忆索引 schema 版本为 v${stamped === null ? '缺失' : stamped}，当前代码要求 v${MEMORY_SCHEMA_VERSION}：` +
+        `索引几何不兼容，须经离线影子库整库重建并原子切换后才能检索（禁原地迁移）：${file}`,
+    );
+  }
+  const ftsRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mem_card_fts'")
+    .get() as { sql: string } | undefined;
+  if (ftsRow === undefined || !/tokenize\s*=\s*'unicode61'/i.test(ftsRow.sql)) {
+    throw new MemoryIndexStaleError(
+      `mem_card_fts 实际 tokenizer 不是 unicode61（#124 bigram 几何）：须经离线影子库整库重建后切换：${file}`,
+    );
+  }
+}
+
 /** 读柄实现（只读打开，不建表、不创建文件）。 */
 class ReadHandle implements MemoryReadHandle, MemoryInternalReadHandle {
   protected db: DatabaseSync | null;
@@ -373,16 +404,22 @@ class ReadHandle implements MemoryReadHandle, MemoryInternalReadHandle {
   }
 
   async search(query: SearchQuery): Promise<RankedCard[]> {
+    this.assertGeometryCurrent();
     return searchCards(this.require(), query);
   }
 
   async searchExplained(query: SearchQuery): Promise<ExplainedRankedCard[]> {
+    this.assertGeometryCurrent();
     // N11 防线②：写死 limit: undefined 取全集，绝不读取 query.limit（即使上层 any 强塞也不转发）。
     return searchCardsExplained(this.require(), {
       text: query.text,
       atMs: query.atMs,
       limit: undefined,
     });
+  }
+
+  assertGeometryCurrent(): void {
+    assertMemoryGeometryCurrent(this.require(), this.file);
   }
 
   listEffective(atMs: number): MemoryCard[] {

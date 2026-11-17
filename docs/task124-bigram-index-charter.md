@@ -216,3 +216,71 @@
 | 附 | 预期管理已对齐（0.1）；挂账②#123 追认在取号前完成；授权四查（临时根/回滚/测试数/最坏后果）编码阶段逐项过 |
 
 主控裁定：＿＿＿＿（采纳 v2 冻结／退回修订，日期）
+
+---
+
+## 10. 编码施工增补（红测13 落地登记，段0–段3 收口）
+
+> 红测13 要求：既有测试全绿、总数只增不减；任何旧断言改动须在本 charter 增补登记理由。
+> 基线 1231（HEAD=72cefe7）→ 段3 收口 **1253 全绿、零 fail/skip、`npm run verify`（build+typecheck+test）干净**，净增 22 测，无删除、无放水。
+
+### 10.1 新增测试（+22，只增不减）
+
+| 文件 | 条数 | 对应红测 |
+|---|---|---|
+| tests/memory/bigram.test.ts | 13 | 红测1/2/6/7＋三侧归一化同构＋红测12 常量物理拆分静态守护 |
+| tests/memory/geometry-window.test.ts | 4 | 红测9 版本窗口双向矩阵（v2 戳记/trigram 实际几何/戳记缺失/健康库） |
+| tests/memory/bigram-recall.test.ts | 3 | 红测3（2字/3字/4字召回不误撞）、红测4（原文复核端到端拒收）、红测5（孤立 unigram 多段命中、纯单字 LIKE 冻结语义） |
+| tests/memory/builder.test.ts 追加 | 1 | 红测10 影子库重建验收（unicode61 DDL＋FTS 列逐字节重算＋MATCH 抽样＋戳记/row_hash_sum 对账） |
+| tests/memory/gate.test.ts 追加 | 1 | 红测11 静态扫描（gate 不引用几何常量/bigram/bm25）；同文件 N3 同构扩为 gate/bm25/bigram 三方 |
+
+红测8 隐私双路径由 bm25.test 敏感词用例＋task42-derive R-01＋红测10 敏感单元缺席断言三处共同覆盖；红测12 经历库侧由 projection.test 既存 `experience_fts tokenize='trigram'` 几何断言（未改、全绿）与新增常量守护双向锁死。
+
+### 10.2 旧断言等价迁移登记（无一条静默放宽）
+
+| 文件 | 旧断言 → 新断言 | 理由（#124 几何变更） |
+|---|---|---|
+| schema.test.ts | 库版本期望值 2 → 3 | MEMORY_SCHEMA_VERSION 升 3；卡行版本 MEMORY_CARD_SCHEMA_VERSION=1 未动 |
+| store.test.ts | 开库幂等 meta 值 '2' → '3' | 同上，戳记随库级版本 |
+| task42-derive.test.ts | R-01 FTS 列断言改为 `cue_text === indexTextOf(cueTextOf(...))` 并加强敏感别名 bigram 单元缺席检查 | 列内容由原文改为 bigram 单元序列；隐私口径收紧到单元级 |
+| bm25.test.ts | trigram 几何旧断言批量等价迁移：复核收口改 latin 词首非 ASCII 脱落案例；短词回退断言通道不挂 fts-substring；敏感词改 bigram 列；M12 改 bigram 几何；limit 次序断言改集合比对（次序归排序专测）；explained 纯 LIKE 用例查询词改单字 '夜' | 通道从 trigram+LIKE 换为 unicode61 bigram+phrase＋原文复核；limit 用例因通道由 LIKE 零分换 FTS 带分导致次序变化，集合不变 |
+| gate-smoke.test.ts / gated-assembly.test.ts | github/concatenate 词边界用例改断言"弱卡不出现门后集合＋物理 MATCH 不召回" | unicode61 整词 token 把 ASCII 词边界前置到召回层；gate 裁决规则本身未拆，gate.test:74/151/156 纯函数守护原样全绿 |
+| builder.test.ts | apply 断言改 indexTextOf 精确等式＋隐私单元缺席 | 同 R-01，列口径变更 |
+| audit/provenance.ts（生产）＋qa-memory-harness.test.ts | ftsTraceable 由"列词项⊆cardTermSet"重写为"cues＋非敏感别名经同一 emitUnits 重算 allowed 单元集，列单元单向∈allowed" | 旧谓词在 bigram 列下语义失效；新谓词与写入侧同一纯函数，可追溯性更强 |
+| 20 处 RevisionRecord 测试夹具 `schema_version: 1 → 3` | 见 10.3 | 新几何版本窗口对测试库生效 |
+
+### 10.3 夹具戳记批量修正的边界（20 处，三分类处置）
+
+版本窗口上线后，测试经 `stampMeta`（upsert ON CONFLICT DO UPDATE）盖章的 RevisionRecord 手填 `schema_version: 1` 会把库戳记覆盖成 1，被新硬拒机制正确拦截。逐对象三分类处置：
+
+- **RevisionRecord 索引盖章（实改 20 处 → 3）**：memory-tool-bridge、gated-assembly、host-tool-runtime、bm25、builder、gate-smoke、invalidate、ledger、runtime、store、task42-derive/drain/drain-chain/observations-io、qa-memory-harness、synthetic-pipeline。生产 builder.ts 盖章本就传 MEMORY_SCHEMA_VERSION 常量，生产无此问题，仅测试夹具过时。
+- **MemoryCard 卡行（保持 1）**：MEMORY_CARD_SCHEMA_VERSION 冻结为 1（store.test cardFromRow、schema.test、v1.4-replay 等），与库级版本是两个版本号。
+- **EventRecord/Experience 事件契约（保持 1）**：helpers.makeExperience、各 event/projection/api 测试、cue-backfill 的 stampMeta 任意入参用例，不经几何校验，逐字未动。
+
+### 10.4 段4 验收取数（5 点变异反证＋生产路径 mini-bench，已闭合）
+
+**变异反证（逐个注入生产码、跑对应红测、当场恢复；每处恰好打红对应红测）**
+
+| 变异 | 打红条目 | 结论 |
+|---|---|---|
+| ①滑窗退回 trigram | 7 条（emitUnits 2/3/4 字、孤立单字段、中英混排、indexTextOf、红测3/红测5 端到端） | 有效 |
+| ②删孤立单字 unigram | 3 条（红测5 端到端、emitUnits 孤立段、中英混排） | 有效；顺手补强"纯 unigram 双单字卡"使端到端必红 |
+| ③复核靶退回 FTS 切分序列 | 2 条（红测4 端到端、bm25 原文字段复核专测） | 有效 |
+| ④阈值常量回 3 | 3 条（红测3 2 字召回、红测5、红测12 常量守护） | 有效 |
+| ⑤去掉 phrase 双引号包裹 | 2 条（ftsPhraseOf 纯函数、红测3 物理相邻守护） | 有效；端到端另有原文复核纵深兜底 |
+
+注：初版红测5 与红测3 只靠纯函数测守护变异，已补两条端到端/物理层断言使其独立打红，避免"改坏代码但端到端仍绿"的假安全。
+
+**生产路径 mini-bench（tests/memory/bigram-mini-bench.ts）**
+
+数据：`iso-write-line.real-run.log.txt` 的 8 个真实桥段（真模型 cues 逐字照抄）＋ 16 条真人问法逐字照抄，经生产 `writeCards + syncFts` 写入内存库。
+
+| 指标 | 实测 | 口径 | 判定 |
+|---|---|---|---|
+| 真人整句直打 | 候选归零 16/16、正确卡 0/16 | 收益只在短词，整句 0/16 不变（预期管理已对齐） | 与本卡目标一致 |
+| 短词直打（2–4 字，13 条） | 候选归零 1/13、**正确卡命中 12/13** | 结构性 0 召回已解除；唯一未命中「锁库」属词法语义鸿沟（cue 只有 sqlite/locked） | PASS |
+| 门后错卡 | 整句 0、短词 0 | 红线零容忍 | PASS |
+| FTS 体积 | 463/239 字符＝**1.937×** | 上限 1.95× | PASS（余量仅 0.013，样本仅 8 卡，真机整库复测须留意拉丁密集 cue） |
+
+**仍挂账（不在本卡编码范围）**：两份 gitignore 锁死的 *.log.txt 旧名由段4 探针重跑刷新或显式授权删除；冷备 tar 补做＋sha256；真机 v3 原子切换为独立第三道授权门；untracked 在制品入库范围须显式授权。本卡编码全程真实数据根零写入。
+

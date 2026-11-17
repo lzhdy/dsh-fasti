@@ -8,19 +8,27 @@
  *  - LAMBDA/HALF_LIFE_MS 覆盖走独立 tuning 入参，生产调用不传；
  *  - as-of 过滤直接复用 invalidate.isEffectiveAt（G13，与 listEffective 同一谓词）。
  *
- * 路径（L1 三档语义统一同款，src/projection/sqlite.ts:464-499 先例）：
- *  - 规范化后码点长度 ≥3：mem_card_fts MATCH（短语包裹+引号转义）→ matchesSubstring 精确复核；
- *  - <3 或 MATCH 解析失败：mem_alias.term_norm 精确/LIKE 回退（敏感词仅精确）；
+ * #124 bigram 几何路径（charter §3.4；常量与经历库物理拆分，B9）：
+ *  - 规范化后码点长度 ≥ MIN_FTS_CODEPOINTS(=2) 且 bigram 单元非空：查询同侧 bigram 化，
+ *    以 ftsPhraseOf 短语发起 MATCH（unicode61 token 全等/相邻）；
+ *  - 纯单字（1 码点）、空单元（纯标点/单字母）或 MATCH 解析失败：mem_alias 精确/LIKE 回退；
+ *  - MATCH 命中后对**原文字段**（display_cues 与非敏感活跃别名，逐字段独立）matchesSubstring
+ *    复核收口，不再对 bigram 化的 FTS 列复核；Hit.cueText 挂原文拼接串保 gate 接口零漂移；
  *  - 精确路径对任意长度查询可达（sensitive=1 别名 FTS 恒不可见）。
+ * 注意：src/projection/sqlite.ts 的 MIN_TRIGRAM_LENGTH=3 保留给经历库 experience_fts，本模块不再引用。
  */
 
 import type { DatabaseSync } from 'node:sqlite';
 
-import { MIN_TRIGRAM_LENGTH } from '../projection/sqlite.ts';
 import { asciiLower, matchesSubstring } from '../projection/types.ts';
+import { emitUnits, ftsPhraseOf } from './bigram.ts';
+import { aliasFromRow, cueTextOf } from './fts.ts';
 import { isEffectiveAt } from './invalidate.ts';
 import { cardFromRow } from './store.ts';
 import type { ExplainedRankedCard, MatchKind, RankedCard, SearchQuery } from './types.ts';
+
+/** 记忆侧 FTS 最短查询码点数（#124 bigram 几何；经历库 trigram 常量在 projection 侧独立保留）。 */
+export const MIN_FTS_CODEPOINTS = 2;
 
 /** 近因权重。观测初值，凭 harness 敏感性表修订，修订记 revision（§4.4②）。 */
 export const LAMBDA = 0.15;
@@ -111,19 +119,32 @@ export function searchCardsExplained(
   }
 
   let ftsOk = false;
-  if ([...q].length >= MIN_TRIGRAM_LENGTH) {
-    // 短语包裹 + 内部双引号转义（照 src/projection/sqlite.ts:475 先例）。
-    const phrase = `"${q.replace(/"/g, '""')}"`;
+  // bigram 几何：查询与写入同函数切单元；纯单字（1 码点）走 LIKE，空单元（纯标点/单字母）不发 MATCH。
+  const units = emitUnits(q);
+  if ([...q].length >= MIN_FTS_CODEPOINTS && units.length > 0) {
+    const phrase = ftsPhraseOf(units);
     try {
       const rows = db
         .prepare('SELECT card_id, bm25(mem_card_fts) AS bm25_raw FROM mem_card_fts WHERE mem_card_fts MATCH ?')
         .all(phrase) as Array<{ card_id: string; bm25_raw: number }>;
-      const cueStmt = db.prepare('SELECT cue_text FROM mem_card_fts WHERE card_id = ?');
+      const cardCueStmt = db.prepare('SELECT display_cues_json FROM mem_card WHERE card_id = ?');
+      const aliasStmt = db.prepare(
+        "SELECT * FROM mem_alias WHERE card_id = ? AND status = 'active' AND sensitive = 0",
+      );
       for (const row of rows) {
-        const cue = cueStmt.get(row.card_id) as { cue_text: string } | undefined;
-        // trigram MATCH 是 ASCII 子串匹配的超集 → 精确复核收口（L1 同款）。
-        if (cue !== undefined && matchesSubstring(cue.cue_text, q)) {
-          addHit(row.card_id, q, row.bm25_raw, 'fts-substring', cue.cue_text);
+        const cardRow = cardCueStmt.get(row.card_id) as { display_cues_json: string } | undefined;
+        if (cardRow === undefined) {
+          continue;
+        }
+        const aliases = (aliasStmt.all(row.card_id) as Array<Record<string, unknown>>).map(aliasFromRow);
+        const cues = JSON.parse(cardRow.display_cues_json) as string[];
+        // 复核靶＝原文字段（非 FTS bigram 列）：逐字段在规范化空间做子串判定，任一命中即收口通过。
+        const confirmed = [...cues, ...aliases.map((alias) => alias.termNorm)].some((field) =>
+          matchesSubstring(normalizeQuery(field), q),
+        );
+        if (confirmed) {
+          // 挂原文拼接串（与改造前 cue_text 同形状），gate 词边界与下游接口零漂移。
+          addHit(row.card_id, q, row.bm25_raw, 'fts-substring', cueTextOf(cardRow.display_cues_json, aliases));
         }
       }
       ftsOk = true;

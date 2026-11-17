@@ -102,7 +102,7 @@ async function seedCorpus(): Promise<Seeded> {
       revision: 1,
       slug: 'build',
       at_ms: T0,
-      schema_version: 1,
+      schema_version: 3,
       truth_fingerprint: 'fp-gate-smoke',
       prior_revision: null,
       card_count: cards.length,
@@ -160,7 +160,7 @@ test('弃权探针：库中无词面命中 → no-match/zero-lexical-hit（不�
   }
 });
 
-test('噪声探针：真卡精确命中，ASCII 无边界诱饵 github 被门拒（留 rejected 原因）', async () => {
+test('噪声探针：真卡精确命中；ASCII 无边界诱饵 github 在召回层即被整词 token 闭合（#124）', async () => {
   const seeded = await seedCorpus();
   try {
     const outcome = gatedQuery(seeded.file, 'git', T0 + 10 * DAY, 3);
@@ -168,15 +168,22 @@ test('噪声探针：真卡精确命中，ASCII 无边界诱饵 github 被门拒
     assert.deepEqual(
       outcome.accepted.map((c) => c.card.cardId),
       ['mc_git'],
-      '只应保留真卡 git',
+      '只应保留真卡 git（门后错卡零容忍）',
     );
-    assert.ok(
-      outcome.rejected.some((c) => c.card.cardId === 'mc_github'),
-      'github 应作为弱匹配被拒，且不静默丢弃',
-    );
-    for (const rejected of outcome.rejected) {
-      assert.ok(rejected.gateReasons.includes('ascii-no-word-boundary'), '拒绝原因须可观测');
+    // #124 unicode61 整词几何：'github' 是独立整词 token，phrase "git" token 全等不命中，
+    // 诱饵在 FTS 召回层就进不了候选（比 trigram 时代“先召回再由门拒”更前置）。
+    const db = new DatabaseSync(seeded.file, { readOnly: true });
+    try {
+      const raw = db
+        .prepare('SELECT card_id FROM mem_card_fts WHERE mem_card_fts MATCH ?')
+        .all('"git"') as Array<{ card_id: string }>;
+      assert.deepEqual(raw.map((r) => r.card_id).sort(), ['mc_git'], '物理层：github 诱饵不被 FTS 召回');
+    } finally {
+      db.close();
     }
+    const surfaced = [...outcome.accepted, ...outcome.rejected].map((c) => c.card.cardId);
+    assert.ok(!surfaced.includes('mc_github'), '诱饵不得出现在门后任何集合');
+    // gate 的 ascii-no-word-boundary 规则未拆除，纯函数级守护见 gate.test.ts 词边界表驱动测试。
   } finally {
     cleanupTempRoot(seeded.root);
   }

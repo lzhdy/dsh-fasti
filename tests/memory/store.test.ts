@@ -42,7 +42,7 @@ function revision(overrides: Partial<RevisionRecord> = {}): RevisionRecord {
     revision: 1,
     slug: 'build',
     at_ms: 1_000,
-    schema_version: 1,
+    schema_version: 3,
     truth_fingerprint: 'f'.repeat(64),
     prior_revision: null,
     card_count: 0,
@@ -126,7 +126,7 @@ test('openMemoryWrite 只在 indexDir 内落文件，重开幂等', async () => 
         const meta = db
           .prepare("SELECT value FROM schema_meta WHERE key='schema_version'")
           .get() as { value: string } | undefined;
-        assert.equal(meta?.value, '2', 'v2 = #117 N-1（mem_miss 增 gate_status）');
+        assert.equal(meta?.value, '3', 'v3 = #124（FTS unicode61+bigram 几何；v2 = #117 gate_status）');
       } finally {
         db.close();
       }
