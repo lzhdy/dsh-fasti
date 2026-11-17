@@ -900,9 +900,10 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 | **#120** | 占位号（主控已确认锁定，待立项） | **漏召别名建议器**：通道二成功反馈 ＋ 建议清单 ＋ 她的裁决留痕 | 待立项；数据面口径（`mem_miss` 无 `card_id`、只记落空不记命中）未定前不得实现 | 11.6 挂账、任务台账 #105 |
 | **#121** | 正式卡号（主控已确认取号） | **影子观测端口 ＋ 离线影子回放**：装配面 `observeShadow`／内核 `observeShadowOnce` ＋ `replay-shadow-observations` CLI | 已实现并入库（commit `6cc263e`，登记见 11.11）；代码与测试注释已回填 #121 | 11.11 |
 | **#122** | 正式卡号（主控已确认取号） | **记忆装配断口修复（真机永久空轮／记忆本无法建卡）**，含两个串联成因：①插件→桥接→装配→runtime 的 **dataRoot 断口**，使第七法 drain 在真机能折叠真源 ready 事件建卡；②web 宿主胶水 **memoryGateMode 转发断口**，`dsh-host-glue` 白名单漏转门模式致适配器恒取 off、工具不注册、第七法端口不绑定 | ⑤已实现并真机验收通过（本地提交、**未 push**）：成因①三层接口加**可选** dataRoot 透传（插件取 `fasti.paths.root`），commit `d70575d`；成因②胶水 `FORWARD_KEYS` 补 `memoryGateMode`（合法值仍由适配器校验），commit `4b470af`。全量门 **1199/1199**、双 tsc、静态门 75 全绿；新增 7 测（装配/桥接透传建卡、缺省空轮回归、真机无 cue 占位、glue apply 透传 3 条）。真机重启放量后 gateMode=shadow 生效，worker 首轮 drain 建出 **2 张 active 卡**、revisions 增 `drain-projection` 条（added=2），多轮幂等零报错；两卡无 cue 落 `[""]` 占位，可召回性依赖 #120 | plugin.ts wireMemoryTools／memory-tool-bridge.ts 两接口两调用／host-tool-runtime.ts 接口与 openMemoryRuntime／drain.ts:250／**integrations/dsh-host-glue/index.js FORWARD_KEYS**；测试 host-tool-runtime.test、memory-tool-bridge.test、**host-glue.test** |
-| #123 起 | 空号 | 尚未分配 | 可用；取号时在本表续行占位并写明对象与日期 | — |
+| **#123** | 正式卡号（事后追认，2026-11-17） | **key_points→cue 保底派生（A 路线，P1–P6）**：闭合事件 key_points 经纯函数确定性投影 display_cues，不调 LLM、不读 raw、H7 双形态过滤 | P1–P5 已实现并入库（commit `b41ab21`，rules_version 落章点已补）；P6 五层金标未达标（现 fixtures 仅 C5 骨架），CURRENT_RULES_VERSION 仍 rules-v1、解冻前生产零行为变化 | 双路线裁定稿 Q1–Q10、`src/memory/cue-derive.ts`；落地登记章节待补 |
+| **#124** | 正式卡号（主控确认取号，待立项） | **记忆索引 bigram 化（窄卡）**：应用层 CJK bigram（孤立单字段 unigram 补底）＋ASCII 整词，FTS tokenizer trigram→unicode61，记忆侧准入阈值 3→2（与经历库常量拆分、experience_fts 不动），命中复核改对原文且三侧归一化同源；库级 schema 升 v3 带影子库整库重建；整句片段枚举（拆句工）明确不在本卡 | 待立项；charter 已主控签认冻结（`docs/task124-bigram-index-charter.md`），四份外审与处置裁定同批入库；取号在 #123 之后，不重排历史号 | task124 charter 与外审裁定文档、检索学术 grounding 第 5 节、双路线裁定稿 Q5、bigram 探针 |
 
-**号段现状一句话**：已取号到 **#122**；#118 是**预留**而非空号（历史上一度被口头误当成"#117 的下一个"，已纠正并正式取 #121 回填）；#120 已锁定给漏召别名建议器（待立项）、#121 已取给影子观测端口（已实现）、#122 取给记忆装配断口修复（dataRoot＋胶水门模式两成因，已实现并真机验收、本地提交未 push）；**下一可分配空号是 #123**，取号即在本表续行占位。
+**号段现状一句话**：已取号到 **#124**；#118 是**预留**而非空号；#119 插队号、#120 锁定给漏召别名建议器（待立项）、#121 影子观测端口（已实现）、#122 记忆装配断口修复（已实现并真机验收）、#123 key_points cue 派生（P1–P5 已实现、P6 待金标未解冻，2026-11-17 事后追认补登）、#124 bigram 索引几何卡（charter 已签认冻结、待编码，外审已闭合）；**下一可分配空号是 #125**，取号即在本表续行占位，禁止凭上一号线性 +1。
 
 ### 11.4.1 待建卡详表（#88–#117 共 30 张；#119 插队切片见末行）
 
