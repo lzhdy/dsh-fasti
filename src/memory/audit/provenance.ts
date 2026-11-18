@@ -85,7 +85,7 @@ function stratifiedSample(cards: readonly MemoryCard[], ratio: number, rng: Rng)
 /**
  * FTS 溯源③（#124 bigram 几何）：cue_text 中每个单元都必须能由本卡 display_cues 与
  * 非敏感别名经同一 emitUnits 重算产出，杜绝正文/敏感别名泄露。单向“列单元 ⊆ 可推导单元集”，
- * 与旧 trigram 时代“列词项 ⊆ 卡词项”同强度；敏感别名先剔除再重算，故其 bigram 单元必然缺席。
+ * #124 后 trigram 词项口径已退役，bigram 单元按“列单元 ⊆ 可推导单元集”同强度核验；敏感别名先剔除再重算，故其 bigram 单元必然缺席。
  */
 function ftsTraceable(card: MemoryCard, ftsText: string | undefined): boolean {
   if (ftsText === undefined) {

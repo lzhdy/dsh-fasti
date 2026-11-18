@@ -237,7 +237,7 @@ export type SearchResultCard = RankedCard;
 /**
  * 召回命中通道（#44 布尔门，S1 联合类型）：
  *  - exact-alias：规范化后与某 active 别名 term_norm 严格等值（sensitive=1 仅此路可达）；
- *  - fts-substring：trigram FTS MATCH 后经 matchesSubstring 精确复核的子串命中；
+ *  - fts-substring：unicode61 bigram FTS MATCH 后经 matchesSubstring 精确复核的子串命中；
  *  - like-fallback：短查询/FTS 失败时的 `%q%` 宽松 LIKE 回退（弱通道）。
  * 同卡多通道命中取并集，门判定按“最强通道”裁决。
  */

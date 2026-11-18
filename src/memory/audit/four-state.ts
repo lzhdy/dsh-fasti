@@ -13,6 +13,9 @@
 
 import type { NaEstimate } from './metrics.ts';
 
+/** 探针构造类别（§5.0）：`unanswerable` 无金标可答；`noise` 一真卡混宽泛诱饵。 */
+export type ProbeKind = 'unanswerable' | 'noise';
+
 /** 单条探针的门后判定输入（由 gold/decoy/abstain 结果在编排层映射而来）。 */
 export interface FourStateProbeInput {
   /** 探针标识（仅用于确定性排序/诊断，不参与统计）。 */
@@ -25,13 +28,28 @@ export interface FourStateProbeInput {
   top1IsGold: boolean;
   /** 是否高危五类探针（强断言/承诺/日期/原话/否定）；仅用于高危硬约束计数。 */
   highRisk: boolean;
+  /** R1 召回口径：目标事件是否进 top-k=3（与 top1 四态口径并列落库，禁止互替；本层归类只用 top1）。 */
+  topKHit?: boolean;
+  /** R1 口径：目标事件位次（k 内 1..k，未命中 null）；仅诊断/并列报告用。 */
+  topKRank?: number | null;
+  /**
+   * 探针类别。`noise` 未认定按 `correct-abstain` 计（§5.0：噪声库弃权不算漏召回）；
+   * 缺省走普通有金/无金分支。
+   */
+  probeKind?: ProbeKind;
 }
 
 /** 四态归类。 */
 export type FourStateClass = 'correct-commit' | 'wrong-commit' | 'wrong-abstain' | 'correct-abstain';
 
-/** 单条探针归类：有金标三分支 + 无金标二分支。 */
+/** 单条探针归类：有金标三分支 + 无金标二分支；noise 走独立三态（未认定＝正确弃权）。 */
 export function classifyProbe(input: FourStateProbeInput): FourStateClass {
+  if (input.probeKind === 'noise') {
+    if (!input.committed) {
+      return 'correct-abstain';
+    }
+    return input.top1IsGold ? 'correct-commit' : 'wrong-commit';
+  }
   if (input.hasGold) {
     if (!input.committed) {
       return 'wrong-abstain';

@@ -64,6 +64,36 @@ test('classifyProbe：弃权时 top1IsGold 被忽略（不会因残留 true 误�
   assert.equal(classifyProbe(probe({ hasGold: false, committed: false, top1IsGold: true })), 'correct-abstain');
 });
 
+test('A2：top-k 命中字段只作 R1 并列口径，归类仍只看 top1（两套口径禁互替）', () => {
+  // top-k=3 内有金标但 top1 提交错卡 → 四态仍 wrong-commit，不得按 R1 hit 记认对。
+  assert.equal(
+    classifyProbe(probe({ hasGold: true, committed: true, top1IsGold: false, topKHit: true, topKRank: 2 })),
+    'wrong-commit',
+  );
+  // top-k 未命中但 top1 恰为金标 → 四态仍 correct-commit，不得按 R1 miss 记弃权。
+  assert.equal(
+    classifyProbe(probe({ hasGold: true, committed: true, top1IsGold: true, topKHit: false, topKRank: null })),
+    'correct-commit',
+  );
+});
+
+test('A3：noise 探针三态——命中真卡 cc／commit 诱饵 wc／未认定 ca（§5.0）', () => {
+  const noise = (over: Partial<FourStateProbeInput>) =>
+    probe({ probeKind: 'noise', hasGold: true, ...over });
+  assert.equal(classifyProbe(noise({ committed: true, top1IsGold: true })), 'correct-commit');
+  assert.equal(classifyProbe(noise({ committed: true, top1IsGold: false })), 'wrong-commit');
+  assert.equal(classifyProbe(noise({ committed: false, top1IsGold: false })), 'correct-abstain');
+});
+
+test('A3：noise 未认定计入 correct-abstain 而非 wrong-abstain（计数侧）', () => {
+  const s = summarizeFourState([
+    probe({ probeRef: 'n1', probeKind: 'noise', hasGold: true, committed: false, top1IsGold: false }),
+    probe({ probeRef: 'u1', probeKind: 'unanswerable', hasGold: false, committed: false, top1IsGold: false }),
+  ]);
+  assert.equal(s.counts.ca, 2, 'noise 弃权与 unanswerable 同入 correct-abstain');
+  assert.equal(s.counts.wa, 0);
+});
+
 // ── B. N2 分母自证：G+NG=N、wc 不双计、反例 ────────────────────────────────
 
 test('N2：提案反例（1 条有金返回错卡 + 1 条无金返回卡）→ G=1/NG=1/N=2，旧错误公式会得 4', () => {

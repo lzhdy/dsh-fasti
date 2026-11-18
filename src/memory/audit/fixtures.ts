@@ -20,10 +20,30 @@ export const PROBE_SET_VERSION_PATTERN = /^v\d+(\.\d+)*$/;
 
 export type FixtureLayer = 'l0' | 'l1' | 'l2' | 'decoy' | 'abstain';
 
+/**
+ * P6 查询构造层（v4 §3 S0–S4）。与文件级 `FixtureLayer`（l0/l1/l2/decoy/abstain）互不替代：
+ * 前者是题目的构造方式分层，后者是夹具文件类别。
+ */
+export type ConstructionLayer = 'S0' | 'S1' | 'S2' | 'S3' | 'S4';
+
 const SLOT_NAMES = ['guaranteed', 'recency', 'identity', 'relevance', 'obligation'] as const;
 const INITIATIONS = ['her', 'user', 'environment'] as const;
 const ALIAS_SOURCES = ['miss'] as const;
 const HIGH_RISK_LABELS = ['strong', 'promise', 'date', 'verbatim', 'negation'] as const;
+const CONSTRUCTION_LAYERS: readonly ConstructionLayer[] = ['S0', 'S1', 'S2', 'S3', 'S4'];
+const SOURCE_ORIGINS = ['raw-turn', 'summary'] as const;
+
+/** 撰写源定位（§6.3）：出题只许来自 raw-turn／summary；anchor 为轮号/段号等定位标记。 */
+export interface SourceLocation {
+  source: 'raw-turn' | 'summary';
+  anchor: string;
+}
+
+/** 层归属仲裁留痕（v4 §3）：独立出题人一次性定格层归属，施工方不得改层。 */
+export interface ArbitrationTrail {
+  adjudicator: string;
+  decision: string;
+}
 
 const L0_KEYS = [
   'eventId',
@@ -33,8 +53,23 @@ const L0_KEYS = [
   'sensitiveTerms',
   'discriminatorNeighborEventIds',
   'expectedSlots',
+  'constructionLayer',
+  'sourceLocation',
+  'highRiskLabel',
+  'sourceCharShare',
+  'arbitration',
 ] as const;
-const L1_KEYS = ['questionExperienceId', 'targetEventId', 'initiation', 'coldStart'] as const;
+const L1_KEYS = [
+  'questionExperienceId',
+  'targetEventId',
+  'initiation',
+  'coldStart',
+  'constructionLayer',
+  'sourceLocation',
+  'highRiskLabel',
+  'sourceCharShare',
+  'arbitration',
+] as const;
 const DECOY_KEYS = ['pairCardIds', 'discriminatorQuery', 'goldCardId', 'highRiskLabel'] as const;
 /** 弃权/噪声探针（§5.7）：只含问句与目标标注，goldCardId=null 表示库里无金标（期望弃权）。 */
 const ABSTAIN_KEYS = ['query', 'goldCardId', 'kind'] as const;
@@ -49,6 +84,16 @@ export interface GoldL0Item {
   sensitiveTerms: readonly string[];
   discriminatorNeighborEventIds: readonly string[];
   expectedSlots: ReadonlyArray<'guaranteed' | 'recency' | 'identity' | 'relevance' | 'obligation'>;
+  /** P6 构造层标（S0–S4）；A 批可缺省，必填约束在 B 批加载器落地。 */
+  constructionLayer?: ConstructionLayer;
+  /** 撰写源定位；§6.3 防自证必填项，A 批先立字段。 */
+  sourceLocation?: SourceLocation;
+  /** 五类高危标记（strong/promise/date/verbatim/negation）。 */
+  highRiskLabel?: 'strong' | 'promise' | 'date' | 'verbatim' | 'negation';
+  /** S1 片段占原话码点比例（0..1，冻结上限 ≤0.25），仅 S1 用。 */
+  sourceCharShare?: number;
+  /** 层归属仲裁留痕。 */
+  arbitration?: ArbitrationTrail;
 }
 
 /** L1 回放金标条目（提问轮 → 目标事件；引发方分层 + 冷启动）。 */
@@ -57,6 +102,11 @@ export interface GoldL1Item {
   targetEventId: string;
   initiation: 'her' | 'user' | 'environment';
   coldStart: boolean;
+  constructionLayer?: ConstructionLayer;
+  sourceLocation?: SourceLocation;
+  highRiskLabel?: 'strong' | 'promise' | 'date' | 'verbatim' | 'negation';
+  sourceCharShare?: number;
+  arbitration?: ArbitrationTrail;
 }
 
 /** DRM 诱饵条目（近邻对 + 判别提问 + 金标卡 + 可选高危标签）。 */
@@ -135,6 +185,36 @@ function reqEnum<T extends string>(value: unknown, allowed: readonly T[], key: s
   return value as T;
 }
 
+/** A 批 P6 元数据形状校验（字段可缺省；必填约束在 B 批加载器落地）。 */
+function validateP6Meta(item: Record<string, unknown>, label: string, index: number): void {
+  if (item['constructionLayer'] !== undefined) {
+    reqEnum(item['constructionLayer'], CONSTRUCTION_LAYERS, 'constructionLayer', label, index);
+  }
+  if (item['highRiskLabel'] !== undefined) {
+    reqEnum(item['highRiskLabel'], HIGH_RISK_LABELS, 'highRiskLabel', label, index);
+  }
+  const location = item['sourceLocation'];
+  if (location !== undefined) {
+    const record = asRecord(location, label, index);
+    checkKeys(record, ['source', 'anchor'], label, index);
+    reqEnum(record['source'], SOURCE_ORIGINS, 'sourceLocation.source', label, index);
+    reqString(record, 'anchor', label, index);
+  }
+  const share = item['sourceCharShare'];
+  if (share !== undefined) {
+    if (typeof share !== 'number' || Number.isNaN(share) || share < 0 || share > 1) {
+      fail(label, index, 'sourceCharShare 须为 0..1 之间的数值');
+    }
+  }
+  const arbitration = item['arbitration'];
+  if (arbitration !== undefined) {
+    const record = asRecord(arbitration, label, index);
+    checkKeys(record, ['adjudicator', 'decision'], label, index);
+    reqString(record, 'adjudicator', label, index);
+    reqString(record, 'decision', label, index);
+  }
+}
+
 function validateL0Item(raw: unknown, label: string, index: number): void {
   const item = asRecord(raw, label, index);
   checkKeys(item, L0_KEYS, label, index);
@@ -161,6 +241,7 @@ function validateL0Item(raw: unknown, label: string, index: number): void {
     fail(label, index, 'expectedSlots 须为数组');
   }
   slots.forEach((slot, i) => reqEnum(slot, SLOT_NAMES, `expectedSlots[${i}]`, label, index));
+  validateP6Meta(item, label, index);
 }
 
 function validateL1Item(raw: unknown, label: string, index: number): void {
@@ -172,6 +253,7 @@ function validateL1Item(raw: unknown, label: string, index: number): void {
   if (typeof item['coldStart'] !== 'boolean') {
     fail(label, index, 'coldStart 须为布尔');
   }
+  validateP6Meta(item, label, index);
 }
 
 function validateDecoyItem(raw: unknown, label: string, index: number): void {
