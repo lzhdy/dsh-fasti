@@ -5,7 +5,10 @@
  *  - --data-root 必填（缺省用法 + 退出码 2）；--out 必填（缺省 exit2）且不得等于/位于 dataRoot 之内（exit2）；
  *  - --json/--help 同 build CLI；--holdout 显式才解封 L2；--dry-run 只校验/打印不落 audit 库；
  *  - 对 --data-root 恒 openMemoryRead 只读（读真值 JSONL/卡/检索），**永不在该库取写柄**；
- *    写柄只开在 --out（同一 MEMORY_SCHEMA，卡/miss 表空、仅审计两表落行）；生产索引零字节写、真值从不写；
+ *    写柄只开在 --out（同一 MEMORY_SCHEMA，卡/miss 表空、仅审计两表落行）；
+ *    **零字节承诺仅限记忆索引 memory-index.sqlite**（store.ts 只读打开）；真值 JSONL 从不写。
+ *    注意 dataRoot 并非整体零字节：Fasti.open 启动对账会原子写 state/checkpoint.json
+ *    （checkpoint.ts save → writeFileAtomic），事件版本追加写 events/*.jsonl（event-log appendVersion）；
  *  - 默认即可写独立 --out 库（不触生产索引/真值），无需 --apply 二次确认；
  *  - 退出码：provenance 硬失败/悬空锚点非零；三红线观测项无论是否越线均 exit0。
  *
@@ -38,6 +41,8 @@ import { aggregateMetrics, mulberry32, DEFAULT_RNG_SEED, P95_REPEATS } from '../
 import type { AggregateInput, MetricsJson, Rng } from '../src/memory/audit/metrics.ts';
 import { loadFixtures } from '../src/memory/audit/fixtures.ts';
 import type { LoadedFixtures } from '../src/memory/audit/fixtures.ts';
+import { assertMissAliasesSensitive, assertP6GoldItem } from '../src/memory/audit/fixture-guard.ts';
+import type { GuardCardRef } from '../src/memory/audit/fixture-guard.ts';
 import { replayGold } from '../src/memory/audit/gold.ts';
 import type { GoldQuestion, GoldQuestionResult, SearchFn } from '../src/memory/audit/gold.ts';
 import { buildDecoyPairs, scoreDecoy } from '../src/memory/audit/decoy.ts';
@@ -50,6 +55,7 @@ import { assembleWindow } from '../src/memory/window.ts';
 import { openMemoryRead, openMemoryWrite } from '../src/memory/store.ts';
 import type { MemoryReadHandle } from '../src/memory/store.ts';
 import type { AuditItemRecord, AuditRunRecord, MemoryCard, RankedCard, AssembledWindow } from '../src/memory/types.ts';
+import { CURRENT_RULES_VERSION } from '../src/memory/types.ts';
 import { foldCurrentEvents } from '../src/projection/event-row.ts';
 import type { EventProjection } from '../src/projection/types.ts';
 import { layoutOf, resolveDataRoot } from '../src/source/paths.ts';
@@ -63,6 +69,7 @@ const MIN_CALENDAR_WEEKS = 5;
 interface CliOptions {
   dataRoot: string | undefined;
   out: string | undefined;
+  rulesVersion: string | undefined;
   holdout: boolean;
   dryRun: boolean;
   json: boolean;
@@ -73,6 +80,7 @@ function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     dataRoot: undefined,
     out: undefined,
+    rulesVersion: undefined,
     holdout: false,
     dryRun: false,
     json: false,
@@ -82,7 +90,8 @@ function parseArgs(argv: string[]): CliOptions {
     const arg = argv[i];
     switch (arg) {
       case '--data-root':
-      case '--out': {
+      case '--out':
+      case '--rules-version': {
         const value = argv[i + 1];
         if (value === undefined) {
           throw new Error(`参数 ${arg} 缺少取值`);
@@ -90,8 +99,10 @@ function parseArgs(argv: string[]): CliOptions {
         i += 1;
         if (arg === '--data-root') {
           options.dataRoot = value;
-        } else {
+        } else if (arg === '--out') {
           options.out = value;
+        } else {
+          options.rulesVersion = value;
         }
         break;
       }
@@ -121,12 +132,14 @@ function usage(): string {
     '',
     '  --data-root <目录>  数据根（**必填**，只读：真值 JSONL/卡/检索；永不在该库取写柄）',
     '  --out <目录>        审计输出库目录（**必填**，独立于 dataRoot；等于/位于其内一律拒绝 exit2）',
+    '  --rules-version <v> 受测规则版本（rules-v1/rules-v2），缺省当前生产版本；信封如实记录',
     '  --holdout           显式解封 L2 holdout 跑一次（缺省不跑）',
     '  --dry-run           只校验夹具/打印报告，不落 audit 库（CI 预检）',
     '  --json              输出 JSON 报告（机器可读）',
     '  --help              本帮助',
     '',
-    '纪律：生产 memory-index.sqlite 零字节写入；真值 JSONL 从不写；审计写独立 --out 库（卡/miss 表空）；',
+    '纪律：记忆索引 memory-index.sqlite 零字节写入（只读打开；承诺范围仅此文件）；真值 JSONL 从不写；',
+    '      dataRoot 内 state/checkpoint.json 与 events/*.jsonl 的既有写通路不在本承诺内；审计写独立 --out 库（卡/miss 表空）；',
     '      hit_count 仅报告模拟、绝不回写生产卡；三红线只观测不卡退出码；',
     '      provenance 成功率<100%/悬空锚点 → 硬失败退出码非零。',
     '',
@@ -381,7 +394,15 @@ export interface AuditOptions {
   dryRun: boolean;
   nowMs: number;
   rngSeed?: number;
+  /**
+   * 受测规则版本（G7 信封去硬编码）。缺省 CURRENT_RULES_VERSION；仅允许登记过的版本，
+   * 未知标签 fail-closed——run 信封必须如实记录「本次审计测的是哪套规则」。
+   */
+  rulesVersion?: string;
 }
+
+/** 允许出现在审计信封里的规则版本（与 cue-derive 白名单同源管理，未知值拒收）。 */
+const KNOWN_RULES_VERSIONS: ReadonlySet<string> = new Set(['rules-v1', 'rules-v2']);
 
 export interface AuditReport {
   run: AuditRunRecord;
@@ -395,6 +416,10 @@ export interface AuditReport {
 
 export async function runAudit(options: AuditOptions): Promise<AuditReport> {
   const seed = options.rngSeed ?? DEFAULT_RNG_SEED;
+  const rulesVersion = options.rulesVersion ?? CURRENT_RULES_VERSION;
+  if (!KNOWN_RULES_VERSIONS.has(rulesVersion)) {
+    throw new Error(`未知规则版本「${rulesVersion}」：审计信封只接受 ${[...KNOWN_RULES_VERSIONS].join('/')}`);
+  }
   const fixtures = loadFixtures(options.fixturesDir);
   const truth = readTruth(options.dataRoot);
   const indexDir = path.join(resolveDataRoot({ dataRoot: options.dataRoot }), 'projection', 'memory-index');
@@ -404,6 +429,26 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
   try {
     const cards = readHandle.listEffective(options.nowMs);
     const cardsById = new Map(cards.map((c) => [c.cardId, c]));
+    // G3/G4（v4 §6）：夹具纪律 fail-closed。B 路线 miss 别名恒 sensitive=1；带构造层标的
+    // P6 条目逐条过连续子串/key_points 重合/源定位守卫。无层标的旧骨架条目跳过 G4。
+    assertMissAliasesSensitive(fixtures.l0);
+    const guardCards = new Map<string, GuardCardRef>(
+      cards.map((c) => [
+        c.eventId,
+        {
+          eventId: c.eventId,
+          cues: JSON.parse(c.displayCuesJson) as string[],
+          aliases: JSON.parse(c.aliasesJson) as GuardCardRef['aliases'],
+        },
+      ]),
+    );
+    const eventsById = new Map(truth.events.map((e) => [e.id, e]));
+    for (const item of fixtures.l0) {
+      if (item.constructionLayer === undefined) {
+        continue;
+      }
+      assertP6GoldItem(item, guardCards.get(item.eventId), eventsById.get(item.eventId)?.key_points ?? []);
+    }
     const { relayMap, relayChains } = buildRelay(truth.events);
     const cacheDrift = buildCacheDrift(cards, truth.events);
     const ftsTextByCard = readFtsText(indexDir, cards);
@@ -486,6 +531,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       consistency: { status: consistency.status, pairs: consistency.pairs },
       holdout: { mode: holdoutMode, folds, ...(options.holdout ? { unsealedAt: options.nowMs } : {}) },
       rngSeed: seed,
+      rulesVersion,
       sampleN: items.length,
       initiationMerge: 'system->environment',
       decoyPairs: decoyPairs.length,
@@ -497,7 +543,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       createdMs: options.nowMs,
       sampleN: items.length,
       probeSetVersion: fixtures.probeSetVersion,
-      modelTag: 'rules-v1',
+      modelTag: rulesVersion,
       metricsJson: JSON.stringify(metrics),
       notesJson: JSON.stringify(notes),
     };
@@ -597,6 +643,7 @@ async function main(): Promise<void> {
       holdout: options.holdout,
       dryRun: options.dryRun,
       nowMs: Date.now(),
+      ...(options.rulesVersion === undefined ? {} : { rulesVersion: options.rulesVersion }),
     });
   } catch (error) {
     process.stderr.write(`错误：${(error as Error).message}\n`);

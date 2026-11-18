@@ -6,7 +6,7 @@
       "eventId": "syn-ev-0",
       "channel": "dsh",
       "queries": ["合成线索零", "合成线索零甲", "合成线索零乙"],
-      "aliases": [{ "term": "合成别名零", "source": "miss", "sensitive": 0 }],
+      "aliases": [{ "term": "合成别名零", "source": "miss", "sensitive": 1 }],
       "sensitiveTerms": [],
       "discriminatorNeighborEventIds": ["syn-ev-1"],
       "expectedSlots": ["relevance"]
@@ -15,7 +15,7 @@
       "eventId": "syn-ev-1",
       "channel": "dsh",
       "queries": ["合成线索一", "合成线索一甲", "合成线索一乙"],
-      "aliases": [{ "term": "合成别名一", "source": "miss", "sensitive": 0 }],
+      "aliases": [{ "term": "合成别名一", "source": "miss", "sensitive": 1 }],
       "sensitiveTerms": [],
       "discriminatorNeighborEventIds": ["syn-ev-0"],
       "expectedSlots": ["relevance"]

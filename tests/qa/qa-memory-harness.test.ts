@@ -6,7 +6,8 @@
  *
  * 纪律：
  *  - 一律用临时 dataRoot（makeTempRoot/withTempRoot），绝不触碰真实根；
- *  - 生产 memory-index.sqlite 零字节写入（审计写独立 --out 库，I1-A）；
+ *  - 记忆索引 memory-index.sqlite 审计期间零字节写入（只读打开；零字节承诺仅限该文件，I1-A）；
+ *    dataRoot 并非整体零字节：Fasti.open 写 state/checkpoint.json、事件追加写 events/*.jsonl；
  *  - 不改生产代码、不改别人的测试文件；断言只针对方案/裁决写明的行为。
  *
  * 本文件随 C5 各模块增量生长；当前段：I1-A 审计落库低层 + 写柄 writeAuditRun。
@@ -26,7 +27,8 @@ import type { EventRecord } from '../../src/contract/event.ts';
 import { listFiles } from '../../src/core/fsx.ts';
 import { appendJsonl, readJsonlFile } from '../../src/core/jsonl.ts';
 import { ulid } from '../../src/core/ulid.ts';
-import { buildMemoryIndex, computeTruthFingerprint, computeContentHash, computeRowHashSum, deriveCardId } from '../../src/memory/builder.ts';
+import { buildMemoryIndex, computeTruthFingerprint, computeContentHash, computeRowHashSum, deriveCardId, normalizeDisplayCues } from '../../src/memory/builder.ts';
+import { deriveCuesFromKeyPoints } from '../../src/memory/cue-derive.ts';
 import { foldCurrentEvents } from '../../src/projection/event-row.ts';
 import { layoutOf } from '../../src/source/paths.ts';
 import { runAudit } from '../../scripts/run-memory-audit.ts';
@@ -855,7 +857,7 @@ function runAuditCli(args: string[]): { status: number | null; stdout: string; s
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-function readyEventRecord(id: string, anchors: string[], startMs: number): EventRecord {
+function readyEventRecord(id: string, anchors: string[], startMs: number, keyPoints: readonly string[] = ['关键点']): EventRecord {
   return {
     id,
     schema_version: 1,
@@ -866,7 +868,7 @@ function readyEventRecord(id: string, anchors: string[], startMs: number): Event
     time_range: { started_at: iso(startMs), ended_at: iso(startMs + 3600_000) },
     assembled_at: iso(startMs + 3600_000),
     summary: '客观摘要（仅供测试阅读，不进卡）',
-    key_points: ['关键点'],
+    key_points: [...keyPoints],
     anchors,
     topic_lines: [],
     summary_quality: 'ready',
@@ -901,7 +903,7 @@ async function makeAuditableRoot(n: number): Promise<{ root: string; eventIds: s
   const events = await fasti.queryEvents();
   await fasti.close();
   const eventIds: string[] = [];
-  for (const ev of events) {
+  for (const [i, ev] of events.entries()) {
     eventIds.push(ev.id);
     const ready: EventRecord = {
       ...ev,
@@ -910,6 +912,8 @@ async function makeAuditableRoot(n: number): Promise<{ root: string; eventIds: s
       closed_reason: 'silence',
       summary_quality: 'ready',
       summary: '客观摘要（仅供测试阅读，不进卡）',
+      // G7：每个事件带可区分 key_points，供种子卡走 key_points→cue 真派生（禁手写线索）。
+      key_points: [`关键点${i}`],
       anchors: ev.pointers.map((p) => p.id),
     };
     appendJsonl(path.join(layoutOf(root).events, '2026-11.jsonl'), ready);
@@ -930,7 +934,7 @@ function makeNonResolvableRoot(n: number): { root: string; eventIds: string[]; e
   for (let i = 0; i < n; i += 1) {
     const eid = ulid();
     eventIds.push(eid);
-    appendJsonl(path.join(root, 'events', '2026-11.jsonl'), readyEventRecord(eid, [expIds[i]!], T0 + i * DAY));
+    appendJsonl(path.join(root, 'events', '2026-11.jsonl'), readyEventRecord(eid, [expIds[i]!], T0 + i * DAY, [`关键点${i}`]));
   }
   return { root, eventIds, expIds };
 }
@@ -954,8 +958,14 @@ async function seedCards(root: string): Promise<void> {
     const anchors = [...new Set(event.anchors)].sort();
     const cardId = deriveCardId(event.id, anchors);
     const anchorJson = JSON.stringify(anchors);
-    const displayCuesJson = JSON.stringify([`线索${i}`]);
-    const aliasesJson = JSON.stringify([{ term: `别名${i}`, source: 'miss' as const, sensitive: 0 as const }]);
+    // G7（v4 §6）：合成构造方以 rules-v2 离线口径从事件 key_points 真派生 cue，
+    // 禁止手写「线索i」——手写 cue 绕过 key_points→cue 派生链，会让 P6 测不到路线 A 真链路。
+    const derivedCues = normalizeDisplayCues(
+      deriveCuesFromKeyPoints({ keyPoints: event.key_points, summary: event.summary }).cues,
+    );
+    const displayCuesJson = JSON.stringify(derivedCues);
+    // G3/E-12：miss 别名生产恒 sensitive=1，C5 合成根须与生产对齐（v4 §9 序 7）。
+    const aliasesJson = JSON.stringify([{ term: `别名${i}`, source: 'miss' as const, sensitive: 1 as const }]);
     const discriminator = `判别${i}`;
     const card: MemoryCard = {
       cardId,
@@ -985,7 +995,7 @@ async function seedCards(root: string): Promise<void> {
       termNorm: `别名${i}`,
       cardId,
       source: 'miss',
-      sensitive: 0,
+      sensitive: 1,
       status: 'active',
       createdMs: atMs,
       hitCount: 0,
@@ -1021,7 +1031,8 @@ async function seedCards(root: string): Promise<void> {
       event_id: c.eventId,
       anchor_json: c.anchorJson,
       content_hash: c.contentHash,
-      model_tag: 'rules-v1',
+      // G7：本合成根由离线构造方显式按 rules-v2 派生 cue，决策行如实落章（生产面仍 rules-v1）。
+      model_tag: 'rules-v2',
       reason: 'fixture: 测试建卡',
       created_by: 'her',
     }));
@@ -1031,21 +1042,29 @@ async function seedCards(root: string): Promise<void> {
   }
 }
 
-/** 合成夹具（id 指向被测合成数据；l0 检索词与种子卡线索对齐）。 */
+/** 合成夹具（id 指向被测合成数据；l0 检索词与种子卡的真派生 cue 同源对齐，禁手写）。 */
 function writeSyntheticFixtures(dir: string, eventIds: string[], expIds: string[]): void {
   fs.mkdirSync(dir, { recursive: true });
   const l0 = {
     probeSetVersion: 'v1',
     layer: 'l0',
-    items: eventIds.map((id, i) => ({
-      eventId: id,
-      channel: 'dsh',
-      queries: [`线索${i}`],
-      aliases: [],
-      sensitiveTerms: [],
-      discriminatorNeighborEventIds: [],
-      expectedSlots: ['relevance'],
-    })),
+    items: eventIds.map((id, i) => {
+      // 与 seedCards 同一派生函数、同一 key_points：查询即该事件派生 cue 的首条，
+      // 保证 l0 命中走的是真派生链路上的词面，而不是测试里另写的一套词。
+      const [derivedCue] = deriveCuesFromKeyPoints({
+        keyPoints: [`关键点${i}`],
+        summary: '客观摘要（仅供测试阅读，不进卡）',
+      }).cues;
+      return {
+        eventId: id,
+        channel: 'dsh',
+        queries: [derivedCue],
+        aliases: [],
+        sensitiveTerms: [],
+        discriminatorNeighborEventIds: [],
+        expectedSlots: ['relevance'],
+      };
+    }),
   };
   const l1 = {
     probeSetVersion: 'v1',
@@ -1249,6 +1268,84 @@ test('I1-A/I10 · 10 事件全流程：合成卡→build→audit，10 卡、prov
     } finally {
       outDb.close();
     }
+  } finally {
+    cleanupTempRoot(fixDir);
+    cleanupTempRoot(outDir);
+    cleanupTempRoot(root);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// G7 · 审计信封去硬编码：规则版本如实落 modelTag（v4 §6/§9 序 5）
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('G7 · runAudit 缺省信封记 rules-v1；显式 rules-v2 如实落 modelTag；未知版本 fail-closed', async () => {
+  const { root, eventIds, expIds } = await makeAuditableRoot(2);
+  const fixDir = makeTempRoot('audit-fix-');
+  const outDir = makeTempRoot('audit-out-');
+  try {
+    await seedCards(root);
+    writeSyntheticFixtures(fixDir, eventIds, expIds);
+
+    const v1 = await runAudit({ dataRoot: root, outDir, fixturesDir: fixDir, holdout: false, dryRun: true, nowMs: AUDIT_NOW });
+    assert.equal(v1.run.modelTag, 'rules-v1', '缺省=当前生产版本，不再硬编码但默认值一致');
+    assert.equal((JSON.parse(v1.run.notesJson) as { rulesVersion: string }).rulesVersion, 'rules-v1');
+
+    const v2 = await runAudit({ dataRoot: root, outDir, fixturesDir: fixDir, holdout: false, dryRun: true, nowMs: AUDIT_NOW, rulesVersion: 'rules-v2' });
+    assert.equal(v2.run.modelTag, 'rules-v2', '离线构造方显式传入的受测版本如实入信封');
+    assert.equal(v2.redLines.r1 !== null && v2.redLines.r1 > 0, true, '真派生 cue 对齐 l0 查询，R1>0 不依赖手写线索');
+
+    await assert.rejects(
+      () => runAudit({ dataRoot: root, outDir, fixturesDir: fixDir, holdout: false, dryRun: true, nowMs: AUDIT_NOW, rulesVersion: 'rules-v9' }),
+      /未知规则版本/,
+    );
+  } finally {
+    cleanupTempRoot(fixDir);
+    cleanupTempRoot(outDir);
+    cleanupTempRoot(root);
+  }
+});
+
+test('G7 · CLI --rules-version 未知值非零退出；--help 暴露该参数', async () => {
+  const { root } = await makeAuditableRoot(1);
+  const outDir = makeTempRoot('audit-out-');
+  try {
+    const bad = runAuditCli(['--data-root', root, '--out', path.join(outDir, 'x'), '--rules-version', 'rules-v9', '--json']);
+    assert.notEqual(bad.status, 0, '未知规则版本 fail-closed');
+    const help = runAuditCli(['--help']);
+    assert.match(help.stdout, /--rules-version/);
+  } finally {
+    cleanupTempRoot(outDir);
+    cleanupTempRoot(root);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B4/序10 · 零字节承诺边界钉死：承诺仅限记忆索引，dataRoot 其他写通路如实承认
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('B4 · 审计只读不改记忆索引；checkpoint/events 写通路客观存在，零字节承诺不得外扩', async () => {
+  const { root, eventIds, expIds } = await makeAuditableRoot(2);
+  const fixDir = makeTempRoot('audit-fix-');
+  const outDir = makeTempRoot('audit-out-');
+  try {
+    await seedCards(root);
+    writeSyntheticFixtures(fixDir, eventIds, expIds);
+
+    // 写通路事实（非记忆索引）：Fasti.open 对账落 checkpoint；事件版本追加落 events JSONL。
+    const checkpointFile = path.join(root, 'state', 'checkpoint.json');
+    assert.ok(fs.existsSync(checkpointFile), 'Fasti.open 启动对账原子写 state/checkpoint.json（api/index.ts → checkpoint.save）');
+    const eventFiles = listFiles(layoutOf(root).events, '.jsonl');
+    assert.ok(eventFiles.some((name) => fs.statSync(path.join(layoutOf(root).events, name)).size > 0), 'events/*.jsonl 存在非零事件版本追加');
+
+    // 零字节承诺本体：审计运行前后记忆索引逐字节一致，且 checkpoint 不在索引目录内。
+    const indexDir = path.join(root, 'projection', 'memory-index');
+    const indexFile = path.join(indexDir, 'memory-index.sqlite');
+    const before = fs.readFileSync(indexFile);
+    const report = await runAudit({ dataRoot: root, outDir, fixturesDir: fixDir, holdout: false, dryRun: true, nowMs: AUDIT_NOW });
+    assert.deepEqual(fs.readFileSync(indexFile), before, '记忆索引审计期间零字节变化');
+    assert.equal(report.provenanceFailed, false);
+    assert.ok(!checkpointFile.startsWith(indexDir), 'checkpoint 写通路位于索引目录之外，边界可机械区分');
   } finally {
     cleanupTempRoot(fixDir);
     cleanupTempRoot(outDir);
