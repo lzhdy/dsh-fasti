@@ -33,14 +33,18 @@ import { parseEvent } from '../src/contract/event.ts';
 import type { EventRecord } from '../src/contract/event.ts';
 import type { Experience } from '../src/contract/experience.ts';
 import { parseExperience } from '../src/contract/validate-experience.ts';
-import { NotFoundError } from '../src/core/errors.ts';
+import { NotFoundError, IntegrityError } from '../src/core/errors.ts';
 import { listFiles } from '../src/core/fsx.ts';
 import { readJsonlFile } from '../src/core/jsonl.ts';
 import { ulid } from '../src/core/ulid.ts';
 import { aggregateMetrics, mulberry32, DEFAULT_RNG_SEED, P95_REPEATS } from '../src/memory/audit/metrics.ts';
-import type { AggregateInput, MetricsJson, Rng } from '../src/memory/audit/metrics.ts';
+import type { AggregateInput, MetricsJson, NaEstimate, Rng } from '../src/memory/audit/metrics.ts';
 import { loadFixtures } from '../src/memory/audit/fixtures.ts';
 import type { LoadedFixtures } from '../src/memory/audit/fixtures.ts';
+import { loadAbstainFixtures, abstainHasGold } from '../src/memory/audit/fixtures.ts';
+import type { LoadedAbstainFixtures } from '../src/memory/audit/fixtures.ts';
+import { summarizeFourState } from '../src/memory/audit/four-state.ts';
+import type { FourStateProbeInput, FourStateSummary } from '../src/memory/audit/four-state.ts';
 import { assertMissAliasesSensitive, assertP6GoldItem } from '../src/memory/audit/fixture-guard.ts';
 import type { GuardCardRef } from '../src/memory/audit/fixture-guard.ts';
 import { replayGold } from '../src/memory/audit/gold.ts';
@@ -48,6 +52,9 @@ import type { GoldQuestion, GoldQuestionResult, SearchFn } from '../src/memory/a
 import { buildDecoyPairs, scoreDecoy } from '../src/memory/audit/decoy.ts';
 import type { DecoyQuestionResult } from '../src/memory/audit/decoy.ts';
 import { evaluateConsistency, consistencyPairKey } from '../src/memory/audit/consistency.ts';
+import { runLoeo } from '../src/memory/audit/loeo.ts';
+import type { LoeoResult } from '../src/memory/audit/loeo.ts';
+import { verifySeal, appendUnsealRecord } from '../src/memory/audit/sealing.ts';
 import type { ConsistencyResult, ReflectionPair } from '../src/memory/audit/consistency.ts';
 import { auditProvenance } from '../src/memory/audit/provenance.ts';
 import type { PointerResolver, ProvenanceResult } from '../src/memory/audit/provenance.ts';
@@ -70,6 +77,9 @@ interface CliOptions {
   dataRoot: string | undefined;
   out: string | undefined;
   rulesVersion: string | undefined;
+  sealDir: string | undefined;
+  unsealReason: string | undefined;
+  operator: string | undefined;
   holdout: boolean;
   dryRun: boolean;
   json: boolean;
@@ -81,6 +91,9 @@ function parseArgs(argv: string[]): CliOptions {
     dataRoot: undefined,
     out: undefined,
     rulesVersion: undefined,
+    sealDir: undefined,
+    unsealReason: undefined,
+    operator: undefined,
     holdout: false,
     dryRun: false,
     json: false,
@@ -91,7 +104,10 @@ function parseArgs(argv: string[]): CliOptions {
     switch (arg) {
       case '--data-root':
       case '--out':
-      case '--rules-version': {
+      case '--rules-version':
+      case '--seal-dir':
+      case '--unseal-reason':
+      case '--operator': {
         const value = argv[i + 1];
         if (value === undefined) {
           throw new Error(`参数 ${arg} 缺少取值`);
@@ -101,8 +117,14 @@ function parseArgs(argv: string[]): CliOptions {
           options.dataRoot = value;
         } else if (arg === '--out') {
           options.out = value;
-        } else {
+        } else if (arg === '--rules-version') {
           options.rulesVersion = value;
+        } else if (arg === '--seal-dir') {
+          options.sealDir = value;
+        } else if (arg === '--unseal-reason') {
+          options.unsealReason = value;
+        } else {
+          options.operator = value;
         }
         break;
       }
@@ -133,7 +155,10 @@ function usage(): string {
     '  --data-root <目录>  数据根（**必填**，只读：真值 JSONL/卡/检索；永不在该库取写柄）',
     '  --out <目录>        审计输出库目录（**必填**，独立于 dataRoot；等于/位于其内一律拒绝 exit2）',
     '  --rules-version <v> 受测规则版本（rules-v1/rules-v2），缺省当前生产版本；信封如实记录',
-    '  --holdout           显式解封 L2 holdout 跑一次（缺省不跑）',
+    '  --holdout           显式解封封存层跑一次（必须同时给 --seal-dir 与 --unseal-reason）',
+    '  --seal-dir <目录>   已封存夹具目录（G6：先哈希核验，读取即追加解封留痕）',
+    '  --unseal-reason <t> 本次解封理由（必填，写入封存目录 unseal-log.jsonl）',
+    '  --operator <名>     解封操作人（缺省 offline-cli）',
     '  --dry-run           只校验夹具/打印报告，不落 audit 库（CI 预检）',
     '  --json              输出 JSON 报告（机器可读）',
     '  --help              本帮助',
@@ -273,6 +298,7 @@ function buildGoldQuestions(fixtures: LoadedFixtures, truth: Truth, includeHoldo
         source: 'l0',
         initiation: 'user',
         coldStart: false,
+        highRisk: item.highRiskLabel !== undefined,
       });
     }
   }
@@ -288,6 +314,7 @@ function buildGoldQuestions(fixtures: LoadedFixtures, truth: Truth, includeHoldo
       source: fixtures.l2.includes(item) ? 'l2' : 'l1',
       initiation: question === undefined ? item.initiation : stratumOf(question.initiation),
       coldStart: question === undefined ? item.coldStart : isColdStart(question, target, truth),
+      highRisk: item.highRiskLabel !== undefined,
     });
   }
   return questions;
@@ -399,6 +426,15 @@ export interface AuditOptions {
    * 未知标签 fail-closed——run 信封必须如实记录「本次审计测的是哪套规则」。
    */
   rulesVersion?: string;
+  /**
+   * 已封存夹具目录（v4 §8/序9 G6）。--holdout 终判必须走封存集：
+   * 传入即先重算哈希核验，再在解封时追加留痕；裸 --holdout 旗标已废止。
+   */
+  sealedDir?: string;
+  /** 解封理由（使用封存集时必填，写入 unseal-log）。 */
+  unsealReason?: string;
+  /** 解封操作人（缺省 offline-cli）。 */
+  operator?: string;
 }
 
 /** 允许出现在审计信封里的规则版本（与 cue-derive 白名单同源管理，未知值拒收）。 */
@@ -408,8 +444,12 @@ export interface AuditReport {
   run: AuditRunRecord;
   items: AuditItemRecord[];
   metrics: MetricsJson;
+  /** 门后四态汇总（金标题 top1 + 弃权/噪声探针）；无任何探针时 N/A。 */
+  fourState: FourStateSummary | NaEstimate;
+  /** abstain.json 是否实际加载（缺失只标注，不硬失败，金标题四态仍可算）。 */
+  abstainFixturePresent: boolean;
   provenanceFailed: boolean;
-  holdout: { mode: 'holdout' | 'loeo' | 'not-run'; folds: number };
+  holdout: { mode: 'holdout' | 'loeo' | 'not-run'; folds: number; loeo?: LoeoResult };
   redLines: { r1: number | null; r2: number | null; r3: number | null };
   written: boolean;
 }
@@ -420,7 +460,22 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
   if (!KNOWN_RULES_VERSIONS.has(rulesVersion)) {
     throw new Error(`未知规则版本「${rulesVersion}」：审计信封只接受 ${[...KNOWN_RULES_VERSIONS].join('/')}`);
   }
-  const fixtures = loadFixtures(options.fixturesDir);
+  // 序9/G6：holdout 终判只能读封存集，先哈希核验；普通 dry-run 仍可用施工夹具目录。
+  let fixturesDir = options.fixturesDir;
+  if (options.holdout) {
+    if (options.sealedDir === undefined) {
+      throw new IntegrityError('--holdout 必须配合 --seal-dir 指向已封存夹具（裸解封旗标已废止，v4 §8）');
+    }
+    if (!options.unsealReason || options.unsealReason.trim() === '') {
+      throw new IntegrityError('解封封存集必须提供 --unseal-reason（留痕不可空）');
+    }
+    const verification = verifySeal(options.sealedDir);
+    if (!verification.ok) {
+      throw new IntegrityError(`封存核验失败，终判无效：${verification.errors.join('；')}`);
+    }
+    fixturesDir = options.sealedDir;
+  }
+  const fixtures = loadFixtures(fixturesDir);
   const truth = readTruth(options.dataRoot);
   const indexDir = path.join(resolveDataRoot({ dataRoot: options.dataRoot }), 'projection', 'memory-index');
 
@@ -469,6 +524,46 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
     const decoyPairs = buildDecoyPairs(cards);
     const decoy = await scoreDecoy(fixtures.decoy, search, { atMs: options.nowMs });
 
+    // ── 四态/弃权（v4 §5.0、§9 序3）：top1 门后判定，三分母与 R1(top-k)/R2 隔离 ──
+    // abstain.json 缺失不硬失败：金标题四态照算，仅在 notes 标注缺探针文件。
+    let abstainFixturePresent = true;
+    let abstainItems: LoadedAbstainFixtures['items'] = [];
+    try {
+      abstainItems = loadAbstainFixtures(fixturesDir).items;
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) {
+        throw error;
+      }
+      abstainFixturePresent = false;
+    }
+    const fourStateProbes: FourStateProbeInput[] = [];
+    for (const question of questions) {
+      const top1 = await readHandle.search({ text: question.queryText, atMs: options.nowMs, limit: 1 });
+      const resolvedEventId = relayMap.get(question.targetEventId) ?? question.targetEventId;
+      fourStateProbes.push({
+        probeRef: question.questionRef,
+        hasGold: true,
+        committed: top1.length > 0,
+        top1IsGold: top1[0]?.card.eventId === resolvedEventId,
+        highRisk: question.highRisk ?? false,
+      });
+    }
+    for (const item of abstainItems) {
+      const top1 = await readHandle.search({ text: item.query, atMs: options.nowMs, limit: 1 });
+      fourStateProbes.push({
+        probeRef: `abstain:${item.kind}`,
+        hasGold: abstainHasGold(item),
+        committed: top1.length > 0,
+        top1IsGold: item.goldCardId !== null && top1[0]?.card.cardId === item.goldCardId,
+        highRisk: false,
+        probeKind: item.kind,
+      });
+    }
+    const fourState: FourStateSummary | NaEstimate =
+      fourStateProbes.length === 0
+        ? { status: 'n-a', reason: 'no-probe' }
+        : summarizeFourState(fourStateProbes);
+
     // consistency：v1 无叙事线，reflection 对来自夹具组织（合成期为空）→ N/A。
     const pairs: ReflectionPair[] = [];
     const windowsByPair = new Map<string, readonly [AssembledWindow, AssembledWindow]>();
@@ -493,7 +588,8 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
     };
     const provenance: ProvenanceResult = await auditProvenance(cards, resolver, {
       rng: mulberry32(seed),
-      sampleRatio: 0.2,
+      // 序11：C5 全量核验（G1 锚点解析率必须 100%），20% 抽样默认已停用。
+      sampleRatio: 1,
       cacheDrift,
       ftsTextByCard,
     });
@@ -519,7 +615,22 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       : weeks < MIN_CALENDAR_WEEKS
         ? 'loeo'
         : 'holdout';
-    const folds = truth.events.length;
+    // 序6：LOEO 必须真做留一事件逐折回算；折数取参与提问的去重目标事件，不再贴标签。
+    let lOeo: LoeoResult | undefined;
+    if (holdoutMode === 'loeo') {
+      lOeo = await runLoeo(questions, search, { atMs: options.nowMs, k: 3, relayMap, relayChains });
+    }
+    const folds = lOeo?.folds ?? truth.events.length;
+    if (options.holdout && options.sealedDir !== undefined) {
+      // 序9：每次读取封存集都只追加一行解封留痕（模式/折数定稿后写，保证与报告一致）。
+      appendUnsealRecord(options.sealedDir, {
+        atMs: options.nowMs,
+        operator: options.operator ?? 'offline-cli',
+        reason: options.unsealReason!,
+        mode: holdoutMode === 'holdout' ? 'holdout' : 'loeo',
+        folds,
+      });
+    }
 
     const runId = ulid();
     const items: AuditItemRecord[] = [
@@ -529,10 +640,12 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
     ];
     const notes = {
       consistency: { status: consistency.status, pairs: consistency.pairs },
-      holdout: { mode: holdoutMode, folds, ...(options.holdout ? { unsealedAt: options.nowMs } : {}) },
+      holdout: { mode: holdoutMode, folds, ...(options.holdout ? { unsealedAt: options.nowMs } : {}), ...(lOeo ? { loeo: lOeo } : {}) },
       rngSeed: seed,
       rulesVersion,
       sampleN: items.length,
+      abstainFixturePresent,
+      fourState,
       initiationMerge: 'system->environment',
       decoyPairs: decoyPairs.length,
       nodeVersion: process.version,
@@ -566,8 +679,10 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       run,
       items,
       metrics,
+      fourState,
+      abstainFixturePresent,
       provenanceFailed: provenance.failed,
-      holdout: { mode: holdoutMode, folds },
+      holdout: { mode: holdoutMode, folds, ...(lOeo ? { loeo: lOeo } : {}) },
       redLines: { r1, r2, r3 },
       written,
     };
@@ -601,6 +716,16 @@ function formatReport(report: AuditReport): string {
   lines.push(`R3 一致性   ：${report.redLines.r3 ?? 'N/A'}`);
   lines.push('');
   lines.push(`provenance  ：${report.provenanceFailed ? 'FAILED（硬失败）' : '通过'}`);
+  if (!('rates' in report.fourState)) {
+    lines.push(`四态        ：N/A（${report.fourState.reason}）`);
+  } else {
+    const fs = report.fourState;
+    const pct = (v: number | { status: 'n-a' }): string => (typeof v === 'number' ? v.toFixed(4) : 'N/A');
+    lines.push('── 门后四态（top1 口径，与 R1 top-k 禁互替）────────────────────');
+    lines.push(`计数        ：cc=${fs.counts.cc} wcG=${fs.counts.wcG} wcNG=${fs.counts.wcNG} wa=${fs.counts.wa} ca=${fs.counts.ca}（G=${fs.counts.G} NG=${fs.counts.NG}）`);
+    lines.push(`错认率/召回 ：falseCommit=${pct(fs.rates.falseCommitRate)} recallAfterGate=${pct(fs.rates.recallAfterGate)} 高危错认=${fs.highRiskWrongCommits}`);
+    lines.push(`弃权探针文件：${report.abstainFixturePresent ? '已加载' : '缺失（金标题四态照算）'}`);
+  }
   lines.push('══════════════════════════════════════════════════════════════');
   return lines.join('\n');
 }
@@ -644,6 +769,9 @@ async function main(): Promise<void> {
       dryRun: options.dryRun,
       nowMs: Date.now(),
       ...(options.rulesVersion === undefined ? {} : { rulesVersion: options.rulesVersion }),
+      ...(options.sealDir === undefined ? {} : { sealedDir: options.sealDir }),
+      ...(options.unsealReason === undefined ? {} : { unsealReason: options.unsealReason }),
+      ...(options.operator === undefined ? {} : { operator: options.operator }),
     });
   } catch (error) {
     process.stderr.write(`错误：${(error as Error).message}\n`);

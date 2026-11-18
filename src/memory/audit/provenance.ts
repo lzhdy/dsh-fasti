@@ -1,11 +1,12 @@
 /**
- * 记忆层离线审计 —— 抽样溯源审计（方案 §4.10/§6.7，裁决 I2/I5/I8，硬失败）。
+ * 记忆层离线审计 —— 溯源审计（方案 §4.10/§6.7，裁决 I2/I5/I8，硬失败；C5 起默认全量）。
  *
  * 纪律：
  *  - 沿门面只读 resolvePointer 核验，但**不 import 门面**：resolver 由编排层（scripts/tests）注入（I2/M6）；
  *  - 只持 card.anchorJson 解析出的 anchor id（命名 anchorJson/anchorId，不读事件投影锚点字段，I5）；
  *  - 缓存漂移（cacheDrift）与 FTS 文本（ftsTextByCard）由编排层预计算注入；
- *  - 20% 按卡（通道）分层抽样，共用注入 rng、同种子可复算（I8）；
+ *  - **C5 起默认全量核验（sampleRatio=1，v4 §9 序 11：20% 抽样默认已停用）**；
+ *    抽样函数保留供专项调查显式传 ratio 使用，终判链路不得再走抽样；
  *  - 成功率<100% 或悬空锚点 → failed（硬失败，区别于观测红线）；纯离线、无网络；顶层零求值。
  */
 
@@ -20,7 +21,7 @@ export type PointerResolver = (pointer: Pointer) => Promise<ResolvedPointer>;
 
 export interface ProvenanceOptions {
   rng: Rng;
-  /** 缺省 0.2，按卡（通道）分层抽样。 */
+  /** 缺省 1（C5 全量核验）；仅专项调查可显式传 <1 抽样，终判链路禁止。 */
   sampleRatio?: number;
   /** cardId → 缓存漂移（编排层 anchor 折叠当前态预计算）。 */
   cacheDrift: ReadonlyMap<string, boolean>;
@@ -116,7 +117,7 @@ export async function auditProvenance(
   resolver: PointerResolver,
   options: ProvenanceOptions,
 ): Promise<ProvenanceResult> {
-  const ratio = options.sampleRatio ?? 0.2;
+  const ratio = options.sampleRatio ?? 1;
   const sampled = stratifiedSample(cards, ratio, options.rng);
   const results: ProvenanceCardResult[] = [];
   let danglingCount = 0;

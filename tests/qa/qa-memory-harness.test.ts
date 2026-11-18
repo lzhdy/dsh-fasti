@@ -32,6 +32,7 @@ import { deriveCuesFromKeyPoints } from '../../src/memory/cue-derive.ts';
 import { foldCurrentEvents } from '../../src/projection/event-row.ts';
 import { layoutOf } from '../../src/source/paths.ts';
 import { runAudit } from '../../scripts/run-memory-audit.ts';
+import { sealFixtures, readUnsealLog } from '../../src/memory/audit/sealing.ts';
 import { ConflictError } from '../../src/core/errors.ts';
 import { openMemoryRead, openMemoryWrite } from '../../src/memory/store.ts';
 import { insertAuditRun, insertAuditItem, mulberry32, DEFAULT_RNG_SEED, BOOTSTRAP_RESAMPLES, P95_REPEATS, percentileCI, ratioEstimate, aggregateMetrics } from '../../src/memory/audit/metrics.ts';
@@ -1181,20 +1182,75 @@ test('I11/I13 · CLI 红线观测不卡退出码：可解析数据 → exit0（R
 // I15/I13/I9 · LOEO 降级标注 / M7 指标正确性通路 / 10 事件全流程
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('I15 · --holdout 样本不足按周切分 → LOEO 降级标注（mode=loeo，folds=事件数，不伪装 holdout）', async () => {
+test('I15/序6/序9 · --holdout 必须走封存集：哈希核验＋解封留痕＋LOEO 真逐折', async () => {
   const { root, eventIds, expIds } = await makeAuditableRoot(3);
+  const fixDir = makeTempRoot('audit-fix-');
+  const sealDir = makeTempRoot('audit-seal-');
+  const outDir = makeTempRoot('audit-out-');
+  try {
+    await seedCards(root);
+    writeSyntheticFixtures(fixDir, eventIds, expIds);
+    sealFixtures({
+      sourceDir: fixDir,
+      sealDir,
+      probeSetVersion: 'v1',
+      rulesVersion: 'rules-v1',
+      rngSeed: DEFAULT_RNG_SEED,
+      sealedAtMs: AUDIT_NOW,
+      sealedBy: 'qa-harness',
+      layerQuotas: { S0: 0, S1: 0, S2: 0, S3: 0, S4: 0 },
+      decoyPairCount: 0,
+    });
+    const report = await runAudit({
+      dataRoot: root,
+      outDir,
+      fixturesDir: fixDir,
+      holdout: true,
+      dryRun: true,
+      nowMs: AUDIT_NOW,
+      sealedDir: sealDir,
+      unsealReason: 'P6 C5 合成根首跑',
+      operator: 'qa-harness',
+    });
+    assert.equal(report.holdout.mode, 'loeo', '日历周数 <5 → LOEO');
+    assert.equal(report.holdout.folds, 3, '折数=参与提问的去重目标事件数');
+    assert.ok(report.holdout.loeo);
+    const loeo = report.holdout.loeo!;
+    assert.equal(loeo.conclusive, true);
+    assert.equal(loeo.perFold.length, 3);
+    for (const fold of loeo.perFold) {
+      assert.equal(fold.n, 4, '留出一事件后每折剩 4 题（6-2）');
+      assert.ok(fold.hits >= 0 && fold.hits <= fold.n);
+      assert.equal(fold.rate, fold.hits / fold.n);
+    }
+    assert.equal(typeof loeo.pooledRate, 'number');
+    const log = readUnsealLog(sealDir);
+    assert.equal(log.length, 1, '本次读取封存集追加一行解封留痕');
+    assert.equal(log[0]!.reason, 'P6 C5 合成根首跑');
+    assert.equal(log[0]!.mode, 'loeo');
+    assert.equal(log[0]!.folds, 3);
+    const notes = JSON.parse(report.run.notesJson) as { holdout: { mode: string; folds: number; unsealedAt?: number; loeo?: unknown } };
+    assert.ok(notes.holdout.loeo, '逐折结果随封存信封落 notes');
+    assert.ok(typeof notes.holdout.unsealedAt === 'number', '解封时刻入 notes');
+  } finally {
+    cleanupTempRoot(fixDir);
+    cleanupTempRoot(sealDir);
+    cleanupTempRoot(outDir);
+    cleanupTempRoot(root);
+  }
+});
+
+test('序9/G6 · 裸 --holdout（无封存目录/无理由）fail-closed，旧旗标通路彻底废止', async () => {
+  const { root, eventIds, expIds } = await makeAuditableRoot(2);
   const fixDir = makeTempRoot('audit-fix-');
   const outDir = makeTempRoot('audit-out-');
   try {
     await seedCards(root);
     writeSyntheticFixtures(fixDir, eventIds, expIds);
-    const report = await runAudit({ dataRoot: root, outDir, fixturesDir: fixDir, holdout: true, dryRun: true, nowMs: AUDIT_NOW });
-    assert.equal(report.holdout.mode, 'loeo', '日历周数 <5 → LOEO');
-    assert.equal(report.holdout.folds, 3, '折数=参与事件数');
-    const notes = JSON.parse(report.run.notesJson) as { holdout: { mode: string; folds: number; unsealedAt?: number } };
-    assert.equal(notes.holdout.mode, 'loeo');
-    assert.equal(notes.holdout.folds, 3);
-    assert.ok(typeof notes.holdout.unsealedAt === 'number', '解封时刻入 notes');
+    await assert.rejects(
+      () => runAudit({ dataRoot: root, outDir, fixturesDir: fixDir, holdout: true, dryRun: true, nowMs: AUDIT_NOW }),
+      /--seal-dir/,
+    );
   } finally {
     cleanupTempRoot(fixDir);
     cleanupTempRoot(outDir);
@@ -1346,6 +1402,70 @@ test('B4 · 审计只读不改记忆索引；checkpoint/events 写通路客观�
     assert.deepEqual(fs.readFileSync(indexFile), before, '记忆索引审计期间零字节变化');
     assert.equal(report.provenanceFailed, false);
     assert.ok(!checkpointFile.startsWith(indexDir), 'checkpoint 写通路位于索引目录之外，边界可机械区分');
+  } finally {
+    cleanupTempRoot(fixDir);
+    cleanupTempRoot(outDir);
+    cleanupTempRoot(root);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// C2/序3 · 四态/弃权接入 CLI 主链路（v4 §5.0：top1 口径与 R1 top-k 并列、三分母隔离）
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('C2 · 无 abstain.json：金标题四态照算且显式标注探针文件缺失', async () => {
+  const { root, eventIds, expIds } = await makeAuditableRoot(2);
+  const fixDir = makeTempRoot('audit-fix-');
+  const outDir = makeTempRoot('audit-out-');
+  try {
+    await seedCards(root);
+    writeSyntheticFixtures(fixDir, eventIds, expIds); // 不写 abstain.json
+    const report = await runAudit({ dataRoot: root, outDir, fixturesDir: fixDir, holdout: false, dryRun: true, nowMs: AUDIT_NOW });
+    assert.equal(report.abstainFixturePresent, false);
+    assert.ok('rates' in report.fourState, '金标题存在，四态不得整体 N/A');
+    if ('rates' in report.fourState) {
+      // 2 事件 ×（l0 一问 + l1 一问）= 4 条有金标探针
+      assert.equal(report.fourState.counts.N, 4);
+      assert.equal(report.fourState.counts.G, 4);
+      assert.equal(report.fourState.counts.NG, 0);
+    }
+    const notes = JSON.parse(report.run.notesJson) as { abstainFixturePresent: boolean; fourState: unknown };
+    assert.equal(notes.abstainFixturePresent, false);
+    assert.ok(notes.fourState !== undefined, '四态结果落 notes（审计 item DDL 冻结不新增 probe_type）');
+  } finally {
+    cleanupTempRoot(fixDir);
+    cleanupTempRoot(outDir);
+    cleanupTempRoot(root);
+  }
+});
+
+test('C2 · 加载 abstain.json：不可答探针未认定 → correct-abstain（ca），三分母独立计数', async () => {
+  const { root, eventIds, expIds } = await makeAuditableRoot(2);
+  const fixDir = makeTempRoot('audit-fix-');
+  const outDir = makeTempRoot('audit-out-');
+  try {
+    await seedCards(root);
+    writeSyntheticFixtures(fixDir, eventIds, expIds);
+    fs.writeFileSync(
+      path.join(fixDir, 'abstain.json'),
+      JSON.stringify({
+        probeSetVersion: 'v1',
+        layer: 'abstain',
+        items: [{ query: '绝对查不到的天外飞来提问xyz123', goldCardId: null, kind: 'unanswerable' }],
+      }),
+    );
+    const report = await runAudit({ dataRoot: root, outDir, fixturesDir: fixDir, holdout: false, dryRun: true, nowMs: AUDIT_NOW });
+    assert.equal(report.abstainFixturePresent, true);
+    assert.ok('rates' in report.fourState);
+    if ('rates' in report.fourState) {
+      assert.equal(report.fourState.counts.N, 5, '4 金标题 + 1 无金标探针');
+      assert.equal(report.fourState.counts.ca, 1, '不可答且门未认定 → correct-abstain');
+      assert.equal(report.fourState.counts.NG, 1);
+      // 无金标题正确拒绝率 = ca/NG = 1
+      assert.equal(report.fourState.rates.correctRejectRate, 1);
+    }
+    // R1 分母不含弃权探针（三分母隔离）：R1 仍只来自 4 条金标题
+    assert.ok(report.redLines.r1 !== null);
   } finally {
     cleanupTempRoot(fixDir);
     cleanupTempRoot(outDir);

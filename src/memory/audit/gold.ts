@@ -21,6 +21,8 @@ export interface GoldQuestion {
   source: 'l0' | 'l1' | 'l2';
   initiation: 'her' | 'user' | 'environment';
   coldStart: boolean;
+  /** 五类高危金标题（strong/promise/date/verbatim/negation）；供四态高危错认硬约束计数。 */
+  highRisk?: boolean;
 }
 
 /** 单问回放结果（hit/rank/scoreParts + 接力链 + 分层透传）。 */

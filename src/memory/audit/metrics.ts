@@ -95,6 +95,82 @@ export function ratioEstimate(indicators: readonly (0 | 1)[], rng: Rng): RatioEs
   return { point, ciLower, ciUpper, n };
 }
 
+// ── 卡簇 bootstrap（v4 §7：重采样单位＝事件 id，题级 iid 区间虚窄作废）──────
+
+/**
+ * 终判门可用的最小事件簇数（v4 §7/S3 推导经验占位，非统计定理值）。
+ * 簇数不足时终判只能 INCONCLUSIVE，禁止靠灌题（不扩簇）凑区间宽度。
+ */
+export const MIN_GATE_CLUSTERS = 30;
+
+/** 一条以事件簇为单位的观测：clusterId＝事件 id，同一事件供多层/多题只属同一簇。 */
+export interface ClusterObservation {
+  readonly clusterId: string;
+  readonly outcome: 0 | 1;
+}
+
+/** 簇级比率估计形状：在 RatioEstimate 上附带去重后的事件簇数。 */
+export interface ClusterRatioEstimate extends RatioEstimate {
+  clusterCount: number;
+}
+
+/**
+ * 卡簇 percentile bootstrap：
+ *  1. 按 clusterId 把题级结局分箱（同事件多题归同一簇）；
+ *  2. 每轮有放回抽取 K 个簇（K＝去重簇数），被抽中簇的全部题结局随簇整体入样（重复抽中重复计入）；
+ *  3. 对每轮池化命中率取经验分布的 2.5%/97.5% 分位。
+ * 点估计仍是全样本 pooled 命中率；空样本返回零值与 clusterCount=0（N/A 由聚合层判定）。
+ */
+export function clusterRatioEstimate(
+  observations: readonly ClusterObservation[],
+  rng: Rng,
+  resamples: number = BOOTSTRAP_RESAMPLES,
+): ClusterRatioEstimate {
+  const n = observations.length;
+  if (n === 0) {
+    return { point: 0, ciLower: 0, ciUpper: 0, n: 0, clusterCount: 0 };
+  }
+  const groups = new Map<string, number[]>();
+  let hits = 0;
+  for (const observation of observations) {
+    const bucket = groups.get(observation.clusterId);
+    if (bucket === undefined) {
+      groups.set(observation.clusterId, [observation.outcome]);
+    } else {
+      bucket.push(observation.outcome);
+    }
+    hits += observation.outcome;
+  }
+  const clusterIds = [...groups.keys()];
+  const clusterCount = clusterIds.length;
+  const means: number[] = [];
+  for (let b = 0; b < resamples; b += 1) {
+    let sum = 0;
+    let pooled = 0;
+    for (let draw = 0; draw < clusterCount; draw += 1) {
+      const picked = groups.get(clusterIds[Math.floor(rng() * clusterCount)]!)!;
+      for (const outcome of picked) {
+        sum += outcome;
+        pooled += 1;
+      }
+    }
+    means.push(pooled === 0 ? 0 : sum / pooled);
+  }
+  means.sort((x, y) => x - y);
+  return {
+    point: hits / n,
+    ciLower: percentileOf(means, 0.025),
+    ciUpper: percentileOf(means, 0.975),
+    n,
+    clusterCount,
+  };
+}
+
+/** 终判门簇数判定：不足 MIN_GATE_CLUSTERS 一律 INCONCLUSIVE。 */
+export function isClusterGateConclusive(clusterCount: number): boolean {
+  return clusterCount >= MIN_GATE_CLUSTERS;
+}
+
 // ── 指标聚合（I9，§2.3 四组）──────────────────────────────────────────────
 
 export interface MetricsJson {
@@ -147,8 +223,21 @@ function ratioOrNa(indicators: readonly (0 | 1)[], rng: Rng): RatioEstimate | Na
   return ratioEstimate(indicators, rng);
 }
 
-function hitIndicators(results: readonly GoldQuestionResult[]): (0 | 1)[] {
-  return results.map((r): 0 | 1 => (r.hit ? 1 : 0));
+/**
+ * R1 召回类指标统一走卡簇 bootstrap（v4 §7）：重采样单位＝targetEventId，
+ * 同事件多题只算一簇；空样本仍落 N/A。
+ */
+function recallClusterEstimate(
+  results: readonly GoldQuestionResult[],
+  rng: Rng,
+): RatioEstimate | NaEstimate {
+  if (results.length === 0) {
+    return { status: 'n-a', reason: 'no-sample' };
+  }
+  return clusterRatioEstimate(
+    results.map((r): ClusterObservation => ({ clusterId: r.targetEventId, outcome: r.hit ? 1 : 0 })),
+    rng,
+  );
 }
 
 function mean(values: readonly number[]): number {
@@ -178,13 +267,13 @@ export function aggregateMetrics(input: AggregateInput, options: { rng: Rng }): 
   const { writeCostMinutes, simulatedHits, cards } = input.roi;
   return {
     retrieval: {
-      recallAtK: ratioOrNa(hitIndicators(gold), rng),
-      recallAtK1: ratioOrNa(hitIndicators(input.goldK1), rng),
-      recallAtK5: ratioOrNa(hitIndicators(input.goldK5), rng),
-      recallColdStart: ratioOrNa(hitIndicators(gold.filter((g) => g.coldStart)), rng),
-      recallHer: ratioOrNa(hitIndicators(gold.filter((g) => g.initiation === 'her')), rng),
-      recallUser: ratioOrNa(hitIndicators(gold.filter((g) => g.initiation === 'user')), rng),
-      recallEnvironment: ratioOrNa(hitIndicators(gold.filter((g) => g.initiation === 'environment')), rng),
+      recallAtK: recallClusterEstimate(gold, rng),
+      recallAtK1: recallClusterEstimate(input.goldK1, rng),
+      recallAtK5: recallClusterEstimate(input.goldK5, rng),
+      recallColdStart: recallClusterEstimate(gold.filter((g) => g.coldStart), rng),
+      recallHer: recallClusterEstimate(gold.filter((g) => g.initiation === 'her'), rng),
+      recallUser: recallClusterEstimate(gold.filter((g) => g.initiation === 'user'), rng),
+      recallEnvironment: recallClusterEstimate(gold.filter((g) => g.initiation === 'environment'), rng),
       mrr: mean(gold.map((g) => (g.rank !== null ? 1 / g.rank : 0))),
     },
     assembly: {
