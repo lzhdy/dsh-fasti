@@ -10,13 +10,45 @@ Fasti 是 DSH 宿主插件。本仓库实现 A 块**阶段 0–4**：真源层 +
 ## 快速开始
 
 ```bash
-npm install
+npm ci --legacy-peer-deps   # 必须带此参数，见下方「依赖冲突」
 npm run build      # tsc → lib/（含 .d.ts 契约）
 npm test           # node --test "tests/**/*.test.ts"
 npm run verify     # build + typecheck + test
 ```
 
 无需任何环境变量即可运行；测试全部使用临时目录，不触碰真实数据目录。
+
+**依赖冲突**：本仓库 `@deepseek-ai/cordis` 与 `dsh-agent` 声明的 peer 版本区间不交
+（cordis 4.1.0 vs peer ~4.0.5），`npm ci` / `npm install` 不带 `--legacy-peer-deps`
+会直接 `ERESOLVE` 失败。这是已知的宿主侧版本约束，不是本仓库缺依赖。
+
+---
+
+## 接到 dsh 宿主上跑（部署三步）
+
+`integrations/dsh-host-glue` 是把宿主 `ctx.llm` 接成事件摘要路由的胶水包。
+干净克隆后按下面三步装，**三步缺一都起不来**：
+
+```bash
+# ① 编译内核（胶水包引用的是 lib/ 编译产物，不是 src/）
+npm run build
+
+# ② 建记忆索引库。运行期窄柄是 Q3「只开不建」闸门：
+#    库文件不存在时 openMemoryRuntimeBackend 直接抛 NotFoundError，
+#    绝不自行建库。故首次部署必须显式建一次（需数据根已有 experiences）：
+npx tsx scripts/build-memory-index.ts --data-root <你的数据根> --apply --yes
+
+# ③ 告诉胶水包内核在哪，然后起宿主
+export FASTI_LIB_DIR="$PWD/lib"
+dsh --profile <你的profile> --no-open --port 3000
+```
+
+`FASTI_LIB_DIR` 不设时，胶水包按 `../../lib`（仓库内直跑 / symlink 安装）
+和包名 `dsh-fasti/lib` 依次回退；三者全不中就抛错并列出已试路径，**不静默降级**。
+
+**记忆门档位**：适配器出厂默认 `memoryGateMode: 'off'`（不注册任何记忆工具）。
+`shadow` = 注册工具但只观测不注入；`on` = 检索真注入。档位须在 profile 的
+`cordis.patch.yml` 里显式写明，且 `on` 属需授权的动作，不随安装自动开启。
 
 ---
 

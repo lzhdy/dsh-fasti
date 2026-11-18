@@ -6,11 +6,45 @@
  * 再带着它装载 dsh-fasti 适配器插件。内核与适配器逻辑全部在仓库内，
  * 本包不含业务逻辑、不碰凭据、不硬编码端点。
  *
- * 路径约定与 dsh-fasti-accept 薄封装一致：re-export / 引用仓库编译产物的
- * 绝对路径，仓库 npm run build 后本包即时用上新代码。
+ * 内核编译产物定位（可移植，2026-11-18 修）：按序尝试三个候选，全部失败即抛错并
+ * 列出已试路径与修复指引，绝不静默降级。此前本行写死某台机器的绝对路径，导致
+ * 任何 clone 后的干净安装都装不起来（路径不存在），且"从 GitHub 重装"仍会回头
+ * 加载旧路径那份 lib，与平台独立化契约冲突。
+ *   ① FASTI_LIB_DIR 环境变量显式指定 lib 目录（部署 / 多仓库并存首选）；
+ *   ② 相对本文件推断 ../../lib（仓库内直跑、symlink 安装成立，保留"build 后即时生效"）；
+ *   ③ 包名 dsh-fasti/lib（仓库本体作为依赖被安装时成立）。
  */
 
-import fastiPlugin, { createDshHostModelRoute } from '/home/user/.doubao/agent_mode/workspace/.sessions/38450174529161986/agents/m_0cw3XAwneSK/dsh-fasti-repo/lib/adapters/dsh/index.js';
+const LIB_ENTRY = 'adapters/dsh/index.js';
+
+function libCandidates() {
+  const list = [];
+  const explicit = process.env['FASTI_LIB_DIR'];
+  if (typeof explicit === 'string' && explicit !== '') {
+    list.push(new URL(LIB_ENTRY, `file://${explicit.replace(/\/+$/, '')}/`).href);
+  }
+  list.push(new URL(`../../lib/${LIB_ENTRY}`, import.meta.url).href);
+  list.push(`dsh-fasti/lib/${LIB_ENTRY}`);
+  return list;
+}
+
+async function loadKernel() {
+  const tried = [];
+  for (const spec of libCandidates()) {
+    try {
+      return await import(spec);
+    } catch (error) {
+      tried.push(`  ${spec}\n    → ${error?.code ?? error?.message ?? String(error)}`);
+    }
+  }
+  throw new Error(
+    'dsh-fasti-dsh-glue: 找不到内核编译产物。请先在仓库根跑 `npm run build`，'
+    + '或把 FASTI_LIB_DIR 指向该仓库的 lib 目录（例：FASTI_LIB_DIR=/path/to/dsh-fasti/lib）。'
+    + `已尝试：\n${tried.join('\n')}`,
+  );
+}
+
+const { default: fastiPlugin, createDshHostModelRoute } = await loadKernel();
 
 /** 固定摘要路由允许显式给出的键（其余键一律不透传）。 */
 const PINNED_ROUTE_KEYS = ['provider', 'model', 'reasoningEffort'];
