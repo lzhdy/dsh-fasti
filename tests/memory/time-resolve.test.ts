@@ -156,6 +156,30 @@ test('T3 WINDOW：四类产窗原子各自闭合到精确的 [startMs,endMs) 日
   }
 });
 
+test('T3 证明门真伪锁（批 4 M-E 反证依据）：相对表达六维全 POLICY 带版本，显式日期前三维 EXPLICIT 无版本', () => {
+  const relative = resolve('明天');
+  if (relative.kind !== 'WINDOW') throw new Error('前置失效：明天应为 WINDOW');
+  for (const dim of relative.closure.dimensions) {
+    assert.equal(dim.state, 'POLICY', `相对表达 ${dim.dim} 必须标注 POLICY`);
+    assert.equal(dim.policyVersion, TIME_ASSET_VERSIONS.policy, `${dim.dim} 必带 policy 版本留痕`);
+  }
+  const explicit = resolve('2026年11月19日');
+  if (explicit.kind !== 'WINDOW') throw new Error('前置失效：完整日期应为 WINDOW');
+  const byDim = new Map(explicit.closure.dimensions.map((d) => [d.dim, d]));
+  for (const name of ['YEAR', 'MONTH', 'DAY'] as const) {
+    const dim = byDim.get(name);
+    assert.ok(dim !== undefined);
+    assert.equal(dim?.state, 'EXPLICIT', `${name} 应由显式文本闭合`);
+    assert.equal(dim?.policyVersion, undefined, 'EXPLICIT 维不得携带 policyVersion');
+  }
+  for (const name of ['ZONE', 'WEEK_START', 'DAY_BOUNDARY'] as const) {
+    const dim = byDim.get(name);
+    assert.ok(dim !== undefined);
+    assert.equal(dim?.state, 'POLICY');
+    assert.equal(dim?.policyVersion, TIME_ASSET_VERSIONS.policy);
+  }
+});
+
 test('T3 整周窗（主控拍板）：裸周偏移产 7 日半开窗，周一开篇、粒度 WEEK', () => {
   const cases: ReadonlyArray<[string, number, number]> = [
     ['本周', WEEK_START, WEEK_START + 7 * DAY_MS],

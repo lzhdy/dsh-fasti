@@ -378,6 +378,9 @@ const ASSEMBLY_VALUE_ALLOWLIST: Record<string, ReadonlySet<string>> = {
   runtime: new Set(['openMemoryRuntime']),
   gate: new Set(['applyGate', 'normalizeLexicalText']),
   serial: new Set(['buildSerialMap', 'resolveSerials', 'isSerialRefusable']),
+  // #127 阶段 1.5：装配层组 Anchor、编译时间信封仅允许命名引用这两个值符号。
+  'time-lexicon': new Set(['TIME_ASSET_VERSIONS']),
+  'time-resolve': new Set(['resolveTimeConstraint']),
 };
 
 /** 装配层禁止的内置模块（不得自开连接/直开文件，N1）。 */

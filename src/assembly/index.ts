@@ -16,8 +16,24 @@
  */
 
 import { applyGate, normalizeLexicalText } from '../memory/gate.ts';
-import type { GatedSearchOutcome } from '../memory/types.ts';
+import { TIME_ASSET_VERSIONS } from '../memory/time-lexicon.ts';
+import { resolveTimeConstraint } from '../memory/time-resolve.ts';
+import type { GatedSearchOutcome, TimeAnchor } from '../memory/types.ts';
 import type { RuntimeMemoryHandle, RuntimeSearchQuery } from '../memory/runtime.ts';
+
+/**
+ * 组时间锚点（#127）：装配层是全栈唯一供给 Anchor 的地方。
+ * 首期字面量唯一值 Asia/Shanghai（UTC+8 无夏令时）、周一开篇；时刻取自窄查询注入的 atMs，
+ * 本函数不读系统时钟。资产版本三元组进 replayKey，词表/文法/policy 任一升版都会改变重放键。
+ */
+function buildTimeAnchor(atMs: number): TimeAnchor {
+  return {
+    epochMs: atMs,
+    zoneId: 'Asia/Shanghai',
+    weekStartsOn: 1,
+    assets: TIME_ASSET_VERSIONS,
+  };
+}
 
 /**
  * 门控召回编排（纯函数式，不持有 IO）：
@@ -35,5 +51,8 @@ export async function runGatedSearch(
 ): Promise<GatedSearchOutcome> {
   const qNorm = normalizeLexicalText(query.text);
   const candidates = await handle.searchExplained(query);
-  return applyGate({ qNorm, candidates, limit });
+  // #127 时间约束编译：同进程纯函数，Anchor 只由注入的 atMs 组装，不读系统时钟。
+  // CURRENT 仍 rules-v1 时 applyGate 分派 V1 会忽略本信封（T7 零漂移）；切 v2 后时间槽即生效。
+  const timeConstraint = resolveTimeConstraint(query.text, buildTimeAnchor(query.atMs));
+  return applyGate({ qNorm, candidates, limit, timeConstraint });
 }

@@ -205,3 +205,31 @@ test('空查询：规范化后为空 → no-match/empty-query，不触库检索'
     cleanupTempRoot(root);
   }
 });
+
+test('#127 休眠锁：CURRENT 仍 rules-v1 时，含时间问句的装配结果不做时间否决、零时间原因码', async () => {
+  // 卡发生在 T0（2026-11-01），查询时刻 AT（约 2026-12-01）问“上周”，时间窗与卡完全不相交；
+  // 但 v1 门不消费时间信封，词面过门即提交——本测试锁住“接线已装、开关未通电”的休眠口径。
+  const { root, indexDir } = await seed([
+    { cardId: 'mc_dormant', cues: ['上周 timeslot review 上周安排'], aliases: [] },
+  ]);
+  try {
+    const handle = openMemoryRuntime({ indexDir });
+    try {
+      const outcome = await runGatedSearch(handle, { text: '上周 timeslot', atMs: AT }, 5);
+      assert.equal(outcome.status, 'hit');
+      assert.deepEqual(
+        outcome.accepted.map((c) => c.card.cardId),
+        ['mc_dormant'],
+      );
+      const allReasons = outcome.accepted.flatMap((c) => c.gateReasons);
+      assert.ok(!allReasons.some((r) => r.startsWith('time-')), `休眠路径不得出现时间原因码：${JSON.stringify(allReasons)}`);
+      // 同参重放逐字节一致（信封解析确定性由 time-resolve 测试另锁）。
+      const replay = await runGatedSearch(handle, { text: '上周 timeslot', atMs: AT }, 5);
+      assert.deepEqual(replay, outcome);
+    } finally {
+      await handle.close();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});

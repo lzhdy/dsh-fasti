@@ -16,10 +16,15 @@
  *    （线索字段规范化后完整出现于问句、码点 ≥ GATE_POLICY_V2.minContainCodepoints）；
  *  - 过门卡再比最长证据：唯一最长才 hit，等长平局 tie-no-strict-leader 弃权，短证据落 not-strict-leader，
  *    精确别名证据视为无穷；布尔家法（无连续分/无 cutoff/宁空勿错）与无环纪律原样保留。
+ *
+ * #127 阶段 1.5 时间槽（仅 applyGateV2 消费可选 timeConstraint；v1 函数体不读该字段，T7 静态锁）：
+ *  - NONE/缺省槽位休眠输出零漂移；UNCERTAIN 留痕放行（time-uncertain-ignored）；
+ *  - WINDOW/CANDIDATES 经 time-resolve 预注册布尔谓词裁决，窗外卡 time-conflict，多候选 OR 并集。
  */
 
 import { asciiLower } from '../projection/types.ts';
 import { buildSerialMap } from './serial.ts';
+import { timeConstraintAdmits } from './time-resolve.ts';
 import { CURRENT_RULES_VERSION } from './types.ts';
 import type {
   ExplainedRankedCard,
@@ -27,6 +32,7 @@ import type {
   GatedRankedCard,
   GatedSearchOutcome,
   MatchKind,
+  TimeConstraint,
 } from './types.ts';
 
 /**
@@ -96,6 +102,12 @@ export interface ApplyGateInput {
   candidates: readonly ExplainedRankedCard[];
   /** 动态 top-k：过滤完成后才截断，不用弱尾凑数；缺省保留全部过门卡。 */
   limit?: number;
+  /**
+   * #127 时间约束四态信封（仅 applyGateV2 消费；v1 函数体刻意不读本字段，T7 静态锁）。
+   * 缺省或 NONE：时间槽休眠，裁决与批 3 之前逐字节一致；UNCERTAIN：留痕放行；
+   * WINDOW/CANDIDATES：窗外卡落 rejected/time-conflict，多候选 OR 并集禁直取首项。
+   */
+  timeConstraint?: TimeConstraint;
 }
 
 function toGated(candidate: ExplainedRankedCard, gateReasons: GateReasonCode[]): GatedRankedCard {
@@ -237,6 +249,34 @@ function judgeV2(candidate: ExplainedRankedCard, qNorm: string): V2Judgement {
 }
 
 /**
+ * #127 时间槽裁决（仅 v2 调用；谓词本体在 time-resolve，门内不做任何日历算术）：
+ *  - 无信封/NONE：槽位休眠，不加标记、不否决（T7 零漂移的结构保证）；
+ *  - UNCERTAIN：宁空勿错，一律放行并盖 time-uncertain-ignored 留痕；
+ *  - WINDOW/CANDIDATES：预注册布尔谓词判相交，不相交即 time-conflict；
+ *    多候选 OR 并集封在 timeConstraintAdmits 内，这里看不到候选数组、无从直取首项。
+ */
+function decideTimeSlot(
+  occurredMs: number,
+  endedMs: number,
+  constraint: TimeConstraint | undefined,
+): { admit: boolean; tag: GateReasonCode | null } {
+  if (constraint === undefined || constraint.kind === 'NONE') {
+    return { admit: true, tag: null };
+  }
+  if (constraint.kind === 'UNCERTAIN') {
+    return { admit: true, tag: 'time-uncertain-ignored' };
+  }
+  return timeConstraintAdmits(occurredMs, endedMs, constraint)
+    ? { admit: true, tag: null }
+    : { admit: false, tag: 'time-conflict' };
+}
+
+/** 词面原因之后附加时间槽留痕码（无留痕时原数组不动）。 */
+function withTimeTag(reasons: GateReasonCode[], tag: GateReasonCode | null): GateReasonCode[] {
+  return tag === null ? reasons : [...reasons, tag];
+}
+
+/**
  * rules-v2 布尔门（#126）：逐卡反向包含裁决后，再做**最长证据严格优超**。
  * - 无卡过单卡门 → abstain/all-rejected；
  * - 过门卡中最大证据长度唯一 → 仅该卡 hit，其余过门卡落 rejected/not-strict-leader；
@@ -244,7 +284,7 @@ function judgeV2(candidate: ExplainedRankedCard, qNorm: string): V2Judgement {
  * - 空查询/零候选/candidateCount/limit 语义与 v1 同构。
  */
 export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
-  const { qNorm, candidates, limit } = input;
+  const { qNorm, candidates, limit, timeConstraint } = input;
   const candidateCount = candidates.length;
 
   if (qNorm === '') {
@@ -261,15 +301,21 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
     };
   }
 
-  const passed: Array<{ candidate: ExplainedRankedCard; judgement: V2Judgement }> = [];
+  const passed: Array<{ candidate: ExplainedRankedCard; judgement: V2Judgement; timeTag: GateReasonCode | null }> = [];
   const rejected: GatedRankedCard[] = [];
   for (const candidate of candidates) {
     const judgement = judgeV2(candidate, qNorm);
-    if (judgement.accept) {
-      passed.push({ candidate, judgement });
-    } else {
+    if (!judgement.accept) {
       rejected.push(toGated(candidate, judgement.reasons));
+      continue;
     }
+    // 词面过门后再进 #127 时间槽：词面原因与时间原因各司其职，不互相覆盖。
+    const slot = decideTimeSlot(candidate.card.occurredMs, candidate.card.endedMs, timeConstraint);
+    if (!slot.admit) {
+      rejected.push(toGated(candidate, ['time-conflict']));
+      continue;
+    }
+    passed.push({ candidate, judgement, timeTag: slot.tag });
   }
 
   if (passed.length === 0) {
@@ -284,10 +330,11 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
     // 整体 abstain 零提交（C-10：原因码按是否领袖分流，不再给全体盖同一个 tie 码）。
     const leaderSet = new Set(leaders);
     for (const entry of passed) {
-      const reason: GateReasonCode = leaderSet.has(entry) ? 'tie-no-strict-leader' : 'not-strict-leader';
+      const leaderReason: GateReasonCode = leaderSet.has(entry) ? 'tie-no-strict-leader' : 'not-strict-leader';
+      const reasons = withTimeTag([leaderReason], entry.timeTag);
       const gated: GatedRankedCard = Number.isFinite(entry.judgement.evidence)
-        ? { ...toGated(entry.candidate, [reason]), containmentLength: entry.judgement.evidence }
-        : toGated(entry.candidate, [reason]);
+        ? { ...toGated(entry.candidate, reasons), containmentLength: entry.judgement.evidence }
+        : toGated(entry.candidate, reasons);
       rejected.push(gated);
     }
     return {
@@ -304,15 +351,16 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
   const winner = leaders[0]!;
   const winnerGated: GatedRankedCard =
     Number.isFinite(winner.judgement.evidence)
-      ? { ...toGated(winner.candidate, winner.judgement.reasons), containmentLength: winner.judgement.evidence }
-      : toGated(winner.candidate, winner.judgement.reasons);
+      ? { ...toGated(winner.candidate, withTimeTag(winner.judgement.reasons, winner.timeTag)), containmentLength: winner.judgement.evidence }
+      : toGated(winner.candidate, withTimeTag(winner.judgement.reasons, winner.timeTag));
   for (const entry of passed) {
     if (entry === winner) {
       continue;
     }
+    const loserReasons = withTimeTag(['not-strict-leader'], entry.timeTag);
     const loserGated: GatedRankedCard = Number.isFinite(entry.judgement.evidence)
-      ? { ...toGated(entry.candidate, ['not-strict-leader']), containmentLength: entry.judgement.evidence }
-      : toGated(entry.candidate, ['not-strict-leader']);
+      ? { ...toGated(entry.candidate, loserReasons), containmentLength: entry.judgement.evidence }
+      : toGated(entry.candidate, loserReasons);
     rejected.push(loserGated);
   }
 

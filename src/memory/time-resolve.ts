@@ -14,7 +14,7 @@
  *
  * 状态语义（宁空勿错）：
  *  - UNCERTAIN 一律**放行**不否决（不确定不等于无此事）；
- *  - CANDIDATES 类型上无首选字段，裁决按 OR 并集，禁 windows[0] 单取；
+ *  - CANDIDATES 类型上无首选字段，裁决按 OR 并集，禁直取候选数组首项；
  *  - WINDOW 只能由本模块私有的 proveClosure + makeWindow 造出，外部无法凭空拼一个窗。
  */
 
@@ -344,7 +344,7 @@ export function resolveTimeConstraint(text: string, anchor: TimeAnchor): TimeCon
  * 时间槽布尔裁决（预注册谓词，细则 3.4）：
  *  - 区间卡 [o,e)` 与窗 [s,t)：相交当且仅当 o < t 且 e > s；
  *  - 点事件 o=e=t0：命中当且仅当 s <= t0 < t（显式点包含，补 [t,t) 空集缺陷）；
- *  - 多候选：命中任一候选即命中（OR 并集），绝不只看 windows[0]；
+ *  - 多候选：命中任一候选即命中（OR 并集），绝不直取候选数组首项；
  *  - NONE / UNCERTAIN：一律放行（不确定不等于无此事，宁空勿错但不误杀）。
  */
 export function timeConstraintAdmits(occurredMs: number, endedMs: number, constraint: TimeConstraint): boolean {
