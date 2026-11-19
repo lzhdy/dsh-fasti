@@ -342,6 +342,24 @@ test('R-03 v2 严格优超：等长证据平局弃权；长短并存唯一最长
   assert.equal(tie.rejected.length, 2);
   assert.ok(tie.rejected.every((c) => c.gateReasons.includes('tie-no-strict-leader')));
 
+  // C-10 语义收正：两张等长领袖卡平局时，更短证据的过门卡不是领袖，原因码必须保持 not-strict-leader，
+  // 不能跟着全体盖 tie-no-strict-leader（整体仍 abstain 零提交，裁决结果不变，只修正拒绝语义精度）。
+  const tieWithShorter = applyGateV2({
+    qNorm: normalizeLexicalText(q),
+    candidates: [overlap(['咖啡馆约会']), overlap(['咖啡馆约会']), overlap(['咖啡馆'])],
+  });
+  assert.equal(tieWithShorter.status, 'abstain');
+  assert.equal(tieWithShorter.reason, 'tie-no-strict-leader');
+  assert.equal(tieWithShorter.accepted.length, 0);
+  assert.equal(tieWithShorter.rejected.length, 3);
+  const leaderRejections = tieWithShorter.rejected.filter((c) => c.containmentLength === 5);
+  const shorterRejections = tieWithShorter.rejected.filter((c) => c.containmentLength === 3);
+  assert.equal(leaderRejections.length, 2);
+  assert.equal(shorterRejections.length, 1);
+  assert.ok(leaderRejections.every((c) => c.gateReasons.includes('tie-no-strict-leader')));
+  assert.ok(shorterRejections[0]!.gateReasons.includes('not-strict-leader'));
+  assert.ok(!shorterRejections[0]!.gateReasons.includes('tie-no-strict-leader'));
+
   // 一长一短：长证据卡唯一提交，短证据卡落 rejected 标 not-strict-leader。
   const lead = applyGateV2({
     qNorm: normalizeLexicalText(q),

@@ -280,9 +280,15 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
   const leaders = passed.filter((entry) => entry.judgement.evidence === maxEvidence);
 
   if (leaders.length > 1) {
-    // 证据平局：全部过门卡都不许提交，显式弃权留痕。
+    // 证据平局：领袖卡彼此无严格优超，一律不许提交；更短证据卡本就不是领袖，沿用 not-strict-leader。
+    // 整体 abstain 零提交（C-10：原因码按是否领袖分流，不再给全体盖同一个 tie 码）。
+    const leaderSet = new Set(leaders);
     for (const entry of passed) {
-      rejected.push(toGated(entry.candidate, ['tie-no-strict-leader']));
+      const reason: GateReasonCode = leaderSet.has(entry) ? 'tie-no-strict-leader' : 'not-strict-leader';
+      const gated: GatedRankedCard = Number.isFinite(entry.judgement.evidence)
+        ? { ...toGated(entry.candidate, [reason]), containmentLength: entry.judgement.evidence }
+        : toGated(entry.candidate, [reason]);
+      rejected.push(gated);
     }
     return {
       status: 'abstain',
