@@ -26,6 +26,7 @@ import { aliasFromRow, cueTextOf } from './fts.ts';
 import { isEffectiveAt } from './invalidate.ts';
 import { cardFromRow } from './store.ts';
 import type { ExplainedRankedCard, MatchKind, RankedCard, SearchQuery } from './types.ts';
+import { CURRENT_RULES_VERSION } from './types.ts';
 
 /** 记忆侧 FTS 最短查询码点数（#124 bigram 几何；经历库 trigram 常量在 projection 侧独立保留）。 */
 export const MIN_FTS_CODEPOINTS = 2;
@@ -53,8 +54,8 @@ export function recencyScore(occurredMs: number, atMs: number, halfLifeMs: numbe
   return Math.exp((-Math.LN2 * ageMs) / halfLifeMs);
 }
 
-/** 命中通道固定输出顺序（确定性：exact → fts → like），用于 matchKinds 排序。 */
-const MATCH_KIND_ORDER: readonly MatchKind[] = ['exact-alias', 'fts-substring', 'like-fallback'];
+/** 命中通道固定输出顺序（确定性：exact → fts → like），用于 matchKinds 排序。rules-v1 几何专用。 */
+const MATCH_KIND_ORDER_V1: readonly MatchKind[] = ['exact-alias', 'fts-substring', 'like-fallback'];
 
 interface Hit {
   /** FTS 命中的原始 bm25（负值）；null = 仅回退/精确命中。 */
@@ -67,15 +68,17 @@ interface Hit {
 }
 
 /**
- * 低层检索（G2）：接收调用方库柄，返回可解释排序结果。
+ * rules-v1 低层检索（G2）：bigram 全单元 AND 短语 MATCH ＋完整 query 子串复核收口。
  *
+ * #126 起作为冻结几何显式保留：函数体行为与 rules-v1 终判时逐字节一致，供历史考试永久重放，
+ * 新开发不得修改本函数（改动须先证明 v1 红测同步更新且终判数字可重建）。
  * 评分（G12）：FTS 路径 scoreParts.bm25 = -bm25Raw；回退路径 scoreParts.bm25 = 0；
  * score = scoreParts.bm25 + lambda * recency；recency 恒为 exp 衰减值。
  * 排序（补充 9）：score 降序 → occurredMs 降序 → cardId 升序；limit 排序后截断。
  * matchedTerms（G14）：FTS=[规范化查询]；精确=[term_norm]；LIKE=命中别名集（去重字典序）；
  * 同卡 FTS+敏感精确双命中保留 FTS scoreParts、matchedTerms 取并集。
  */
-export function searchCardsExplained(
+export function searchCardsExplainedV1(
   db: DatabaseSync,
   query: SearchQuery,
   tuning?: SearchTuning,
@@ -182,7 +185,7 @@ export function searchCardsExplained(
         recency: recencyScore(card.occurredMs, query.atMs, halfLifeMs),
       },
       matchedTerms: [...hit.terms].sort(),
-      matchKinds: MATCH_KIND_ORDER.filter((kind) => hit.kinds.has(kind)),
+      matchKinds: MATCH_KIND_ORDER_V1.filter((kind) => hit.kinds.has(kind)),
       ...(hit.cueText !== undefined ? { cueText: hit.cueText } : {}),
     });
   }
@@ -195,6 +198,29 @@ export function searchCardsExplained(
       (a.card.cardId < b.card.cardId ? -1 : a.card.cardId > b.card.cardId ? 1 : 0),
   );
   return query.limit === undefined ? ranked : ranked.slice(0, query.limit);
+}
+
+/**
+ * 版本分派检索入口（#126）：按 CURRENT_RULES_VERSION 选择几何，调用方与 store 接线零改动。
+ * - rules-v1：冻结的 AND 短语＋全 query 子串复核几何（终判可重放）；
+ * - rules-v2：OR 宽召回几何（批次 2 落地前显式 fail-loud，绝不静默回退到 v1）。
+ * 测试可直接调用具名 V1/V2 函数做双轨断言，禁止经本壳传版本参数（版本只由冻结常量决定）。
+ */
+export function searchCardsExplained(
+  db: DatabaseSync,
+  query: SearchQuery,
+  tuning?: SearchTuning,
+): ExplainedRankedCard[] {
+  const rulesVersion: string = CURRENT_RULES_VERSION;
+  switch (rulesVersion) {
+    case 'rules-v1':
+      return searchCardsExplainedV1(db, query, tuning);
+    case 'rules-v2':
+      // 批次 2 接入 searchCardsExplainedV2；未落地前保持显式未实现而非静默走旧几何。
+      throw new Error('rules-v2 检索几何尚未落地（#126 批次 2）');
+    default:
+      throw new Error(`未知 rules 版本：${CURRENT_RULES_VERSION}`);
+  }
 }
 
 /**

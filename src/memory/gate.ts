@@ -14,6 +14,7 @@
 
 import { asciiLower } from '../projection/types.ts';
 import { buildSerialMap } from './serial.ts';
+import { CURRENT_RULES_VERSION } from './types.ts';
 import type {
   ExplainedRankedCard,
   GateReasonCode,
@@ -24,7 +25,7 @@ import type {
 
 /**
  * 门策略具名常量（观测策略，可经评审演进）：不是逐请求入参、不进冻结的 SearchQuery。
- * 第一层值固定；连续证据分/阈值等演进项未来另立，不改本常量形状的消费约定。
+ * 本对象为 **rules-v1 冻结策略**（#126 起不得修改；v2 策略另立 GATE_POLICY_V2）。
  */
 export const GATE_POLICY = Object.freeze({
   version: 1,
@@ -120,11 +121,12 @@ function judge(
 }
 
 /**
+ * rules-v1 布尔门（#44 冻结几何，#126 起显式保留供终判重放）：
  * 对完整排序全集逐卡裁决并分流。
  * 状态：空查询 no-match/empty-query；零词面候选 no-match/zero-lexical-hit；
  * 有候选但全被拒 abstain/all-rejected；至少一卡过强通道 hit（accepted 保序后按 limit 截断）。
  */
-export function applyGate(input: ApplyGateInput): GatedSearchOutcome {
+export function applyGateV1(input: ApplyGateInput): GatedSearchOutcome {
   const { qNorm, candidates, limit } = input;
   // 门过滤前全集条数：在任何分支返回前固定，截断与拒绝都不改写它（#114 candidateCount）。
   const candidateCount = candidates.length;
@@ -168,4 +170,22 @@ export function applyGate(input: ApplyGateInput): GatedSearchOutcome {
     rejected,
     serialMap: buildSerialMap(truncated),
   };
+}
+
+/**
+ * 版本分派门入口（#126）：装配层接线零改动，按 CURRENT_RULES_VERSION 选择裁决几何。
+ * - rules-v1：冻结的词边界布尔门（applyGateV1）；
+ * - rules-v2：反向包含＋最长证据严格优超门（批次 3 落地前显式 fail-loud）。
+ * 双轨红测直接调用具名 applyGateV1/applyGateV2，禁止经本壳传版本参数。
+ */
+export function applyGate(input: ApplyGateInput): GatedSearchOutcome {
+  const rulesVersion: string = CURRENT_RULES_VERSION;
+  switch (rulesVersion) {
+    case 'rules-v1':
+      return applyGateV1(input);
+    case 'rules-v2':
+      throw new Error('rules-v2 布尔门尚未落地（#126 批次 3）');
+    default:
+      throw new Error(`未知 rules 版本：${CURRENT_RULES_VERSION}`);
+  }
 }

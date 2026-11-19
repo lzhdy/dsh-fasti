@@ -15,9 +15,11 @@ import { normalizeQuery } from '../../src/memory/bm25.ts';
 import {
   GATE_POLICY,
   applyGate,
+  applyGateV1,
   hasAsciiWordBoundary,
   normalizeLexicalText,
 } from '../../src/memory/gate.ts';
+import { CURRENT_RULES_VERSION } from '../../src/memory/types.ts';
 import type { ExplainedRankedCard, GatedRankedCard, MatchKind, MemoryCard } from '../../src/memory/types.ts';
 
 let seq = 0;
@@ -245,4 +247,20 @@ test('applyGate（#114）：candidateCount 恒为门过滤前入参全集长度�
   assert.equal(limited.accepted.length, 1, 'limit=1 仅截断 accepted');
   assert.equal(unlimited.candidateCount, 3);
   assert.equal(limited.candidateCount, 3, 'candidateCount 不受 limit 影响');
+});
+
+// #126 R-06 版本分派：CURRENT 冻结 rules-v1 时，门分派壳与具名 applyGateV1 逐字节等价 ──────────
+
+test('R-06 版本分派：CURRENT_RULES_VERSION 冻结为 rules-v1，门分派壳与 applyGateV1 深相等', () => {
+  assert.equal(CURRENT_RULES_VERSION, 'rules-v1');
+  const fixtures: Array<{ qNorm: string; candidates: ExplainedRankedCard[] }> = [
+    { qNorm: '', candidates: [exact('git')] },
+    { qNorm: 'git', candidates: [] },
+    { qNorm: 'git', candidates: [like('github'), like('gitlab')] },
+    { qNorm: 'git', candidates: [exact('git'), fts('git 工具'), like('github')] },
+    { qNorm: '咖啡馆', candidates: [fts('周末咖啡馆约会')] },
+  ];
+  for (const fixture of fixtures) {
+    assert.deepEqual(applyGate(fixture), applyGateV1(fixture), '分派壳必须委托 V1 冻结门几何');
+  }
 });

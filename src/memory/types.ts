@@ -237,21 +237,28 @@ export type SearchResultCard = RankedCard;
 /**
  * 召回命中通道（#44 布尔门，S1 联合类型）：
  *  - exact-alias：规范化后与某 active 别名 term_norm 严格等值（sensitive=1 仅此路可达）；
- *  - fts-substring：unicode61 bigram FTS MATCH 后经 matchesSubstring 精确复核的子串命中；
+ *  - fts-substring（rules-v1）：unicode61 bigram FTS MATCH 后经 matchesSubstring 精确复核的子串命中；
+ *  - fts-overlap（rules-v2，#126）：bigram 单元 OR MATCH 的宽召回重叠命中，不含裁决意味，
+ *    是否过门交由 gate v2 反向包含谓词裁定；
  *  - like-fallback：短查询/FTS 失败时的 `%q%` 宽松 LIKE 回退（弱通道）。
  * 同卡多通道命中取并集，门判定按“最强通道”裁决。
  */
-export type MatchKind = 'exact-alias' | 'fts-substring' | 'like-fallback';
+export type MatchKind = 'exact-alias' | 'fts-substring' | 'fts-overlap' | 'like-fallback';
 
 /** 可解释检索结果：在 RankedCard 上附加命中通道与 FTS 复核所用的 cue_text（供布尔门做词边界判定）。 */
 export interface ExplainedRankedCard extends RankedCard {
   /** 该卡命中的全部通道，按固定优先级排序（exact → fts → like），确定性输出。 */
   matchKinds: MatchKind[];
   /**
-   * FTS 复核时读取的 cue_text 库内形（仅 fts-substring 命中时非空）；门函数入口统一再规范化。
+   * FTS 复核时读取的 cue_text 库内形（fts 类命中时非空）；门函数入口统一再规范化。
    * exact/like 路径为 undefined。纯函数门不持库柄，所需文本由检索层在此携带。
    */
   cueText?: string;
+  /**
+   * rules-v2 反向包含证据长度（#126）：被查询完整包含的最长线索字段的规范化码点数。
+   * 仅 v2 路径 fts-overlap 命中携带；v1 路径恒 undefined（加字段不删字段，v1 形状零漂移）。
+   */
+  containmentLength?: number;
 }
 
 /** 布尔门裁决状态（#44）：hit=至少一卡过强通道；abstain=有候选但全被拒；no-match=无词面候选/空查询。 */
@@ -275,7 +282,11 @@ export type GateReasonCode =
   | 'fts-word-boundary-pass'
   | 'ascii-no-word-boundary'
   | 'like-only-weak-match'
-  | 'missing-cue-text';
+  | 'missing-cue-text'
+  // #126 rules-v2 反向包含裁决原因码（v1 路径不产出）。
+  | 'reverse-containment-pass'
+  | 'no-containment'
+  | 'tie-no-strict-leader';
 
 /** 通过布尔门后的候选：在可解释候选上附加门原因。evidence 第一层恒 undefined（连续分演进项占位）。 */
 export interface GatedRankedCard extends ExplainedRankedCard {
@@ -297,8 +308,8 @@ export interface GatedSearchOutcome {
   accepted: GatedRankedCard[];
   /** 被拒候选全集（不截断），每张附原因码。 */
   rejected: GatedRankedCard[];
-  /** 仅 no-match/abstain 携带的汇总原因；hit 时为 undefined。 */
-  reason?: 'empty-query' | 'zero-lexical-hit' | 'all-rejected';
+  /** 仅 no-match/abstain 携带的汇总原因；hit 时为 undefined。tie-no-strict-leader 为 rules-v2 严格优超弃权（#126）。 */
+  reason?: 'empty-query' | 'zero-lexical-hit' | 'all-rejected' | 'tie-no-strict-leader';
   /** 对截断后 accepted 建的请求级 1..n 私有序号（复用 serial.ts，不落库）。 */
   serialMap: SerialMap;
 }

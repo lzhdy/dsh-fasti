@@ -24,6 +24,7 @@ import {
   recencyScore,
   searchCards,
   searchCardsExplained,
+  searchCardsExplainedV1,
 } from '../../src/memory/bm25.ts';
 import { computeContentHash } from '../../src/memory/builder.ts';
 import { indexTextOf } from '../../src/memory/bigram.ts';
@@ -42,6 +43,7 @@ import type {
   RevisionRecord,
   SearchQuery,
 } from '../../src/memory/types.ts';
+import { CURRENT_RULES_VERSION } from '../../src/memory/types.ts';
 import { matchesSubstring } from '../../src/projection/types.ts';
 import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
 
@@ -601,3 +603,22 @@ test('ftsOk 两路控制流：≥2 码点零命中不产生 like-fallback；纯�
     cleanupTempRoot(root);
   }
 });
+// #126 R-06 版本分派：CURRENT 冻结 rules-v1 时，分派壳与具名 V1 冻结几何逐字节等价 ─────────────
+
+test('R-06 版本分派：CURRENT_RULES_VERSION 冻结为 rules-v1，分派壳与 searchCardsExplainedV1 深相等', async () => {
+  assert.equal(CURRENT_RULES_VERSION, 'rules-v1');
+  const { root, file } = await seedCorpus();
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const probes = ['咖啡馆', '猫', '图书馆自习', '周末一起去咖啡馆约会怎么样', 'nosuchterm', 'z', '深夜食堂加班'];
+    for (const text of probes) {
+      const viaShell = searchCardsExplained(db, { text, atMs: AT });
+      const viaV1 = searchCardsExplainedV1(db, { text, atMs: AT });
+      assert.deepEqual(viaShell, viaV1, `分派壳必须委托 V1 冻结几何：${text}`);
+    }
+  } finally {
+    db.close();
+    cleanupTempRoot(root);
+  }
+});
+
