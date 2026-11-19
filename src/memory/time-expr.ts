@@ -186,6 +186,9 @@ function longestTerminalAt(text: string, at: number): TerminalEntry | null {
 /**
  * 单趟线性扫描：最长词表命中 → 数字串 → 文法终结符 → 逐字符跳过。
  * 无正则、无回溯；未命中字符（标点/空白/任意噪声）直接跳过，因此坏输入不抛错。
+ *
+ * 注意（#128 A1）：本函数产出的 tokens 数组"下标相邻"不代表原文相邻，
+ * 中间可能隔着被跳过的整句话。L2 拼装前必须再验一次原文邻接（见 isContiguous）。
  */
 export function tokenizeTimeText(text: string): readonly TimeToken[] {
   const tokens: TimeToken[] = [];
@@ -540,10 +543,45 @@ function hasShortFlag(tokens: readonly TimeToken[], flag: TimeFlag): boolean {
 }
 
 /**
+ * 空白判定（不用正则：本模块零正则纪律）：半角空格/Tab/全角空格/换行都算空白。
+ * 空白是排版噪声，允许被跨越；任何其他字符（含标点、实词）都不许跨。
+ */
+function isGapBlank(text: string, from: number, to: number): boolean {
+  for (let at = from; at < to; at += 1) {
+    const code = text.charCodeAt(at);
+    const blank = code === 0x20 || code === 0x09 || code === 0x3000 || code === 0x0a || code === 0x0d;
+    if (!blank) return false;
+  }
+  return true;
+}
+
+/**
+ * 原文邻接铁律（#128 A1）：相邻 token 必须在原文里真相邻（或只隔空白）。
+ *
+ * 为什么必须有这一条：tokenizeTimeText 对未命中汉字逐字跳过（见其上方注释），
+ * 于是 tokens 数组里"相邻"的两个 token 在原文里可能隔着一整句话；若产生式仍按数组下标
+ * 拼装，就会凭空造出日期（"周会材料那事我一直挂着"里的"周"＋"一"被拼成"本周一"）。
+ * 外部同构做法见 SynTime（ACL 2017）：时间段扩张不得越过相邻时间词，遇逗号/连接词/非时间词即停。
+ */
+function isContiguous(matched: readonly TimeToken[], text: string): boolean {
+  for (let index = 1; index < matched.length; index += 1) {
+    const prev = matched[index - 1];
+    const next = matched[index];
+    if (prev === undefined || next === undefined) return false;
+    if (next.span[0] < prev.span[1]) return false;
+    if (!isGapBlank(text, prev.span[1], next.span[0])) return false;
+  }
+  return true;
+}
+
+/**
  * 解析一句自然语言，产出零到多条 TimeIR（按原文位置升序）。
  *
  * 角色仲裁（非对称，只降级不升级）：内容嫌疑词命中 → CONTENT（压过过滤与疑问信号）；
  * 否则疑问焦点词命中 → QUESTION_FOCUS；否则默认 FILTER。
+ *
+ * 邻接铁律（#128 A1）：产生式只在"原文相邻（或只隔空白）"的 token 序列上成立，
+ * 不满足者视同没匹配上，让位给更短的合法匹配。
  */
 export function parseTimeExpressions(text: string): readonly TimeIR[] {
   if (text.length === 0) return [];
@@ -564,6 +602,7 @@ export function parseTimeExpressions(text: string): readonly TimeIR[] {
     for (const production of PRODUCTIONS) {
       const matched = matchParts(production.parts, tokens, at, 0, []);
       if (matched === null) continue;
+      if (!isContiguous(matched, text)) continue;
       if (best === null || matched.length > best.matched.length) best = { production, matched };
     }
     if (best === null) {

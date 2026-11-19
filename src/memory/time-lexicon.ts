@@ -28,7 +28,7 @@ import type { IsoWeekday, TimeFlag } from './types.ts';
  */
 export const TIME_ASSET_VERSIONS = Object.freeze({
   lexicon: '2.0.0',
-  grammar: '3.0.0',
+  grammar: '4.0.0',
   policy: '1.0.0',
 } as const);
 
