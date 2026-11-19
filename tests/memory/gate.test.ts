@@ -272,6 +272,26 @@ test('R-06 版本分派：CURRENT_RULES_VERSION 冻结为 rules-v1，门分派�
   }
 });
 
+// #126 C-9 v1 冻结锁：双 exact-alias 同 term 形态（纯门构造，不经写入守卫）────────────────────
+// 背景：#126 写入守卫已禁止新数据产生跨卡同别名，但 v1 门是冻结几何、不含平局概念——
+// 对存量/重建库里可能残留的这种候选，历史行为是强通道卡全部 accepted 并按 score 保序截断。
+// 本测试不经写柄、直接构造候选，把该行为钉死，防止后续重构顺手“修正”v1。
+test('C-9 v1 冻结：双卡同 exact-alias 词项时 v1 门两张全收（无平局弃权），limit 保序截断', () => {
+  const candidates = [exact('同一个别名'), exact('同一个别名')];
+  assert.equal(candidates[0]!.card.cardId !== candidates[1]!.card.cardId, true, '前置：确为两张不同卡');
+
+  const unlimited = applyGateV1({ qNorm: '同一个别名', candidates });
+  assert.equal(unlimited.status, 'hit');
+  assert.equal(unlimited.accepted.length, 2, 'v1 几何：exact-alias 强通道不互相否决，两张都过门');
+  assert.ok(unlimited.accepted.every((c) => c.gateReasons.includes('exact-alias-pass')));
+  assert.equal(unlimited.rejected.length, 0);
+
+  const limited = applyGateV1({ qNorm: '同一个别名', candidates, limit: 1 });
+  assert.equal(limited.accepted.length, 1, 'limit 仅在门后保序截断，不改变候选数与裁决');
+  assert.equal(limited.candidateCount, 2);
+  assert.equal(limited.accepted[0]!.card.cardId, unlimited.accepted[0]!.card.cardId);
+});
+
 // #126 批次3 rules-v2 反向包含＋严格优超门红测（先红后绿）────────────────────────────────────
 
 test('R-02 v2 反向包含：线索字段完整出现于问句才过门，挂最长证据码点数', () => {

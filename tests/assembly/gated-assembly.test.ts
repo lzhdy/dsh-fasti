@@ -6,7 +6,8 @@
  *  - ASCII 非词边界子串（cat∈concatenate）在 #124 unicode61 整词几何下于 FTS 召回层即被闭合，
  *    弱卡不入场；gate 的 ascii-no-word-boundary 规则保留为纵深防御（gate.test 纯函数守护）；
  *  - exact-alias 强通道卡即使与弱卡同处候选全集，门后 accepted 只取强卡，limit=1 不拿弱尾凑数；
- *  - 多卡同别名（multi-accept）时门后截断数量随 limit 正确变化，装配层不预切片；
+ *  - 同 term 跨卡别名在写入侧即被 #126 全库唯一守卫拒绝（term-globally-conflicts），装配层无法再造
+ *    多卡同别名数据；v1 门对该形态的历史裁决几何由 gate.test.ts 的 C-9 纯门冻结测试单独留锁；
  *  - 空查询归一为 no-match/empty-query。
  *
  * 静态白名单合规由 schema.test.ts 对真实 src/assembly 目录的 M6 扫描另线保证；本文件只验证行为。
