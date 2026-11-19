@@ -19,6 +19,7 @@ import { normalizeLexicalText } from '../../src/memory/gate.ts';
 import {
   emitUnits,
   ftsPhraseOf,
+  ftsOrExprOf,
   indexTextOf,
   normalizeBigramText,
   segmentRuns,
@@ -81,6 +82,14 @@ test('segmentRuns: 语种段标注正确', () => {
 test('ftsPhraseOf: 单元序列短语包裹且转义内部双引号', () => {
   assert.equal(ftsPhraseOf(['哈尔', '尔滨']), '"哈尔 尔滨"');
   assert.equal(ftsPhraseOf(['a"b']), '"a""b"');
+});
+
+// #126 R-01 红测：OR 宽召回 MATCH 表达式（变异反证：改回 AND 相邻短语本测试必红）
+test('ftsOrExprOf: 单元以 OR 连接、各自双引号包裹、空序列返空串、双引号转义', () => {
+  assert.equal(ftsOrExprOf(['哈尔', '尔滨']), '"哈尔" OR "尔滨"');
+  assert.equal(ftsOrExprOf(['咖啡', '啡馆', '馆约']), '"咖啡" OR "啡馆" OR "馆约"');
+  assert.equal(ftsOrExprOf(['a"b']), '"a""b"');
+  assert.equal(ftsOrExprOf([]), '');
 });
 
 test('indexTextOf: 索引文本为空格连接的单元序列', () => {

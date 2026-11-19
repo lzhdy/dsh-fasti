@@ -25,6 +25,7 @@ import {
   searchCards,
   searchCardsExplained,
   searchCardsExplainedV1,
+  searchCardsExplainedV2,
 } from '../../src/memory/bm25.ts';
 import { computeContentHash } from '../../src/memory/builder.ts';
 import { indexTextOf } from '../../src/memory/bigram.ts';
@@ -616,6 +617,48 @@ test('R-06 版本分派：CURRENT_RULES_VERSION 冻结为 rules-v1，分派壳�
       const viaV1 = searchCardsExplainedV1(db, { text, atMs: AT });
       assert.deepEqual(viaShell, viaV1, `分派壳必须委托 V1 冻结几何：${text}`);
     }
+  } finally {
+    db.close();
+    cleanupTempRoot(root);
+  }
+});
+
+// #126 批次2 rules-v2 OR 宽召回几何红测（先红后绿）──────────────────────────────────────────
+
+test('R-01 v2 OR 几何：长问句仅单个 bigram 与短 cue 重合也能召回（v1 同题零候选并排对照）', async () => {
+  const { root, file } = await seedCorpus();
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const longQuery = '周末一起去咖啡馆约会怎么样';
+    // 对照：v1 全单元 AND 相邻短语对长句必然零行（e1 几何冤案的最小复现）。
+    assert.deepEqual(searchCardsExplainedV1(db, { text: longQuery, atMs: AT }), []);
+    // v2：OR 任一 bigram 命中即宽召回；金卡 mc_a 必须进候选（近邻 mc_b 经共享 bigram“咖啡”
+    // 一同被召回是宽召回的预期现象，是否误提交由批次 3 反向包含门裁决，不在本层断言）。
+    const v2 = searchCardsExplainedV2(db, { text: longQuery, atMs: AT });
+    assert.ok(ids(v2).includes('mc_a'), '金卡必须经 OR 宽召回进入候选集');
+    const hit = v2.find((h) => h.card.cardId === 'mc_a')!;
+    assert.ok(hit.matchKinds.includes('fts-overlap'), 'v2 FTS 通道必须标注 fts-overlap');
+    assert.ok(!hit.matchKinds.includes('fts-substring'), 'v2 不得产出 v1 通道名');
+    assert.equal(typeof hit.cueText, 'string', '宽召回仍须携带原文 cueText 供门裁决');
+  } finally {
+    db.close();
+    cleanupTempRoot(root);
+  }
+});
+
+test('R-09 v2 不回退 #124 收益：2 码点查询可达、孤立单字仍走 LIKE 回退、零命中不伪造弱通道', async () => {
+  const { root, file } = await seedCorpus();
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const two = searchCardsExplainedV2(db, { text: '苹果', atMs: AT });
+    assert.ok(ids(two).includes('mc_apple_old'));
+    assert.ok(two.every((h) => h.matchKinds.includes('fts-overlap')));
+
+    const single = searchCardsExplainedV2(db, { text: '猫', atMs: AT });
+    assert.ok(single.length > 0 && single.every((h) => h.matchKinds.includes('like-fallback')));
+
+    const miss = searchCardsExplainedV2(db, { text: '完全不存在的词', atMs: AT });
+    assert.deepEqual(miss, []);
   } finally {
     db.close();
     cleanupTempRoot(root);

@@ -88,6 +88,14 @@ export function ftsPhraseOf(units: readonly string[]): string {
   return `"${units.map((unit) => unit.replace(/"/g, '""')).join(' ')}"`;
 }
 
+/**
+ * FTS5 MATCH OR 表达式（#126 rules-v2 宽召回）：每个单元各自双引号包裹、以大写 OR 连接，
+ * 任一单元 token 命中即召回行；空数组返空串由调用方跳过 MATCH。转义纪律与 ftsPhraseOf 相同。
+ */
+export function ftsOrExprOf(units: readonly string[]): string {
+  return units.map((unit) => `"${unit.replace(/"/g, '""')}"`).join(' OR ');
+}
+
 /** FTS 文本列产物：规范化原文 → 单元序列 → 空格连接。 */
 export function indexTextOf(normalized: string): string {
   return emitUnits(normalized).join(' ');

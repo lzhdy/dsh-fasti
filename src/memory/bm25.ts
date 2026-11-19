@@ -16,12 +16,19 @@
  *    复核收口，不再对 bigram 化的 FTS 列复核；Hit.cueText 挂原文拼接串保 gate 接口零漂移；
  *  - 精确路径对任意长度查询可达（sensitive=1 别名 FTS 恒不可见）。
  * 注意：src/projection/sqlite.ts 的 MIN_TRIGRAM_LENGTH=3 保留给经历库 experience_fts，本模块不再引用。
+ *
+ * #126 rules-v2 宽召回几何（searchCardsExplainedV2，与 V1 双轨并存、CURRENT 仍冻结 rules-v1）：
+ *  - bigram 单元以 ftsOrExprOf 组 OR MATCH，任一单元 token 命中即入候选，治愈长问句对短 cue 的
+ *    全单元 AND 几何杀（阶段 0 实测 188/308 漏题死因）；
+ *  - 召回侧不再做完整 query 子串收口，FTS 行统一标 fts-overlap，提交裁决移交 gate v2
+ *    反向包含谓词＋最长证据严格优超（宽召回可以宽，过门必须严）；
+ *  - 精确别名、LIKE 回退、as-of、BM25+近因评分、全序 tie-break 与 V1 同构。
  */
 
 import type { DatabaseSync } from 'node:sqlite';
 
 import { asciiLower, matchesSubstring } from '../projection/types.ts';
-import { emitUnits, ftsPhraseOf } from './bigram.ts';
+import { emitUnits, ftsOrExprOf, ftsPhraseOf } from './bigram.ts';
 import { aliasFromRow, cueTextOf } from './fts.ts';
 import { isEffectiveAt } from './invalidate.ts';
 import { cardFromRow } from './store.ts';
@@ -200,6 +207,133 @@ export function searchCardsExplainedV1(
   return query.limit === undefined ? ranked : ranked.slice(0, query.limit);
 }
 
+/** 命中通道固定输出顺序（rules-v2：exact → fts-overlap → like），确定性排序。 */
+const MATCH_KIND_ORDER_V2: readonly MatchKind[] = ['exact-alias', 'fts-overlap', 'like-fallback'];
+
+/**
+ * rules-v2 低层检索（#126 词法结构解）：bigram 单元 **OR 宽召回**，不做召回侧子串收口。
+ *
+ * 与 V1 的唯一几何差异：MATCH 表达式由全单元 AND 相邻短语改为单元 OR（ftsOrExprOf），
+ * FTS 任意单元命中即入候选并标 fts-overlap；「是否真的值得提交」全部移交 gate v2 的
+ * 反向包含布尔谓词裁定，本层不再越权做完整 query 子串判定。
+ * 精确别名、LIKE 回退、as-of 过滤、BM25+近因评分与全序排序与 V1 逐字同构；
+ * 函数体刻意独立保留（不与 V1 抽公共工厂），确保冻结的 V1 几何不被新开发牵动。
+ */
+export function searchCardsExplainedV2(
+  db: DatabaseSync,
+  query: SearchQuery,
+  tuning?: SearchTuning,
+): ExplainedRankedCard[] {
+  const lambda = tuning?.lambda ?? LAMBDA;
+  const halfLifeMs = tuning?.halfLifeMs ?? HALF_LIFE_MS;
+  const q = normalizeQuery(query.text);
+  if (q === '') {
+    return [];
+  }
+
+  const hits = new Map<string, Hit>();
+  const addHit = (
+    cardId: string,
+    term: string,
+    bm25Raw: number | null,
+    kind: MatchKind,
+    cueText?: string,
+  ): void => {
+    let hit = hits.get(cardId);
+    if (hit === undefined) {
+      hit = { bm25Raw: null, terms: new Set(), kinds: new Set<MatchKind>() };
+      hits.set(cardId, hit);
+    }
+    hit.terms.add(term);
+    hit.kinds.add(kind);
+    if (cueText !== undefined) {
+      hit.cueText = cueText;
+    }
+    if (bm25Raw !== null) {
+      hit.bm25Raw = bm25Raw;
+    }
+  };
+
+  // 精确路径：任意长度可达；sensitive=1 别名只走这条路（FTS 文本恒不可见）。
+  const exactRows = db
+    .prepare("SELECT term_norm, card_id FROM mem_alias WHERE term_norm = ? AND status = 'active'")
+    .all(q) as Array<{ term_norm: string; card_id: string }>;
+  for (const row of exactRows) {
+    addHit(row.card_id, row.term_norm, null, 'exact-alias');
+  }
+
+  let ftsOk = false;
+  // 同函数切单元；纯单字（1 码点）走 LIKE，空单元（纯标点/单字母）不发 MATCH——准入与 V1 一致。
+  const units = emitUnits(q);
+  if ([...q].length >= MIN_FTS_CODEPOINTS && units.length > 0) {
+    const orExpr = ftsOrExprOf(units);
+    try {
+      const rows = db
+        .prepare('SELECT card_id, bm25(mem_card_fts) AS bm25_raw FROM mem_card_fts WHERE mem_card_fts MATCH ?')
+        .all(orExpr) as Array<{ card_id: string; bm25_raw: number }>;
+      const cardCueStmt = db.prepare('SELECT display_cues_json FROM mem_card WHERE card_id = ?');
+      const aliasStmt = db.prepare(
+        "SELECT * FROM mem_alias WHERE card_id = ? AND status = 'active' AND sensitive = 0",
+      );
+      for (const row of rows) {
+        const cardRow = cardCueStmt.get(row.card_id) as { display_cues_json: string } | undefined;
+        if (cardRow === undefined) {
+          continue;
+        }
+        const aliases = (aliasStmt.all(row.card_id) as Array<Record<string, unknown>>).map(aliasFromRow);
+        // v2：OR 命中即宽召回入候选，不做完整 query 子串收口；携带原文拼接串供 gate 反向包含裁决。
+        addHit(row.card_id, q, row.bm25_raw, 'fts-overlap', cueTextOf(cardRow.display_cues_json, aliases));
+      }
+      ftsOk = true;
+    } catch {
+      // FTS5 语法解析失败 → LIKE 回退（与 V1 同款义务）。
+    }
+  }
+  if (!ftsOk) {
+    const escaped = q.replace(/[\\%_]/g, (char) => `\\${char}`);
+    const likeRows = db
+      .prepare(
+        "SELECT term_norm, card_id FROM mem_alias WHERE term_norm LIKE ? ESCAPE '\\' AND status = 'active' AND sensitive = 0",
+      )
+      .all(`%${escaped}%`) as Array<{ term_norm: string; card_id: string }>;
+    for (const row of likeRows) {
+      addHit(row.card_id, row.term_norm, null, 'like-fallback');
+    }
+  }
+
+  const cardStmt = db.prepare('SELECT * FROM mem_card WHERE card_id = ?');
+  const ranked: ExplainedRankedCard[] = [];
+  for (const [cardId, hit] of hits) {
+    const raw = cardStmt.get(cardId) as Record<string, unknown> | undefined;
+    if (raw === undefined) {
+      continue;
+    }
+    const card = cardFromRow(raw);
+    if (!isEffectiveAt(card, query.atMs)) {
+      continue;
+    }
+    ranked.push({
+      card,
+      scoreParts: {
+        bm25: hit.bm25Raw === null ? 0 : -hit.bm25Raw,
+        recency: recencyScore(card.occurredMs, query.atMs, halfLifeMs),
+      },
+      matchedTerms: [...hit.terms].sort(),
+      matchKinds: MATCH_KIND_ORDER_V2.filter((kind) => hit.kinds.has(kind)),
+      ...(hit.cueText !== undefined ? { cueText: hit.cueText } : {}),
+    });
+  }
+
+  const scoreOf = (r: ExplainedRankedCard): number => r.scoreParts.bm25 + lambda * r.scoreParts.recency;
+  ranked.sort(
+    (a, b) =>
+      scoreOf(b) - scoreOf(a) ||
+      b.card.occurredMs - a.card.occurredMs ||
+      (a.card.cardId < b.card.cardId ? -1 : a.card.cardId > b.card.cardId ? 1 : 0),
+  );
+  return query.limit === undefined ? ranked : ranked.slice(0, query.limit);
+}
+
 /**
  * 版本分派检索入口（#126）：按 CURRENT_RULES_VERSION 选择几何，调用方与 store 接线零改动。
  * - rules-v1：冻结的 AND 短语＋全 query 子串复核几何（终判可重放）；
@@ -216,8 +350,7 @@ export function searchCardsExplained(
     case 'rules-v1':
       return searchCardsExplainedV1(db, query, tuning);
     case 'rules-v2':
-      // 批次 2 接入 searchCardsExplainedV2；未落地前保持显式未实现而非静默走旧几何。
-      throw new Error('rules-v2 检索几何尚未落地（#126 批次 2）');
+      return searchCardsExplainedV2(db, query, tuning);
     default:
       throw new Error(`未知 rules 版本：${CURRENT_RULES_VERSION}`);
   }
