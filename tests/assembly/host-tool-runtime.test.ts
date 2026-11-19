@@ -168,6 +168,123 @@ test('WP4b 装配工厂：真实库 on 态窄柄命中（indexReady=true，门�
   }
 });
 
+test('C-7 装配视图：on 态跨卡同别名冲突时 reason 结构化透传，不重试不吞错，连接事务状态干净', async () => {
+  const root = makeTempRoot('wp4b-on-conflict-');
+  try {
+    const indexDir = path.join(root, 'projection', 'memory-index');
+    // 一次性建两张卡：mc_seed 带敏感别名，mc_other 无别名（只开一次写柄，规避进程内单例）。
+    const seedAnchor = JSON.stringify(['01J0000000000000000000001']);
+    const seedCues = JSON.stringify(['咖啡馆约会']);
+    const seedAliasesJson = JSON.stringify([{ term: '咖啡馆', source: 'miss', sensitive: 1 }]);
+    const seedCard: MemoryCard = {
+      cardId: 'mc_seed',
+      eventId: 'evt-seed',
+      anchorJson: seedAnchor,
+      channel: 'dsh',
+      cardType: 'event',
+      selection: 'selected',
+      weight: 0,
+      displayCuesJson: seedCues,
+      aliasesJson: seedAliasesJson,
+      discriminator: '城南老店',
+      entityHintJson: null,
+      occurredMs: T0,
+      endedMs: T0 + DAY,
+      validMs: T0,
+      invalidMs: null,
+      createdMs: T0,
+      expiredMs: null,
+      status: 'active',
+      contentHash: computeContentHash(seedAnchor, seedCues, seedAliasesJson, '城南老店'),
+      hitCount: 0,
+      lastHitMs: null,
+      schemaVersion: 1,
+    };
+    const seedAliasRows: AliasRow[] = [
+      {
+        termNorm: '咖啡馆',
+        cardId: 'mc_seed',
+        source: 'miss',
+        sensitive: 1,
+        status: 'active',
+        createdMs: T0,
+        hitCount: 0,
+        lastHitMs: null,
+      },
+    ];
+    const secondAnchor = JSON.stringify(['01J0000000000000000000002']);
+    const secondCues = JSON.stringify(['周末野餐']);
+    const secondAliasesJson = JSON.stringify([]);
+    const secondCard: MemoryCard = {
+      cardId: 'mc_other',
+      eventId: 'evt-other',
+      anchorJson: secondAnchor,
+      channel: 'dsh',
+      cardType: 'event',
+      selection: 'selected',
+      weight: 0,
+      displayCuesJson: secondCues,
+      aliasesJson: secondAliasesJson,
+      discriminator: '',
+      entityHintJson: null,
+      occurredMs: T0,
+      endedMs: T0 + DAY,
+      validMs: T0,
+      invalidMs: null,
+      createdMs: T0,
+      expiredMs: null,
+      status: 'active',
+      contentHash: computeContentHash(secondAnchor, secondCues, secondAliasesJson, ''),
+      hitCount: 0,
+      lastHitMs: null,
+      schemaVersion: 1,
+    };
+    const writer = openMemoryWrite({ indexDir });
+    try {
+      writer.transactionApply(
+        { cards: [seedCard, secondCard], aliases: seedAliasRows },
+        {
+          revision: 1,
+          slug: 'build',
+          at_ms: T0,
+          schema_version: 3,
+          truth_fingerprint: 'fp-wp4b-conflict',
+          prior_revision: null,
+          card_count: 2,
+          alias_count: 1,
+          row_hash_sum: 'rh-wp4b-conflict',
+          shadow_diff: { added: 2, removed: 0, changed: 0 },
+          reason: 'test fixture',
+          operator: 'offline-cli',
+        },
+        [],
+      );
+    } finally {
+      await writer.close();
+    }
+
+    const rt = openAssembledMemoryTools({ indexDir, mode: 'on', now: () => FIXED_NOW, missChannel: 'dsh' });
+    try {
+      const first = rt.tools.addMissAlias({ term: 'shared-term', cardId: 'mc_seed' });
+      assert.ok('ok' in first && first.ok, '首个别名写入成功（on 态不得返 deferred 信封）');
+
+      const conflict = rt.tools.addMissAlias({ term: 'shared-term', cardId: 'mc_other' });
+      assert.deepEqual(
+        conflict,
+        { ok: false, reason: 'term-globally-conflicts', cardId: 'mc_other', termNorm: 'shared-term' },
+        '写柄 fail-closed reason 必须经装配视图原样透传给模型侧，不得吞错或重试',
+      );
+
+      const after = rt.tools.addMissAlias({ term: 'another-term', cardId: 'mc_other' });
+      assert.ok('ok' in after && after.ok, '冲突路径 ROLLBACK 干净，同一连接后续写入不受影响');
+    } finally {
+      await rt.dispose();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
 test('WP4b 装配工厂：shadow 态对外 observing 空信封且影子落盘字段映射正确（observedMs=时钟、无原始词明文）', async () => {
   const root = makeTempRoot('wp4b-shadow-');
   try {

@@ -223,16 +223,9 @@ export function applyMissAlias(db: DatabaseSync, input: BuildMissAliasInput): Ap
 
   // #126 全库唯一性守卫：gate 对 exact-alias 直接放行，以 term_norm 全局唯一为安全前提；
   // 复合主键 (term_norm, card_id) 本身不防跨卡重复，故在权威写入侧 fail-closed。
-  // 只查 active 他卡；本卡同名已在上面走 already-active 幂等，不可能到达这里。
-  const globalConflict = db
-    .prepare(
-      "SELECT 1 FROM mem_alias WHERE term_norm = ? AND card_id <> ? AND status = 'active' LIMIT 1",
-    )
-    .get(input.termNorm, input.cardId);
-  if (globalConflict !== undefined) {
-    return { ok: false, reason: 'term-globally-conflicts', cardId: input.cardId, termNorm: input.termNorm };
-  }
-
+  // C-7（外审 Q-1/N5/B-1）：BEGIN IMMEDIATE 立即拿保留写锁，把守卫 SELECT 与后续 INSERT 收进同一
+  // 事务，关闭原先“事务外检查 → 事务内写入”的 check-then-insert 竞态窗口；#72 跨进程写者落地前，
+  // 这是进程内串行写队列之上的纵深防御，不改变单写者现状下的任何可观察结果。
   const existingCard = card as MissAliasCardView;
   const newAliasesJson = mergeAndSerializeAliases(
     existingCard.aliasesJson,
@@ -245,8 +238,23 @@ export function applyMissAlias(db: DatabaseSync, input: BuildMissAliasInput): Ap
     existingCard.discriminator,
   );
 
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
+    // 只查 active 他卡；本卡同名已在上面走 already-active 幂等，不可能到达这里。
+    const globalConflict = db
+      .prepare(
+        "SELECT 1 FROM mem_alias WHERE term_norm = ? AND card_id <> ? AND status = 'active' LIMIT 1",
+      )
+      .get(input.termNorm, input.cardId);
+    if (globalConflict !== undefined) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // 回滚失败不掩盖守卫的 fail-closed 结论。
+      }
+      return { ok: false, reason: 'term-globally-conflicts', cardId: input.cardId, termNorm: input.termNorm };
+    }
+
     db.prepare(INSERT_ALIAS_SQL).run(
       decision.plan.alias.termNorm,
       decision.plan.alias.cardId,

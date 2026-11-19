@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 
 import { IntegrityError } from '../../src/core/errors.ts';
 import { isUlid, ulid } from '../../src/core/ulid.ts';
@@ -538,5 +539,19 @@ test('R-05 全库唯一守卫：term 已被他卡 active 持有时拒绝 term-gl
   } finally {
     db.close();
   }
+});
+
+test('C-7 静态锁：全库唯一守卫必须收在 BEGIN IMMEDIATE 事务内，不存在事务外裸 SELECT 与延迟型 BEGIN', () => {
+  const src = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src/memory/alias-write.ts'),
+    'utf8',
+  );
+  const beginIdx = src.indexOf("db.exec('BEGIN IMMEDIATE')");
+  assert.ok(beginIdx >= 0, '必须以 BEGIN IMMEDIATE 立即获取写锁，禁止延迟事务');
+  assert.ok(!/db\.exec\('BEGIN'\)/.test(src), '不得残留默认 deferred 的裸 BEGIN');
+  const guardIdx = src.indexOf('SELECT 1 FROM mem_alias WHERE term_norm = ?');
+  assert.ok(guardIdx > beginIdx, '守卫 SELECT 必须位于 BEGIN IMMEDIATE 之后，与 INSERT 同一事务（关闭 check-then-insert 窗口）');
+  const commitIdx = src.indexOf("db.exec('COMMIT')");
+  assert.ok(commitIdx > guardIdx, '守卫与写入必须在同一事务体内，COMMIT 收尾');
 });
 
