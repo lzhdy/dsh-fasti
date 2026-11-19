@@ -393,7 +393,7 @@ test('WP4b 装配工厂：projectCardForHost 仅回显白名单安全字段，�
   }
 });
 
-test('WP4b 装配工厂：返回对象满足装配面契约（四方法可读、dispose 为函数）', () => {
+test('WP4b 装配工厂：返回对象满足装配面契约（#130 起五方法可读、dispose 为函数）', () => {
   const root = makeTempRoot('wp4b-shape-');
   try {
     const rt: AssembledMemoryRuntime = openAssembledMemoryTools({
@@ -404,7 +404,7 @@ test('WP4b 装配工厂：返回对象满足装配面契约（四方法可读、
     });
     assert.deepEqual(
       Object.keys(rt.tools).sort(),
-      ['addMissAlias', 'gatedSearch', 'getCardsByAnchor', 'resolvePointer'].sort(),
+      ['addMissAlias', 'gatedSearch', 'getCardsByAnchor', 'recordAnchorAdoption', 'resolvePointer'].sort(),
     );
     assert.equal(typeof rt.dispose, 'function');
     void rt.dispose();
@@ -475,7 +475,7 @@ test('影子回放装配面契约：observeShadow 为装配面函数，且不混
     assert.equal(typeof rt.observeShadow, 'function');
     assert.deepEqual(
       Object.keys(rt.tools).sort(),
-      ['addMissAlias', 'gatedSearch', 'getCardsByAnchor', 'resolvePointer'].sort(),
+      ['addMissAlias', 'gatedSearch', 'getCardsByAnchor', 'recordAnchorAdoption', 'resolvePointer'].sort(),
     );
     assert.ok(!('observeShadow' in rt.tools), '观测口挂装配面，绝不进模型工具集（六工具之外的独立只写口）');
     void rt.dispose();

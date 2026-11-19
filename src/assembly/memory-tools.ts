@@ -26,7 +26,9 @@ import { runGatedSearch } from './index.ts';
 import type {
   CountScope,
   GatedSearchOutcome,
+  GatedSlotTag,
   GatedStatus,
+  GatedViewSlots,
   MemoryCard,
   MissGateStatus,
   SerialMap,
@@ -72,6 +74,11 @@ export interface GatedCardView {
   readonly weight: number;
   readonly strength: number;
   readonly hitCount: number;
+  /**
+   * #130 截窗槽位（marked/ranked/explore）：仅 rules-v2 门结果携带；当前冻结 v1 派发下恒 undefined，
+   * 内核不伪造槽位（零漂移），切换 v2 后随门结果自然出现。
+   */
+  readonly slot?: GatedSlotTag;
 }
 
 /**
@@ -86,7 +93,27 @@ export interface GatedSearchView {
   readonly candidateTotal: number;
   readonly reason?: string;
   readonly serialMap: SerialMap;
+  /** #130 槽位汇总：仅 rules-v2 hit 结果携带；v1 冻结路径与 observing 空信封恒 undefined。 */
+  readonly slots?: GatedViewSlots;
 }
+
+/**
+ * #130 第③跳原文下钻采用记账视图（桥接层在 rawText 成功后、情节去重外调用）：
+ *  - off/shadow：恒 deferred 零写入（与 addMissAlias 同一套门未开口径）；
+ *  - on：锚点经窄柄反查 active 卡，逐张走采用窄写；映不回卡＝matchedCards 0 的 ok 空结果，
+ *    不报错、不计数（她读到了原文但那不是库里的记忆，阅读主链路永不被记账打断）；
+ *  - 窄写结构化拒绝（card-not-found/card-not-active）逐卡分区透传，不连坐同锚点其它卡。
+ */
+export type AnchorAdoptionView =
+  | { readonly deferred: true; readonly mode: MemoryGateMode; readonly reason: 'gate-not-on'; readonly anchorId: string }
+  | {
+      readonly ok: true;
+      readonly anchorId: string;
+      readonly atMs: number;
+      readonly matchedCards: number;
+      readonly adopted: ReadonlyArray<{ readonly cardId: string; readonly hitCount: number; readonly lastHitMs: number }>;
+      readonly rejected: ReadonlyArray<{ readonly cardId: string; readonly reason: string }>;
+    };
 
 /** 卡写回包：不回显 sensitive；门未开时为 deferred（生产未写）。 */
 export type AddMissAliasView =
@@ -104,6 +131,8 @@ export interface MemoryTools {
   getCardsByAnchor(experienceId: string): MemoryCard[];
   resolvePointer(input: { serials: readonly number[]; serialMap: SerialMap }): ResolvedPointers;
   addMissAlias(input: { term: string; cardId: string }): AddMissAliasView;
+  /** #130 第③跳采用记账：入参只有锚点 id（无查询词/指针/原文），模式门在内核收口。 */
+  recordAnchorAdoption(input: { anchorId: string }): AnchorAdoptionView;
 }
 
 export interface CreateMemoryToolsDeps {
@@ -142,6 +171,8 @@ function toGateView(outcome: GatedSearchOutcome, atMs: number): GatedSearchView 
     weight: gated.card.weight,
     strength: memoryStrength(gated.card, atMs),
     hitCount: gated.card.hitCount,
+    // v1 冻结路径 gated.slot 恒 undefined：原样透传缺省，不代盖 ranked（零漂移，见 G5-4）。
+    ...(gated.slot === undefined ? {} : { slot: gated.slot }),
   }));
   return {
     status: outcome.status,
@@ -149,6 +180,7 @@ function toGateView(outcome: GatedSearchOutcome, atMs: number): GatedSearchView 
     candidateTotal: outcome.candidateCount,
     ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
     serialMap: outcome.serialMap,
+    ...(outcome.slots === undefined ? {} : { slots: outcome.slots }),
   };
 }
 
@@ -292,6 +324,28 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
         return { ok: true, changed: outcome.changed, cardId: outcome.cardId, termNorm: outcome.termNorm };
       }
       return { ok: false, reason: outcome.reason, cardId: outcome.cardId, termNorm: outcome.termNorm };
+    },
+
+    recordAnchorAdoption(input: { anchorId: string }): AnchorAdoptionView {
+      // 模式门与 addMissAlias 同构：非 on 零写入 deferred，不触窄柄（shadow/off 不阻阅读由桥接层保证）。
+      if (deps.mode !== 'on') {
+        return { deferred: true, mode: deps.mode, reason: 'gate-not-on', anchorId: input.anchorId };
+      }
+      const handle = requireHandle();
+      const atMs = deps.now();
+      // 读柄只回 active 卡（store 侧 SQL 已定 status='active'）；映不回任何卡即零张可计数。
+      const cards = handle.getCardsByAnchor(input.anchorId);
+      const adopted: Array<{ cardId: string; hitCount: number; lastHitMs: number }> = [];
+      const rejected: Array<{ cardId: string; reason: string }> = [];
+      for (const card of cards) {
+        const outcome = handle.recordAnchorAdoption({ cardId: card.cardId, atMs });
+        if (outcome.ok) {
+          adopted.push({ cardId: outcome.cardId, hitCount: outcome.hitCount, lastHitMs: outcome.lastHitMs });
+        } else {
+          rejected.push({ cardId: outcome.cardId, reason: outcome.reason });
+        }
+      }
+      return { ok: true, anchorId: input.anchorId, atMs, matchedCards: cards.length, adopted, rejected };
     },
   };
 }

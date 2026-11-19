@@ -110,6 +110,10 @@ function makeHandle(opts: FakeOpts): RuntimeMemoryHandle {
     recordShadowObservation() {
       return { ok: false as const, reason: 'orchestration-red-uses-injected-sink' };
     },
+    recordAnchorAdoption(): never {
+      // #130 采用窄写不在落空编排测试射程；被误触即 fail-loud，不静默成功。
+      throw new Error('recordAnchorAdoption 未在该装配替身接线');
+    },
     async drainProjection(): Promise<never> {
       throw new Error('drainProjection 未在该装配替身接线');
     },

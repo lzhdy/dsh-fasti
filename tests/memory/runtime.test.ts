@@ -54,7 +54,8 @@ const n11NoLimitKey: AssertNoLimit = true;
 // N4/N14 类型层守门：运行期卡写入参不得出现 sensitive 键（内部固定 1，不可表达）。
 type AssertNoSensitive = 'sensitive' extends keyof RuntimeAddMissAliasInput ? false : true;
 const n4NoSensitiveParam: AssertNoSensitive = true;
-// WP4a/N16 窄柄恰六方法：六个窄方法都在，全量柄方法一个都不在（第五→六为影子观测窄写）。
+// WP4a/N16/#130 窄柄方法全集：八个窄方法都在，全量柄方法一个都不在
+// （第五→六为影子观测窄写；#130 增第七窄写 recordAnchorAdoption，drain 为整轮 pull 法）。
 type RtKeys = keyof RuntimeMemoryHandle;
 type NarrowKeys =
   | 'searchExplained'
@@ -63,6 +64,7 @@ type NarrowKeys =
   | 'addMissAlias'
   | 'recordMiss'
   | 'recordShadowObservation'
+  | 'recordAnchorAdoption'
   | 'drainProjection';
 type AssertAllNarrowPresent = NarrowKeys extends RtKeys ? true : false;
 type AssertNoFullHandle =
@@ -210,7 +212,7 @@ test('openMemoryRuntime：索引库不存在时抛 NotFoundError 且不创建文
   }
 });
 
-test('N13-i 委托包装对象：反射恰见六窄方法，全量柄方法名不可见', async () => {
+test('N13-i 委托包装对象：反射恰见八窄方法（#130 增 recordAnchorAdoption），全量柄方法名不可见', async () => {
   const { root, indexDir } = await seedCorpus();
   try {
     const handle = openMemoryRuntime({ indexDir });
@@ -220,6 +222,7 @@ test('N13-i 委托包装对象：反射恰见六窄方法，全量柄方法名�
         'close',
         'drainProjection',
         'getCardsByAnchor',
+        'recordAnchorAdoption',
         'recordMiss',
         'recordShadowObservation',
         'searchExplained',
@@ -485,6 +488,11 @@ test('单例冲突：离线写柄占用时窄柄降级只读，读可用、写�
             }),
           UnavailableError,
         );
+        assert.throws(
+          () => handle.recordAnchorAdoption({ cardId: 'mc_a', atMs: AT }),
+          UnavailableError,
+          '#130 采用窄写同样受 requireWriter 守门，只读降级抛 UnavailableError',
+        );
 
         // N16 影子写与 sqlite 写柄物理隔离：降级只读下旁路观测仍成功，不抢锁、不抛 UnavailableError。
         const shadowOutcome = handle.recordShadowObservation({
@@ -517,6 +525,59 @@ test('close：关闭后窄柄生命周期结束（内部连接释放）', async 
     await assert.doesNotReject(handle.close());
     // MemoryIndexStaleError 仅类型引用，确认本测试不依赖写柄指纹路径。
     assert.equal(typeof MemoryIndexStaleError, 'function');
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('#130 recordAnchorAdoption：窄柄委托写柄两列窄写，hit_count 递增、账本同生共死，拒绝零账本', async () => {
+  const { root, indexDir, file } = await seedCorpus();
+  try {
+    const handle = openMemoryRuntime({ indexDir });
+    try {
+      const first = handle.recordAnchorAdoption({ cardId: 'mc_a', atMs: AT });
+      assert.equal(first.ok, true);
+      if (first.ok) {
+        assert.equal(first.hitCount, 1);
+        assert.equal(first.lastHitMs, AT);
+        assert.equal(first.record.card_id, 'mc_a');
+        assert.equal(first.record.at_ms, AT);
+        assert.ok(first.record.content_hash.length > 0);
+      }
+
+      const second = handle.recordAnchorAdoption({ cardId: 'mc_a', atMs: AT + 1 });
+      assert.equal(second.ok, true);
+      if (second.ok) assert.equal(second.hitCount, 2);
+
+      // DB 实证：只动两列，不触 FTS/别名；两次采用都落账本行。
+      const db = new DatabaseSync(file, { readOnly: true });
+      try {
+        const row = db.prepare('SELECT hit_count, last_hit_ms FROM mem_card WHERE card_id = ?').get('mc_a') as {
+          hit_count: number;
+          last_hit_ms: number;
+        };
+        assert.equal(row.hit_count, 2);
+        assert.equal(row.last_hit_ms, AT + 1);
+      } finally {
+        db.close();
+      }
+      const ledgerFile = path.join(indexDir, 'adoptions.jsonl');
+      const lines = fs.readFileSync(ledgerFile, 'utf8').trim().split('\n');
+      assert.equal(lines.length, 2);
+      for (const line of lines) {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        assert.deepEqual(Object.keys(parsed).sort(), ['at_ms', 'card_id', 'content_hash', 'id']);
+        assert.equal(parsed.card_id, 'mc_a');
+      }
+
+      // 结构化拒绝：缺卡零账本、原因码透传，且不产生第三行账本行。
+      const missing = handle.recordAnchorAdoption({ cardId: 'mc_ghost', atMs: AT });
+      assert.equal(missing.ok, false);
+      if (!missing.ok) assert.equal(missing.reason, 'card-not-found');
+      assert.equal(fs.readFileSync(ledgerFile, 'utf8').trim().split('\n').length, 2);
+    } finally {
+      await handle.close();
+    }
   } finally {
     cleanupTempRoot(root);
   }

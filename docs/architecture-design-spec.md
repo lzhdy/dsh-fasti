@@ -33,7 +33,7 @@
 - **第 6 章　B 块记忆层：索引、布尔门、窄柄、影子与建卡通道**
   - 6.1 两层划分与方向性裁决｜6.2 运行期建卡通道｜6.3 独立投影 memory-index：零正文轻卡库
   - 6.4 目标函数、R1／R2／R3 与检索内核｜6.5 召回总则：两条通道且只有两条｜6.6 通道一裁决器：确定性布尔门
-  - 6.7 运行期窄柄恰六个方法｜6.8 工作记忆窗口、别名、漏召与影子落面｜6.9 审计 harness 与污染防护四层｜6.10 L5 装配与 M6 开门上锁
+  - 6.7 运行期窄柄恰八个方法｜6.8 工作记忆窗口、别名、漏召与影子落面｜6.9 审计 harness 与污染防护四层｜6.10 L5 装配与 M6 开门上锁
 - **第 7 章　宿主适配、三态灰度门与发布规程**
   - 7.1 L6 适配层薄壳七件套｜7.2 三态开关 memoryGateMode 精确语义（off／shadow／on）｜7.3 六工具桥与内核分工
   - 7.4 转 on 量化门槛、漂移与回退｜7.5 真机验收规程
@@ -682,26 +682,30 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 #129 主控拍板废掉 rules-v2 的“筛选员删卡”语义：词面门（含 6.6.1 时间槽）**只判合格性**，合格卡一张不删、不做严格优超互裁，澄清权归她；门后接零依赖纯函数排序器 `rank.ts`，把合格集按四层字典序排成有序列表整体交出。排序键自上而下、前键凌驾后键：
 
 1. **weight 档（她的重要度第一层，凌驾一切）**：`weight>0` 的卡恒居最前且永不参与遗忘；档内 weight 分高在前、同分落后续键。weight 只能由未来复盘线（P3 滞后挂账的第七工具）稀疏写入，当前无写路径、权威根全为 0；
-2. **strength（采用次数×指数遗忘，重要度第二层）**：读时纯函数计算 `strength = hitCount × 0.5^(idleMs/halfLifeMs)`，`lastHitMs=null` 或 `hitCount≤0` 恒为 0，闲置 `idleMs≤0` 时无衰减取原次数；库内只存 `hitCount`/`lastHitMs` 客观计数、零 schema 迁移，半衰期 `halfLifeMs=7 天`为具名候选常量（P2 立项复评 7/29 天两档，外部依据见仓库外 #129 评估文档）；
+2. **strength（采用次数的离散步进遗忘，重要度第二层；#130 重裁）**：读时纯函数计算，满几个 29 天遗忘档走整数步进 `k=max(0,floor(idleMs/halfLifeMs))`、`strength=floor(hitCount/2^k)`，全程整数运算、跨平台逐字节一致，不足 1 次有效采用即归 0（不出小数/浮点噪声）；`lastHitMs=null` 或 `hitCount≤0` 恒为 0，闲置 `idleMs≤0` 时 k=0 无衰减取原次数。半衰期 **`halfLifeMs=29 天`**（#130 主控拍板，外部依据见仓库外 #130 评估文档；账本保存全部采用时间戳，将来改常量可直接重算、零数据迁移）。库内只存 `hitCount`/`lastHitMs` 客观计数、零 schema 迁移；
 3. **occurredMs 新→旧**：不解析查询时间窗，直接用卡片自带事件时间排序；
 4. **cardId 字典序兜底**：保证同入参逐字节可重放、零平局弃权。
 
-纪律与边界：①排序器无 I/O、无 Date.now/Math.random，时钟经必填入参 `atMs` 注入（`ApplyGateInput.atMs`，v1 函数体刻意不读，静态锁红测守零漂移），不 import gate/bm25/store 守无环；②连续强度只做同档内全序比较，**不设任何 cutoff、不获得布尔否决权**，宁空勿错家法不破——不合格仍由词面门拒绝，排序器只在合格集内部定先后；③`limit` 缺省回落 `RANK_POLICY.defaultLimit=10`，截断只作用投影，`candidateTotal` 恒返回合格全集大小；④反向包含证据长度 `containmentLength` 仅随门原因留痕，不再删卡、不参与排序，exact-alias 不天然占首位；⑤DTO（7.3 白名单内）增 `candidateTotal` 与每卡 `occurredMs`/`timeLabel`（东八区整日：今天／昨天／N天前／YYYY-MM-DD，30 天外给绝对日期）/`weight`/`strength`/`hitCount` 五字段，让她看得见“这条凭什么排这”；observing 空信封同构带 `candidateTotal:0`。采用计数 P2 在 resolvePointer 挂钩（**过门不算、她采用才计数**，需重新裁决 I10 卡级禁写铁律）；马太效应残余（强度渐近恒正）登记 ε 沉寂地板／离散 recency 桶两候选解法，P2 一并评审。
+纪律与边界：①排序器无 I/O、无 Date.now/Math.random，时钟经必填入参 `atMs` 注入（`ApplyGateInput.atMs`，v1 函数体刻意不读，静态锁红测守零漂移），不 import gate/bm25/store 守无环；②离散强度只做同档内全序比较，**不设任何 cutoff、不获得布尔否决权**，宁空勿错家法不破——不合格仍由词面门拒绝，排序器只在合格集内部定先后；③`limit` 缺省回落 `RANK_POLICY.defaultLimit=10`，截断只作用投影，`candidateTotal` 恒返回合格全集大小；④反向包含证据长度 `containmentLength` 仅随门原因留痕，不再删卡、不参与排序，exact-alias 不天然占首位；⑤DTO（7.3 白名单内）增 `candidateTotal` 与每卡 `occurredMs`/`timeLabel`（东八区整日：今天／昨天／N天前／YYYY-MM-DD，30 天外给绝对日期）/`weight`/`strength`/`hitCount` 字段，让她看得见“这条凭什么排这”；observing 空信封同构带 `candidateTotal:0`。
+
+**#130 采用计数挂钩与 8:2 探索截窗（2026-11-19 主控拍板，I10 重裁落地）。** ①采用事实：仅 mode=on、第③跳 rawText 原文下钻成功才计数（她真的取回忆了，不管有没有说出口），过门/序号解析不算；shadow/off 零写入返 deferred 不阻阅读；同一检索情节同锚点重复下钻至多 +1，锚点映不回 active 卡不计数；只记 card_id＋at_ms＋卡面 content_hash，不记查询词与原文。②窄写与账本：两列唯一写口是 `recordAnchorAdoption` 窄写（单事务 BEGIN IMMEDIATE 仅 UPDATE 两列、事务内再核验 active），DB 提交成功后才向投影内 append-only `adoptions.jsonl` 追加一行；builder 每次重建折叠账本重算两列、旧库漂移值被整肃，账本缺失即归零，两列从零可恢复；`reconcileAdoptions` 纯比较器＋`assertAdoptionsReconciled` 硬失败守卫钉死账实一致（漂移码 `adoption-db-ledger-drift`/`adoption-ledger-db-missing`）。③截窗：完整有序名单一张不删，截窗内 marked→ranked→explore 三块 8:2 分槽，N≥2 时探索名额 `exploreWanted=ceil(0.2N)`、N=1 无保底独苗给老卡；探索池只放 hitCount=0 全新卡（衰减归零但 hitCount>0 的老卡留老卡池），有放回抽取经注入式 mulberry32（种子 `atMs>>>0`，禁 Math.random）、同窗去重；**探索位是纯运气不做公平轮转**——池不足如实回填不造卡、允许某张新卡长期落空（主控原话："有些东西就是要看运气，记忆也是，总会有漏掉的地方，它在哪里，但你就是想不起来，这是该有的。"）。④DTO 每卡增可选 `slot`（marked/ranked/explore）、顶层增 `slots`（marked/ranked/explore/exploreWanted/exploreFilled 五字段）；rankCards（完整序，limit:null）与 composeView（截窗分块）拆成两个纯函数，V1 冻结路径 slot/slots 恒缺省零漂移。马太效应由"离散步进归零＋纯运气探索位"取代旧 ε/桶候选，不再另立解法。
 
 **e10 实测留档（2026-11-19 重跑，350 题只读）**：tie-no-strict-leader 在封存卷实际触发 0 次，旧 81 个 abstain 经逐题核对全部是 all-rejected 而非平局弃权，故“救回平局”在本卷无题数增量（可回答仍 182，hit 接受卡均为 1 张）；可观测变化为状态语义归位（abstain/all-rejected→no-match/all-rejected，矩阵 no-match→no-match 87→168），多卡有序/权重/遗忘排序由单元与集成红测（rank 16 测＋门级接线测）锁结构，实证等阶段 2 新合成世界与真实采用数据。time-conflict 误杀 4 题保留，待 P4 把查询时间窗摘出热路径后清零。
 
-## 6.7 运行期窄柄：恰六个方法
+## 6.7 运行期窄柄：恰八个方法
 
-`src/memory/runtime.ts` 的 `openMemoryRuntime` 返回装配层唯一可持有的 `RuntimeMemoryHandle`，**恰六个窄方法**：
+`src/memory/runtime.ts` 的 `openMemoryRuntime` 返回装配层唯一可持有的 `RuntimeMemoryHandle`，**恰八个窄方法**：
 
 1. `searchExplained(query)`：可解释检索，委托时写死 `limit:undefined`，入参类型没有 limit 键——让预截断在类型层不可表达；
-2. `getCardsByAnchor(experienceId)`：按锚点反查卡；
-3. `addMissAlias(input)`：唯一卡写，补 source='miss' 的检索别名，sensitive 在包装层固定为 1，入参类型不含 sensitive，危险选项无法表达；只读降级时抛 UnavailableError；
+2. `getCardsByAnchor(experienceId)`：按锚点反查卡（SQL 固定 status='active'＋ULID 守门）；
+3. `addMissAlias(input)`：卡写之一，补 source='miss' 的检索别名，sensitive 在包装层固定为 1，入参类型不含 sensitive，危险选项无法表达；只读降级时抛 UnavailableError；
 4. `recordMiss(input)`：漏召登记落 mem_miss（观测写，非卡写）；
 5. `recordShadowObservation(input)`：影子观测写，落 `memory-shadow/` JSONL，term 内部算 sha256、**原文不落盘**，与 sqlite 物理隔离，只读降级时仍可写；
-6. `close()`：关闭句柄。
+6. `recordAnchorAdoption(input)`（#130）：采用计数窄写，白名单两键 `{cardId,atMs}` 透传写柄，单事务仅 UPDATE hit_count/last_hit_ms 两列、DB 提交后追加 adoptions.jsonl；只读降级抛 UnavailableError，模式门（仅 on 可写）在装配层、shadow/off 不触本方法；
+7. `drainProjection(budgetMs)`（#117 第七法）：level-triggered 自主建卡/裁剪编排，预算化一轮收口；
+8. `close()`：关闭句柄。
 
-纵深防御纪律：返回值必须是只挂六方法的新对象字面量，完整后端柄永不离开闭包；窄类型不 extends 读／写柄，字符串拼接键与运行时反射也只能看见窄方法；模块自身不 import node:sqlite／node:fs，连接生命周期封在 store 后端；写单例被离线构建占用时自动降级只读，读方法照常、写方法抛 UnavailableError，绝不抢锁。
+纵深防御纪律：返回值必须是只挂八方法的新对象字面量，完整后端柄永不离开闭包；窄类型不 extends 读／写柄，字符串拼接键与运行时反射（N13-i 反射锁）也只能看见窄方法；模块自身不 import node:sqlite／node:fs，连接生命周期封在 store 后端；写单例被离线构建占用时自动降级只读，读方法照常、写方法抛 UnavailableError，绝不抢锁。
 
 ## 6.8 工作记忆窗口、别名、漏召与影子落面
 
@@ -726,7 +730,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 
 ## 6.10 L5 装配与 M6 开门上锁
 
-`src/assembly/` 是内核与宿主之间的隔离带，规定三件：`memory-tools.ts`（宿主无关的工具集纯内核，不 import node:fs／node:sqlite，窄柄、粗召回零件、影子落点、时钟全部构造注入；对外 DTO 逐字段白名单投影，只回 cardId／序号／锚点／线索／门原因，#129 起加回 candidateTotal 与排序可见五字段 occurredMs/timeLabel/weight/strength/hitCount（仍逐键白名单），绝不回显 sensitive、内部别名列、contentHash 或原始查询；内核只暴露门控检索一个对外入口，不注入任何绕门直通端口）、`host-tool-runtime.ts`（宿主工具运行时抽象，真机能力只在此绑定）、`index.ts`（装配入口与 `runGatedSearch` 编排）。
+`src/assembly/` 是内核与宿主之间的隔离带，规定三件：`memory-tools.ts`（宿主无关的工具集纯内核，不 import node:fs／node:sqlite，窄柄、粗召回零件、影子落点、时钟全部构造注入；对外 DTO 逐字段白名单投影，只回 cardId／序号／锚点／线索／门原因，#129 起加回 candidateTotal 与排序可见五字段 occurredMs/timeLabel/weight/strength/hitCount，#130 起再加每卡可选 slot 与顶层可选 slots（marked/ranked/explore 分块，V1 路径恒缺省零漂移；仍逐键白名单），绝不回显 sensitive、内部别名列、contentHash 或原始查询；内核只暴露门控检索一个对外入口，不注入任何绕门直通端口）、`host-tool-runtime.ts`（宿主工具运行时抽象，真机能力只在此绑定）、`index.ts`（装配入口与 `runGatedSearch` 编排）。
 
 装配层是唯一被允许实例化记忆运行时的地方，采用独立装配目录加默认拒绝白名单；投毒矩阵必须先红后绿，自证对话链路 import 不到记忆层、记忆层 import 不到门面，任何新增反向依赖都被编译期与反射守门测试拦下。自动建卡接线前必须先产出装配层依赖设计（适配器装配或独立新模块），不得绕过 M6 直接接线。
 
@@ -756,7 +760,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 
 ## 7.3 六工具桥与宿主无关内核的分工
 
-宿主无关的工具集内核（`MemoryTools`）维持四个方法：`gatedSearch`（**唯一**检索入口：粗召回全集必经布尔门裁决后返回统一安全形状，不存在绕过门的直通返回）、`getCardsByAnchor`（按锚点取卡，通道二只读零件）、`resolvePointer`（序号反查 cardId，真源内容下钻仍走宿主门面、内核不越界）、`addMissAlias`（落空补别名，门未开回 deferred）。`memory-tool-bridge.ts` 用宿主 `defineTool` 包薄壳注册的工具由四个增为**六个**（off 态仍零注册）：原四工具之外，新增通道二回查专用的 `fasti_memory_experience_summary`（经历摘要）与 `fasti_memory_raw_text`（原文下钻），两工具 description 必须显式写明"通道二回查专用、返回正文"。落空台账编排钩子（abstain／no-match 时调 `recordMiss`、失败只入案底不阻断对话）在装配层 `memory-tools.ts` 内接线，强制前置项与豁免条件见附录 E.5。
+宿主无关的工具集内核（`MemoryTools`）#130 起为五个方法：`gatedSearch`（**唯一**检索入口：粗召回全集必经布尔门裁决后返回统一安全形状，不存在绕过门的直通返回）、`getCardsByAnchor`（按锚点取卡，通道二只读零件）、`resolvePointer`（序号反查 cardId，真源内容下钻仍走宿主门面、内核不越界）、`addMissAlias`（落空补别名，门未开回 deferred）、`recordAnchorAdoption`（#130 采用计数，**不向模型注册**：模型侧无此工具名，仅由 `rawText` 下钻成功后桥接内部调用，非 on 返 deferred 零写入）。`memory-tool-bridge.ts` 用宿主 `defineTool` 包薄壳**注册给模型的工具维持六个**（off 态仍零注册）：原四工具之外，新增通道二回查专用的 `fasti_memory_experience_summary`（经历摘要）与 `fasti_memory_raw_text`（原文下钻），两工具 description 必须显式写明"通道二回查专用、返回正文"。落空台账编排钩子（abstain／no-match 时调 `recordMiss`、失败只入案底不阻断对话）在装配层 `memory-tools.ts` 内接线，强制前置项与豁免条件见附录 E.5。
 
 **通道二两工具的安全边界（一次定死）：**
 
@@ -955,9 +959,10 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 | **#127** | 正式卡号（主控 2026-11-19 确认取号） | **阶段 1.5 时间表达式硬约束（时间约束编译器）**：#126 实测时间硬约束触发面 3.1%（11/350）单立此卡。经内部四代路线调研＋五份外部盲审（四家闭卷独立收敛）定稿为零依赖纯函数编译式四层：`time-lexicon.ts`（数据词表，说法开放/语义原子封闭）→`time-expr.ts`（L1 词法＋L2 声明式文法，产不含毫秒的符号 TIR，不读时钟）→`time-resolve.ts`（L3 唯一读 Anchor 的整数日历求解器＋L4 构造器私有的 proveClosure 证明门）→gate V2 时间槽布尔裁决。四态信封 NONE/UNCERTAIN(reason 封闭枚举)/CANDIDATES(无首选/排序/置信字段)/WINDOW(带闭合证明)；模型仅为阶段 3 端口未来的 IR 提议者，禁碰算术与最终裁决。主控同日拍板六条预决议：①TIR 四层路线；②农历/节气/调休/节假日首期全部 OUT_OF_ASSET_RANGE 挂起；③无年份月日 MISSING_YEAR 不猜；④日内钟点/时段首期不产窗（疑问词 QUESTION_FOCUS、时段词 VAGUE 短路），CANDIDATES 契约冻结但无生产产出者；⑤时间不相交布尔否决不软降权；⑥模型端口八条边界补修正案文档、实现归阶段 3 | 五批 TDD 全部完工：批 1-4 已入库（`e69c3f4`／`7af8492`／`bc359c3`／`abf6fd5`），批 5 收口文书（正本 §6.6.1、本台账与 STATUS）随本次提交入库，全量 **1364 全绿**。批 2 含主控施工中两拍板：⑦裸周偏移默认整周——`{kind:'WEEK_OF',weekOffset}` 原子（gram:week-of）产周一开篇 7 日半开窗、granularity=WEEK、grammar 升 3.0.0；⑧年份只认四位，删 policy:two-digit-year，两位年回落 MONTH_DAY 走 MISSING_YEAR。批 4 gate V2 时间槽接线＋装配 Anchor：v1 函数体一字不读 timeConstraint（T7 静态锁＋深相等）、UNCERTAIN 恒放行盖 time-uncertain-ignored、WINDOW/CANDIDATES 走 timeConstraintAdmits 布尔裁决（窗外 time-conflict、多候选 OR 并集禁直取首项），gatedSearch 入参维持 `{text,limit?}` 零增项；T6/T7/T9 红测外六核心变异由 `scripts/verify-mutation-127.sh` 复演全抓红、还原回绿。批 5 仓库外留档：e10 封存 350 题两版 V2 并排（实测四态 NONE 314／UNCERTAIN 31／WINDOW 5／CANDIDATES 0，5 题 hit→abstain 各挡 1 卡 time-conflict，36 道非 NONE 题落人工角色核对面单；口预决算死只报分布与 diff、不产生有效性结论）与《#127 模型端口修正案-八条边界》（阶段 3 黄区挂账，只动仓库外文档）。双轨休眠维持：v1 一字不碰、CURRENT 仍 rules-v1、零 schema 迁移、shadow→on 不开、真机零接触；点事件显式 t∈[s,t)、Anchor（Asia/Shanghai/周一起始/资产版本入 replayKey）、G 类只降级不升级；机制激活考试归阶段 2 D1 新合成世界与 rules-v2 新封存卷 | 2026-11-19 主控授权开工；仓库外 staging《#127阶段1.5最终推荐与实施细则.md》《时间解析盲审五份答复甄别汇总-20261119.md》；正本 §6.6、K8/K9；#126 行④ |
 
 | **#128** | 正式卡号（主控 2026-11-19 授权开工，承接 #127 实测暴露的时间词误拼） | **时间解析 A1 原文邻接铁律**：自然说法探底实证"本周一/周1/星期1/礼拜1（含全角１）"等被阿拉伯数字邻接误拼（如"周1一直"被并成 11、"这周一定"误读周一）；仓库外右界闭合离线实验证伪"时间表达右侧必须闭合"判据（三个严格化变体全部归零等于关模块），定稿只加纯结构性邻接判据 `isContiguous`（时间原子间只允许隔空白），不扩开放式词表、不退回定式匹配 | 已收口并入库（commit `eff3e32`，未 push）：`time-expr.ts`/`time-lexicon.ts` grammar 升 4.0.0＋`tests/memory/time-adjacency.test.ts` 7 测；封存 350 题并排 NONE 315／UNCERTAIN 31／WINDOW 4／CANDIDATES 0，hit→abstain 5→4（idx 89"周会材料那事我一直挂着"误拼消除），verify 1371 全绿。残余挂账：方位词结构误杀 5/8（D3，P4 随时间窗摘热路径处理）、年月粒度与模糊说法词表空档（台账悬置，不猜不硬凑） | 2026-11-19 主控授权；正本 §6.6.1；仓库外 staging《#128 时间说法兼容清单》《右界闭合离线对比实验》《时间解析外部方案调研》；#127 延续卡 |
-| **#129** | 正式卡号（主控 2026-11-19 拍板立项并授权开工） | **记忆排序化改造：废筛选员删卡/tie 弃权，词面门只判合格性＋合格卡字典序排序**。主控锁定口径：不解析查询时间窗，合格卡一张不删，按"她复盘稀疏打的 weight（第一层，凌驾且永不遗忘）→采用次数带指数遗忘的 strength（第二层，过门不算、采用才计数）→occurredMs 新→旧→cardId 兜底"排序，澄清权归她；默认上限 10 并返回 candidateTotal 保持截断可见；P3 复盘打分工具滞后挂复盘线、P2 采用计数需重裁 I10 禁写铁律（半衰期 7 天候选待 P2 复评 7/29）、P4 摘查询时间窗热路径。永久标准：工具设计代入 AI 自身视角 | P1 三批 TDD 完工待提交（未 push）：①`rank.ts` 零依赖纯函数排序器＋16 红测（四轮变异反证全抓红）；②gate V2 契约迁移——ApplyGateInput 加必填注入时钟 atMs（v1 不读有静态锁）、合格空集归 no-match/all-rejected、合格集全体交 rankCards、证据长度只留痕不删卡，DTO 加 candidateTotal 与五张排序可见字段（M6 白名单同步），门级三轮变异反证（回退 abstain／硬截断 limit=1／断 atMs 接线，补强度接线测后全抓红）；③e10 同口径复算——**实测 tie 弃权在封存卷触发 0 次、旧 81 abstain 全是 all-rejected，"182→263"预估被证伪，可回答仍 182**，收益定性为状态语义归位而非题数增量，time-conflict 误杀 4 题留 P4。全量 **verify 1391/1391 全绿**（双 tsc 零错误），零 schema 迁移、CURRENT 仍 rules-v1、shadow/on 档位与真机零接触不变 | 2026-11-19 主控拍板；正本 §6.6.2（本卡新增）、§6.6/§6.6.1 同步修订；仓库外 staging《#129 记忆排序化-P1 红测与施工评估》、stage0 e10 `*.pre129.*` 归档与新 summary；下游 P2 采用计数/I10 重裁、P3 复盘第七工具、P4 时间窗摘热路径 |
+| **#129** | 正式卡号（主控 2026-11-19 拍板立项并授权开工） | **记忆排序化改造：废筛选员删卡/tie 弃权，词面门只判合格性＋合格卡字典序排序**。主控锁定口径：不解析查询时间窗，合格卡一张不删，按"她复盘稀疏打的 weight（第一层，凌驾且永不遗忘）→采用次数带指数遗忘的 strength（第二层，过门不算、采用才计数）→occurredMs 新→旧→cardId 兜底"排序，澄清权归她；默认上限 10 并返回 candidateTotal 保持截断可见；P3 复盘打分工具滞后挂复盘线、P2 采用计数需重裁 I10 禁写铁律（半衰期 7 天候选待 P2 复评 7/29）、P4 摘查询时间窗热路径。永久标准：工具设计代入 AI 自身视角 | P1 三批 TDD 完工待提交（未 push）：①`rank.ts` 零依赖纯函数排序器＋16 红测（四轮变异反证全抓红）；②gate V2 契约迁移——ApplyGateInput 加必填注入时钟 atMs（v1 不读有静态锁）、合格空集归 no-match/all-rejected、合格集全体交 rankCards、证据长度只留痕不删卡，DTO 加 candidateTotal 与五张排序可见字段（M6 白名单同步），门级三轮变异反证（回退 abstain／硬截断 limit=1／断 atMs 接线，补强度接线测后全抓红）；③e10 同口径复算——**实测 tie 弃权在封存卷触发 0 次、旧 81 abstain 全是 all-rejected，"182→263"预估被证伪，可回答仍 182**，收益定性为状态语义归位而非题数增量，time-conflict 误杀 4 题留 P4。全量 **verify 1391/1391 全绿**（双 tsc 零错误），零 schema 迁移、CURRENT 仍 rules-v1、shadow/on 档位与真机零接触不变 | 2026-11-19 主控拍板；正本 §6.6.2（本卡新增）、§6.6/§6.6.1 同步修订；仓库外 staging《#129 记忆排序化-P1 红测与施工评估》、stage0 e10 `*.pre129.*` 归档与新 summary；下游 P2 采用计数/I10 重裁（=#130）、P3 复盘第七工具、P4 时间窗摘热路径 |
+| **#130** | 正式卡号（主控 2026-11-19 四轮问答拍板四个分叉并授权七批施工） | **采用计数挂钩＋I10 禁写铁律重裁（#129 P2 另案落地）**。锁定口径：①投影内 append-only 账本 `adoptions.jsonl`（行形状 `{id,card_id,at_ms,content_hash}`，id=sha256(`card_id|at_ms|content_hash`).slice(0,32)），窄写事务内仅 UPDATE hit_count/last_hit_ms 两列、DB 提交后账本追加同生共死，builder 折叠账本保证从零可恢复，I10 改写为"离线模拟仍禁回写、实时采用只许经 adoption 窄写＋账本"；②采用事件挂第③跳 rawText 原文下钻成功（不挂序号解析、不管她有没有说出口），仅 on 写、shadow/off 零写入不阻阅读，同检索情节同锚点至多 +1，锚点映不回 active 卡不计数，不记查询词；③半衰期 29 天；④离散步进整数强度 k=floor(idleMs/halfLifeMs)、strength=floor(hitCount/2^k)，截窗 8:2、N≥2 exploreWanted=ceil(0.2N)、N=1 无保底、池不足回填不造卡、允许长期落空，探索位纯运气（注入 mulberry32 禁 Math.random，主控拒绝公平轮转原话留档 §6.6.2），新卡＝hitCount=0、衰减归零老卡留老卡池，DTO marked→ranked→explore 分块带 slot/slots，rankCards 与 composeView 拆两纯函数 | 七批 TDD 全部完工待提交（未 commit/push）：批 1-5 rank/adoption/adoption-write/store 窄柄/assembly 模式门/DSH 桥接（批 5 排查并修复 seedOneCard 火并 close 致写单例微任务未释放的潜伏竞态），批 6 builder 折叠口＋`reconcileAdoptions`/`assertAdoptionsReconciled` 硬对账（漂移码 adoption-db-ledger-drift/adoption-ledger-db-missing），批 7 八条变异反证（Math.random 偷用/连续公式回退/探索覆盖保证化/删账本 append/钝化对账/mode 门摘除/折叠口跳过/坏行静默）逐条先抓红后还原。全量 **verify 1453/1453 全绿**、双 tsc 零错误；新增 adoption.ts/adoption-write.ts/adoption-store.ts 三源码与 adopt 系测试；零 schema 迁移（两列早存）、CURRENT 仍 rules-v1（生产信封 V1 不出 slot）、真机零接触 | 2026-11-19 主控拍板；正本 §6.6.2/#130 段、§6.7 八方法、scaffold 计划 §6.8 I10 修订块与裁决清单；仓库外 staging《#130采用计数与I10重裁-P2施工评估.md》；29 天半衰期外部调研四 URL 存评估稿；承接 #129，下游 P3/P4 仍挂账 |
 
-**号段现状一句话**：已取号到 **#129**；#118 是**预留**而非空号；#119 插队号、#120 锁定给漏召别名建议器（待立项）、#121 影子观测端口（已实现）、#122 记忆装配断口修复（已实现并真机验收）、#123 key_points cue 派生（P1–P5 已实现、P6 预注册 v4 已冻结待施工，2026-11-17 事后追认补登，落地登记见 11.12）、#124 bigram 索引几何卡（**已④实现完成·已验收并 push、真机 v3 已切换**，2026-11-17）、#125 路 B 收编评估（**占位待立项**，2026-11-18）、#126 P6 NOT-PASSED 整改阶段 0 与词法结构解（**阶段 0/1 已完工外审收口，2026-11-19**）、#127 阶段 1.5 时间表达式硬约束（**五批 TDD 完工入库待 push，2026-11-19，全量 1364 绿**）、#128 时间解析 A1 原文邻接铁律（**已入库 `eff3e32` 待 push，grammar 4.0.0**）、#129 记忆排序化改造（**P1 三批 TDD 完工待提交，2026-11-19，全量 1391 绿**）；**下一可分配空号是 #130**，取号即在本表续行占位，禁止凭上一号线性 +1。
+**号段现状一句话**：已取号到 **#130**；#118 是**预留**而非空号；#119 插队号、#120 锁定给漏召别名建议器（待立项）、#121 影子观测端口（已实现）、#122 记忆装配断口修复（已实现并真机验收）、#123 key_points cue 派生（P1–P5 已实现、P6 预注册 v4 已冻结待施工，2026-11-17 事后追认补登，落地登记见 11.12）、#124 bigram 索引几何卡（**已④实现完成·已验收并 push、真机 v3 已切换**，2026-11-17）、#125 路 B 收编评估（**占位待立项**，2026-11-18）、#126 P6 NOT-PASSED 整改阶段 0 与词法结构解（**阶段 0/1 已完工外审收口，2026-11-19**）、#127 阶段 1.5 时间表达式硬约束（**五批 TDD 完工入库待 push，2026-11-19，全量 1364 绿**）、#128 时间解析 A1 原文邻接铁律（**已入库 `eff3e32` 待 push，grammar 4.0.0**）、#129 记忆排序化改造（**P1 完工待提交，全量 1391 绿**）、#130 采用计数挂钩与 I10 重裁（**七批 TDD 完工待提交，2026-11-19，全量 1453 绿**）；**下一可分配空号是 #131**，取号即在本表续行占位，禁止凭上一号线性 +1。
 
 ### 11.4.1 待建卡详表（#88–#117 共 30 张；#119 插队切片见末行）
 
@@ -1242,7 +1247,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 | 事件 Event | 连续一段同主题经历的聚合，二级真源，写入即固化 |
 | 正本／抄本 | 不可再生的真源日志／可丢弃重建的投影与索引 |
 | 话题线 | 事件的横向网状归属，区别于纵向指针链 |
-| 窄柄 | 装配层唯一可持有的记忆访问形状，恰六方法、类型层收权 |
+| 窄柄 | 装配层唯一可持有的记忆访问形状，恰八方法（#130 起含 recordAnchorAdoption）、类型层收权 |
 | 两条通道 | 通道一＝粗召回经布尔门收严后由系统自动注入；通道二＝abstain／no-match 后她持锚点工具自主回查。除此之外禁止任何绕门旁路 |
 | 三态 | 同一条通道一的三个工作状态：off＝记忆整体停用、不注册工具；shadow＝注册工具但门只空跑记账、不注入；on＝两分法上岗。默认 off，翻转须显式授权 |
 | 布尔门 gate | 确定性纯函数召回裁决，宁空勿错，abstain≠no-match |

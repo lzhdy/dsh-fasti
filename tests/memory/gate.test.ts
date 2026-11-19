@@ -356,32 +356,45 @@ test('R-03 #129 v2 严格优超/tie 弃权已废：合格卡一张不删，按 o
       (c) => !c.gateReasons.includes('tie-no-strict-leader') && !c.gateReasons.includes('not-strict-leader'),
     );
 
-  // 旧平局场景：等长证据两张卡都过门，按 occurredMs 新→旧排序，rejected 为 0。
-  const tie = applyGateV2({
+  // 旧平局场景：等长证据两张零采用新卡都过门、一张不删，rejected 为 0。
+  // #130 起零采用卡入探索池，截窗内次序由 atMs 派生 RNG 抽取决定（不再保证 occurred 序）；
+  // 门级只保证集合不丢、槽位与汇总一致、同 atMs 可重放，rank 字典序职责由 rank.test 承接。
+  const tieInput = {
     atMs: TEST_NOW_MS,
     qNorm: normalizeLexicalText(q),
     candidates: [overlapAt(['咖啡馆约会'], 2_000), overlapAt(['咖啡馆约会'], 9_000)],
-  });
+  };
+  const tie = applyGateV2(tieInput);
   assert.equal(tie.status, 'hit');
   assert.equal(tie.candidateCount, 2);
   assert.equal(tie.accepted.length, 2);
   assert.equal(tie.rejected.length, 0);
-  assert.deepEqual(tie.accepted.map((c) => c.card.occurredMs), [9_000, 2_000]);
+  assert.deepEqual([...tie.accepted.map((c) => c.card.occurredMs)].sort((a, b) => a - b), [2_000, 9_000]);
+  assert.ok(tie.accepted.every((c) => c.slot === 'explore'), '零采用新卡统一盖 explore 槽位');
+  assert.equal(tie.slots?.explore, 2);
+  assert.deepEqual(applyGateV2(tieInput), tie, '同 atMs 探索抽取逐字节可重放');
   assert.ok(noLeaderCodes(tie));
 
   // 三张证据长短不一：词面都合格就全部保留（旧 C-10 场景整体不再弃权）。
-  const allThree = applyGateV2({
+  const threeInput = {
     atMs: TEST_NOW_MS,
     qNorm: normalizeLexicalText(q),
     candidates: [overlapAt(['咖啡馆约会'], 3_000), overlapAt(['咖啡馆约会'], 2_000), overlapAt(['咖啡馆'], 1_000)],
-  });
+  };
+  const allThree = applyGateV2(threeInput);
   assert.equal(allThree.status, 'hit');
   assert.equal(allThree.accepted.length, 3);
   assert.equal(allThree.rejected.length, 0);
-  assert.deepEqual(allThree.accepted.map((c) => c.card.occurredMs), [3_000, 2_000, 1_000]);
+  assert.deepEqual(
+    [...allThree.accepted.map((c) => c.card.occurredMs)].sort((a, b) => a - b),
+    [1_000, 2_000, 3_000],
+    '合格卡一张不删（集合口径）',
+  );
+  assert.deepEqual(applyGateV2(threeInput), allThree);
   assert.ok(noLeaderCodes(allThree));
 
-  // 一长一短：短证据卡更新，排序必须由 occurredMs 决定而非证据长度；containmentLength 仍逐卡留痕。
+  // 一长一短：证据长度不承担排序/删卡职责；#130 下两张零采用卡都在探索池，
+  // containmentLength 仍逐卡留痕（按卡身份核验，不依赖截窗位置）。
   const lead = applyGateV2({
     atMs: TEST_NOW_MS,
     qNorm: normalizeLexicalText(q),
@@ -390,9 +403,9 @@ test('R-03 #129 v2 严格优超/tie 弃权已废：合格卡一张不删，按 o
   assert.equal(lead.status, 'hit');
   assert.equal(lead.accepted.length, 2);
   assert.equal(lead.rejected.length, 0);
-  assert.equal(lead.accepted[0]!.card.occurredMs, 9_000, '更新的短证据卡排首，证据长短不再决定先后');
-  assert.equal(lead.accepted[0]!.containmentLength, 3);
-  assert.equal(lead.accepted[1]!.containmentLength, 5);
+  const containmentByOccurred = new Map(lead.accepted.map((c) => [c.card.occurredMs, c.containmentLength]));
+  assert.equal(containmentByOccurred.get(9_000), 3, '短证据卡留痕 3 码点');
+  assert.equal(containmentByOccurred.get(1_000), 5, '长证据卡留痕 5 码点');
 
   // exact-alias 与 fts 卡并存：两张都过门；exact 不再天然独占首位，排序只认四键，原因码各自保留。
   const exactWin = applyGateV2({
@@ -414,17 +427,19 @@ test('#129 静态锁：applyGateV1 刻意不读 atMs，注入时钟漂移结果�
   assert.deepEqual(a, b, 'v1 几何冻结：atMs 仅 V2 排序器消费，v1 不读不漂移');
 });
 
-test('#129 门级接线：atMs 真传入排序器，遗忘强度（非裸 hitCount）决定同 weight 档先后', () => {
+test('#129/#130 门级接线：atMs 真传入排序器，离散步进有效强度（非裸 hitCount）决定同 weight 档先后', () => {
   const DAY = 24 * 3600 * 1000;
+  const HALF_LIFE = 29 * DAY;
   // 两卡同 weight、同 occurredMs（隔离强度键），都走 exact 强通道过门。
-  // A：裸次数 10 但 30 天没被采用 → 衰减后约 0.51；B：次数 2、1 天前采用 → 约 1.81，B 应在前。
+  // #130 整数离散步进（半衰期 29 天）：A 裸次数 10 但闲置 90 天 → k=3 → floor(10/8)=1；
+  // B 次数 2、1 天前采用 → k=0 → 强度 2，B 应在前。
   const exactCardWithHits = (cardId: string, hitCount: number, lastHitMs: number): ExplainedRankedCard => ({
     card: makeCard({ cardId, occurredMs: 1_000, hitCount, lastHitMs }),
     scoreParts: { bm25: 0, recency: 0 },
     matchedTerms: [cardId],
     matchKinds: ['exact-alias'],
   });
-  const decayed = exactCardWithHits('mc_decayed', 10, TEST_NOW_MS - 30 * DAY);
+  const decayed = exactCardWithHits('mc_decayed', 10, TEST_NOW_MS - 3 * HALF_LIFE - 3 * DAY);
   const fresh = exactCardWithHits('mc_fresh', 2, TEST_NOW_MS - 1 * DAY);
   const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [decayed, fresh] });
   assert.equal(out.status, 'hit');
@@ -445,3 +460,62 @@ test('R-08 v2 纯函数确定性：同输入两次深相等，空查询/零候�
   assert.equal(applyGateV2({ atMs: TEST_NOW_MS, qNorm: '无人提及', candidates: [] }).reason, 'zero-lexical-hit');
 });
 
+
+// ── #130 批5：V2 接 composeView，槽位三标记随门结果产出（G5 组）──────────────
+
+function exactCard(card: MemoryCard): ExplainedRankedCard {
+  return makeRanked({ matchKinds: ['exact-alias'], matchedTerms: [card.cardId], card });
+}
+
+test('G5-1 V2 hit 信封携带 slots 汇总，且每张 accepted 按身份带 marked/ranked/explore 标记', () => {
+  const marked = makeCard({ cardId: 'mc_marked', weight: 0.5, hitCount: 0, lastHitMs: null });
+  const old = makeCard({ cardId: 'mc_old', weight: 0, hitCount: 4, lastHitMs: TEST_NOW_MS });
+  const freshA = makeCard({ cardId: 'mc_fresh_a', weight: 0, hitCount: 0, lastHitMs: null });
+  const freshB = makeCard({ cardId: 'mc_fresh_b', weight: 0, hitCount: 0, lastHitMs: null });
+  const candidates = [freshA, old, marked, freshB].map(exactCard);
+
+  const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates });
+  assert.equal(out.status, 'hit');
+  assert.ok(out.slots !== undefined, 'V2 hit 必须带 slots 汇总');
+  assert.equal(out.slots?.marked, 1);
+  assert.equal(out.slots?.ranked, 1);
+  assert.ok((out.slots?.explore ?? 0) >= 1, '零采用新卡至少占一个探索位');
+  for (const accepted of out.accepted) {
+    assert.ok(accepted.slot !== undefined, '每张过门卡必须带 slot 标记');
+    if (accepted.slot === 'marked') assert.ok(accepted.card.weight > 0);
+    if (accepted.slot === 'ranked') assert.ok(accepted.card.hitCount > 0 && accepted.card.weight === 0);
+    if (accepted.slot === 'explore') assert.equal(accepted.card.hitCount, 0);
+  }
+  const slotCounts = { marked: 0, ranked: 0, explore: 0 };
+  for (const accepted of out.accepted) slotCounts[accepted.slot ?? 'ranked'] += 1;
+  assert.deepEqual(slotCounts, { marked: out.slots!.marked, ranked: out.slots!.ranked, explore: out.slots!.explore });
+});
+
+test('G5-2 探索运气确定性：同 atMs 两次调用逐字节同形，candidateCount 仍是门过滤前全集', () => {
+  const cards = [
+    makeCard({ cardId: 'mc_o1', hitCount: 2, lastHitMs: TEST_NOW_MS }),
+    ...Array.from({ length: 8 }, (_, i) => makeCard({ cardId: `mc_f${i}`, hitCount: 0, lastHitMs: null })),
+  ].map(exactCard);
+  const a = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: cards });
+  const b = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: cards });
+  assert.deepEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
+  assert.equal(a.candidateCount, 9);
+  assert.equal(a.accepted.length, 9); // 候选不足窗口上限，合格卡一张不藏
+});
+
+test('G5-3 limit 经 composeView 生效：截窗后张数受限且 serialMap 与截窗一一对应', () => {
+  const cards = Array.from({ length: 14 }, (_, i) =>
+    exactCard(makeCard({ cardId: `mc_lim_${String(i).padStart(2, '0')}`, hitCount: i === 0 ? 0 : 1, lastHitMs: TEST_NOW_MS })),
+  );
+  const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: cards, limit: 5 });
+  assert.equal(out.accepted.length, 5);
+  assert.equal(out.serialMap.size, 5);
+  assert.equal(out.candidateCount, 14, 'candidateCount 不被截窗改写');
+});
+
+test('G5-4 V1 冻结几何零漂移：信封无 slots、卡上无 slot 字段', () => {
+  const fixture = [exact('git'), fts('git 流程')];
+  const v1 = applyGateV1({ atMs: TEST_NOW_MS, qNorm: 'git', candidates: fixture });
+  assert.equal(v1.slots, undefined);
+  for (const accepted of v1.accepted) assert.equal(accepted.slot, undefined);
+});

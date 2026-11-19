@@ -14,6 +14,8 @@ import { test } from 'node:test';
 
 import { MemorySerialReferenceError } from '../../src/memory/memory-errors.ts';
 import type { ApplyMissAliasOutcome } from '../../src/memory/alias-write.ts';
+import { buildAdoptionRecord } from '../../src/memory/adoption.ts';
+import type { RecordAnchorAdoptionHandleOutcome } from '../../src/memory/store.ts';
 import { isSerialRefusable } from '../../src/memory/serial.ts';
 import type {
   ExplainedRankedCard,
@@ -81,9 +83,13 @@ interface FakeHandleOpts {
   addOutcome?: ApplyMissAliasOutcome;
   addCalls: RuntimeAddMissAliasInput[];
   missCalls: MissObservationInput[];
+  adoptionCalls?: Array<{ cardId: string; atMs: number }>;
+  adoptionResponder?: (cardId: string) => RecordAnchorAdoptionHandleOutcome;
 }
 
 function makeFakeHandle(opts: FakeHandleOpts): RuntimeMemoryHandle {
+  const adoptionCalls = opts.adoptionCalls ?? [];
+  opts.adoptionCalls = adoptionCalls;
   return {
     async searchExplained(_query: RuntimeSearchQuery): Promise<ExplainedRankedCard[]> {
       return opts.explained ?? [];
@@ -110,6 +116,24 @@ function makeFakeHandle(opts: FakeHandleOpts): RuntimeMemoryHandle {
     recordShadowObservation() {
       // 装配内核测试用独立注入的假 sink 驱动影子，假窄柄的第六方法在此不被触达，仅满足契约形状。
       return { ok: false as const, reason: 'fake-handle-uses-injected-sink' };
+    },
+    recordAnchorAdoption(input: { cardId: string; atMs: number }): RecordAnchorAdoptionHandleOutcome {
+      adoptionCalls.push(input);
+      if (opts.adoptionResponder !== undefined) return opts.adoptionResponder(input.cardId);
+      return {
+        ok: true,
+        applied: true,
+        cardId: input.cardId,
+        atMs: input.atMs,
+        hitCount: adoptionCalls.length,
+        lastHitMs: input.atMs,
+        contentHash: `hash_ad_${input.cardId}`,
+        record: buildAdoptionRecord({
+          cardId: input.cardId,
+          atMs: input.atMs,
+          contentHash: `hash_ad_${input.cardId}`,
+        }),
+      };
     },
     async drainProjection(): Promise<never> {
       throw new Error('drainProjection 未在该装配替身接线');
@@ -421,4 +445,85 @@ test('影子回放observeShadowOnce：门抛错时失败隔离不冒泡、不伪
     observeShadowOnce(makeDeps('shadow', throwing, sinkBox.sink), '猫', REPLAY_AT),
   );
   assert.equal(sinkBox.records.length, 0);
+});
+
+// ── #130 批5：第③跳采用记账内核（K 组）──────────────────────────────────────
+
+const ANCHOR_ID = '01j5qg8z0k0000000000000001';
+
+test('K1 on：锚点映出两张 active 卡则逐张窄写，回信封带逐卡新计数且 atMs 统一注入', () => {
+  const cardA = mkExplained('mc_a', ['exact-alias']).card;
+  const cardB = mkExplained('mc_b', ['exact-alias']).card;
+  const opts: FakeHandleOpts = { addCalls: [], missCalls: [], anchorCards: [cardA, cardB] };
+  const { tools } = build('on', makeFakeHandle(opts));
+
+  const view = tools.recordAnchorAdoption({ anchorId: ANCHOR_ID });
+  assert.equal('deferred' in view, false);
+  if (!('ok' in view) || !view.ok) throw new Error('on 态应返回 ok 视图');
+  assert.equal(view.matchedCards, 2);
+  assert.deepEqual(
+    (opts.adoptionCalls ?? []).map((c) => c.cardId).sort(),
+    ['mc_a', 'mc_b'],
+  );
+  assert.ok((opts.adoptionCalls ?? []).every((c) => c.atMs === NOW), '时钟只由注入 now 派生');
+  assert.deepEqual(view.adopted.map((a) => a.cardId).sort(), ['mc_a', 'mc_b']);
+  assert.deepEqual(view.rejected, []);
+});
+
+test('K2 on：锚点映不回任何 active 卡时零窄写、ok 空 adopted（不计数不报错，阅读不被打断）', () => {
+  const opts: FakeHandleOpts = { addCalls: [], missCalls: [], anchorCards: [] };
+  const { tools } = build('on', makeFakeHandle(opts));
+  const view = tools.recordAnchorAdoption({ anchorId: ANCHOR_ID });
+  if (!('ok' in view) || !view.ok) throw new Error('映不回不是 deferred，应是 ok 空结果');
+  assert.equal(view.matchedCards, 0);
+  assert.deepEqual(view.adopted, []);
+  assert.equal((opts.adoptionCalls ?? []).length, 0);
+});
+
+for (const mode of ['shadow', 'off'] as MemoryGateMode[]) {
+  test(`K3 ${mode}：deferred 零写入，窄柄采用方法一次不触`, () => {
+    const cardA = mkExplained('mc_a', ['exact-alias']).card;
+    const opts: FakeHandleOpts = { addCalls: [], missCalls: [], anchorCards: [cardA] };
+    const { tools } = build(mode, makeFakeHandle(opts));
+    const view = tools.recordAnchorAdoption({ anchorId: ANCHOR_ID });
+    assert.deepEqual(view, { deferred: true, mode, reason: 'gate-not-on', anchorId: ANCHOR_ID });
+    assert.equal((opts.adoptionCalls ?? []).length, 0);
+  });
+}
+
+test('K4 on：窄写结构化拒绝逐卡分区透传，不影响同锚点其它卡计数', () => {
+  const cardA = mkExplained('mc_a', ['exact-alias']).card;
+  const cardB = mkExplained('mc_b', ['exact-alias']).card;
+  const opts: FakeHandleOpts = {
+    addCalls: [],
+    missCalls: [],
+    anchorCards: [cardA, cardB],
+    adoptionResponder: (cardId) =>
+      cardId === 'mc_b'
+        ? { ok: false, reason: 'card-not-active', cardId }
+        : {
+            ok: true,
+            applied: true,
+            cardId,
+            atMs: NOW,
+            hitCount: 1,
+            lastHitMs: NOW,
+            contentHash: 'h',
+            record: buildAdoptionRecord({ cardId, atMs: NOW, contentHash: 'h' }),
+          },
+  };
+  const { tools } = build('on', makeFakeHandle(opts));
+  const view = tools.recordAnchorAdoption({ anchorId: ANCHOR_ID });
+  if (!('ok' in view) || !view.ok) throw new Error('应有 ok 信封');
+  assert.deepEqual(view.adopted.map((a) => a.cardId), ['mc_a']);
+  assert.deepEqual(view.rejected, [{ cardId: 'mc_b', reason: 'card-not-active' }]);
+});
+
+test('K5 当前冻结 v1 派发下 DTO 不伪造槽位：slot/slots 缺省（v2 接线后才出现，门级 G5 已覆盖）', async () => {
+  const handle = makeFakeHandle({ explained: strongThenWeak(), addCalls: [], missCalls: [] });
+  const { tools } = build('on', handle);
+  const view = await tools.gatedSearch({ text: 'cat', limit: 2 });
+  assert.equal(view.status, 'hit');
+  for (const card of view.cards) assert.equal(card.slot, undefined, 'v1 冻结路径零漂移，不预盖槽位');
+  assert.equal(view.slots, undefined);
 });

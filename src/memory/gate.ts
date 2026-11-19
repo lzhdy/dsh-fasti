@@ -25,7 +25,7 @@
  */
 
 import { asciiLower } from '../projection/types.ts';
-import { RANK_POLICY, rankCards } from './rank.ts';
+import { RANK_POLICY, composeView, mulberry32, rankCards } from './rank.ts';
 import { buildSerialMap } from './serial.ts';
 import { timeConstraintAdmits } from './time-resolve.ts';
 import { CURRENT_RULES_VERSION } from './types.ts';
@@ -335,18 +335,25 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
   // #129：废严格优超/tie 弃权——词面合格卡一张不删，全体交 rank 排序器按
   // weight→strength（遗忘）→occurred→cardId 字典序定先后，澄清权归她。
   // 证据长度仅随门原因留痕（containmentLength），不再承担删卡职责。
+  // #130：排序显式不截断（limit:null 拿完整名单），再交 composeView 做 8:2 截窗与槽位标记；
+  // 探索随机性由注入 atMs 派生种子的 mulberry32 驱动，门内禁 Math.random，同 atMs 可逐字节重放。
   const ranked = rankCards(
     passed.map((entry) => entry.candidate.card),
-    { nowMs: atMs, limit: limit ?? RANK_POLICY.defaultLimit },
+    { nowMs: atMs, limit: null },
   );
+  const view = composeView(ranked, {
+    limit: limit ?? RANK_POLICY.defaultLimit,
+    rng: mulberry32(atMs >>> 0),
+  });
   const passedById = new Map(passed.map((entry) => [entry.candidate.card.cardId, entry]));
-  const accepted: GatedRankedCard[] = ranked.entries.map((rankedEntry) => {
-    const entry = passedById.get(rankedEntry.cardId);
-    if (entry === undefined) throw new Error(`rank 排序返回了未过门卡：${rankedEntry.cardId}`);
+  const accepted: GatedRankedCard[] = view.entries.map((slottedEntry) => {
+    const entry = passedById.get(slottedEntry.cardId);
+    if (entry === undefined) throw new Error(`rank 排序返回了未过门卡：${slottedEntry.cardId}`);
     const reasons = withTimeTag(entry.judgement.reasons, entry.timeTag);
-    return Number.isFinite(entry.judgement.evidence)
+    const gated = Number.isFinite(entry.judgement.evidence)
       ? { ...toGated(entry.candidate, reasons), containmentLength: entry.judgement.evidence }
       : toGated(entry.candidate, reasons);
+    return { ...gated, slot: slottedEntry.slot };
   });
 
   return {
@@ -355,6 +362,7 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
     accepted,
     rejected,
     serialMap: buildSerialMap(accepted),
+    slots: view.slots,
   };
 }
 

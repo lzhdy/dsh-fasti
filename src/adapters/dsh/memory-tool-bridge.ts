@@ -89,6 +89,18 @@ function envelopeFail(code: string, message: string): string {
 }
 
 /**
+ * #130 第③跳采用记账注记（additive 挂在 rawText 成功信封 data 上，不改动原文信封任何既有键）：
+ *  - ok：本检索情节首次下钻已记账，带映卡/计成/拒绝张数，不含查询词/原文/内容哈希；
+ *  - deferred：shadow/off 门未开，零写入；
+ *  - ok:false 隔离失败：记账侧任何异常都不阻断阅读，对外只给稳定码，不泄堆栈/内部路径。
+ * 同情节翻页或重复下钻不重复挂注记（去重由 countedAnchors 情节集保证）。
+ */
+type RawTextAdoptionNote =
+  | { readonly ok: true; readonly matchedCards: number; readonly adoptedCount: number; readonly rejectedCount: number }
+  | { readonly ok: false; readonly reason: 'adoption-failed-isolated' }
+  | { readonly deferred: true; readonly mode: MemoryGateMode; readonly reason: 'gate-not-on' };
+
+/**
  * 构造六个 DSH 记忆工具定义（通道一四件套 + 通道二回查两件套）并打开底层宿主无关运行面。
  * 不直接触碰 cordis Context；注册动作见 registerMemoryToolDefinitions，由 plugin 接线。
  */
@@ -107,6 +119,9 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
 
   // 会话级私有序号表：仅短期闭包持有，不 JSON 化、不落库、不跨会话；每次 gatedSearch 整体替换。
   let serialMap: GatedSearchView['serialMap'] | null = null;
+  // #130 本检索情节已计数锚点集：与 serialMap 同生命周期，每次 gatedSearch 整体清空。
+  // 她对同一锚点翻页/重复下钻只算一次采用；新检索情节开始后同锚点可再计一次（真运气与真重复都靠它收口）。
+  let countedAnchors = new Set<string>();
 
   const gatedSearch = defineTool({
     name: MEMORY_TOOL_NAMES.gatedSearch,
@@ -127,8 +142,9 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
           text: String(args.text),
           limit: typeof args.limit === 'number' ? args.limit : undefined,
         });
-        // 每次检索整体替换私有序号表，旧序号立即失效。
+        // 每次检索整体替换私有序号表，旧序号立即失效；#130 同步开启新检索情节，采用去重集清空。
         serialMap = view.serialMap;
+        countedAnchors = new Set();
         return envelopeOk({
           status: view.status,
           ...(view.reason === undefined ? {} : { reason: view.reason }),
@@ -332,7 +348,30 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
       }
       try {
         const view = await input.sourceLookup.resolveRawText(pointer);
-        return envelopeOk(view);
+        // #130 第③跳挂钩：原文下钻成功本身即"她真的取回忆了"，不管有没有说出口都加深。
+        // 仅在指针带经验锚点且本情节尚未计数时触发；记账是旁路，try/catch 全包永不阻断原文阅读。
+        let adoptionNote: RawTextAdoptionNote | undefined;
+        if (typeof pointer.id === 'string' && !countedAnchors.has(pointer.id)) {
+          // 先占位后记账：同步流程内同锚点的翻页/重入在此短路，保证一个情节一个锚点只 +1。
+          countedAnchors.add(pointer.id);
+          try {
+            const adoption = runtime.tools.recordAnchorAdoption({ anchorId: pointer.id });
+            if ('deferred' in adoption) {
+              adoptionNote = { deferred: true, mode: adoption.mode, reason: 'gate-not-on' };
+            } else {
+              adoptionNote = {
+                ok: true,
+                matchedCards: adoption.matchedCards,
+                adoptedCount: adoption.adopted.length,
+                rejectedCount: adoption.rejected.length,
+              };
+            }
+          } catch {
+            // 窄柄缺失/只读降级/坏锚点等一切记账异常就地隔离：原文信封照常返回，只留稳定注记。
+            adoptionNote = { ok: false, reason: 'adoption-failed-isolated' };
+          }
+        }
+        return envelopeOk(adoptionNote === undefined ? view : { ...view, adoption: adoptionNote });
       } catch (error) {
         const kind = classifyHostMemoryError(error);
         return envelopeFail(kind.code, kind.message);

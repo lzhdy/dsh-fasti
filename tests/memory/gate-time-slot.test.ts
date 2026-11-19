@@ -174,11 +174,14 @@ test('T6 CANDIDATES：两个日子 OR 并集，第二个窗内的卡必须命中
   });
   assert.equal(out.status, 'hit');
   assert.equal(out.accepted.length, 2);
+  // #130：两张零采用卡都在探索池，截窗内次序归 atMs 派生 RNG（不再保证 occurred 序）；
+  // 本测职责是 OR 并集不吞候选——集合口径核验两张窗内卡一张不丢，排序职责归 rank.test。
   assert.deepEqual(
-    out.accepted.map((g) => g.card.occurredMs),
-    [sunday, saturday],
-    '两张合格卡按 occurredMs 新→旧，周日卡排首，周六卡保留不删',
+    [...out.accepted.map((g) => g.card.occurredMs)].sort((a, b) => a - b),
+    [saturday, sunday],
+    '周六/周日两个候选窗的卡都命中，第二窗不被直取首项吞掉',
   );
+  assert.ok(out.accepted.every((g) => g.slot === 'explore'));
   const rejectedByTime = out.rejected.filter((g) => g.gateReasons.includes('time-conflict'));
   assert.equal(rejectedByTime.length, 1, '周五卡应被时间槽否决');
   assert.equal(rejectedByTime[0]?.card.occurredMs, friday);
@@ -240,7 +243,7 @@ test('T6 词面过门卡被时间槽全部否决 → no-match/all-rejected 且�
   assert.ok(out.rejected.every((g) => g.gateReasons.includes('time-conflict')));
 });
 
-test('T6 #129 时间槽放行的双 exact 平局不再弃权：两张都过门，按 occurredMs 新→旧排序', () => {
+test('T6 #129 时间槽放行的双 exact 平局不再弃权：两张都过门、一张不删（#130 探索池次序归 RNG，集合核验）', () => {
   const c = constraintOf('周六的野餐');
   const saturday = localDayStart(2026, 11, 21);
   const out = applyGateV2({
@@ -253,10 +256,11 @@ test('T6 #129 时间槽放行的双 exact 平局不再弃权：两张都过门�
   assert.equal(out.accepted.length, 2);
   assert.equal(out.rejected.length, 0);
   assert.deepEqual(
-    out.accepted.map((g) => g.card.occurredMs),
-    [saturday + 2 * 3600_000, saturday + 3600_000],
+    [...out.accepted.map((g) => g.card.occurredMs)].sort((a, b) => a - b),
+    [saturday + 3600_000, saturday + 2 * 3600_000],
   );
   assert.ok(out.accepted.every((g) => !g.gateReasons.includes('tie-no-strict-leader')));
+  assert.ok(out.accepted.every((g) => g.slot === 'explore'));
 });
 
 // ── T7 零漂移锁 ───────────────────────────────────────────────────────────

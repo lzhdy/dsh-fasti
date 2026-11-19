@@ -3,7 +3,7 @@
  *
  * 纪律：
  *  - 本模块是装配层唯一允许实例化的记忆入口（WP3 白名单枚举 openMemoryRuntime 与本文件窄类型）；
- *  - 返回值必须是**只挂六个窄方法的新对象字面量**、闭包委托后端，禁止把完整柄 as 断言后外泄——
+ *  - 返回值必须是**只挂窄方法的新对象字面量**（#130 起含采用计数共八个）、闭包委托后端，禁止把完整柄 as 断言后外泄——
  *    字符串拼接键/运行时反射因此也只能看见窄方法（N13-i 纵深防御）；
  *  - 窄类型不 extends 读/写柄，全量方法在类型与对象两个层面都不可达；
  *  - 本模块不 import node:sqlite/node:fs，不自开连接；sqlite 连接生命周期与降级策略封装在 store 后端，
@@ -22,7 +22,7 @@ import { MISS_RETENTION_TMP_POLICY } from './miss-retention.ts';
 import { missSentinelMessage } from './miss-sentinel.ts';
 import type { RecordShadowOutcome, ShadowObservationInput } from './shadow-write.ts';
 import { openMemoryRuntimeBackend } from './store.ts';
-import type { StorePaths } from './store.ts';
+import type { RecordAnchorAdoptionHandleOutcome, StorePaths } from './store.ts';
 import type { ExplainedRankedCard, MemoryCard, MissObservationInput } from './types.ts';
 
 /** 窄柄检索入参：无 limit 键，装配层无法表达预截断（N11 防线①）。 */
@@ -54,6 +54,12 @@ export interface RuntimeMemoryHandle {
    * 入参无任何路径形参（落点在 shadow-write 工厂内部固定）。
    */
   recordShadowObservation(input: ShadowObservationInput): RecordShadowOutcome;
+  /**
+   * #130 采用计数窄写（I10 重裁后实时采用唯一写口）：第③跳原文下钻成功已在桥接层确认，
+   * 窄柄只透传 cardId＋注入时钟委托写柄（两列 UPDATE＋账本追加同生共死）；模式门与情节去重
+   * 在装配/桥接层，窄柄不判模式；降级只读时经 requireWriter 抛 UnavailableError。
+   */
+  recordAnchorAdoption(input: { readonly cardId: string; readonly atMs: number }): RecordAnchorAdoptionHandleOutcome;
   /**
    * 第七法：整轮 drain pull（预算化）。短路（持锁/关停/未接线/预算耗尽）零写入；
    * 正常轮经 derive→plan→apply 编排链产出 §3.2 轮报告。本方法永不进宿主工具表。
@@ -120,6 +126,11 @@ export function openMemoryRuntime(
     recordShadowObservation(input: ShadowObservationInput): RecordShadowOutcome {
       // 刻意不经过 requireWriter：影子 JSONL 与 sqlite 是两个物理面，降级只读不影响旁路观测。
       return shadowSink.record(input);
+    },
+
+    recordAnchorAdoption(input: { readonly cardId: string; readonly atMs: number }): RecordAnchorAdoptionHandleOutcome {
+      // 重新构造委托入参：窄柄面无指针/查询词/原文任何形参，只放行 cardId＋atMs 两个白名单键。
+      return requireWriter().recordAnchorAdoption({ cardId: input.cardId, atMs: input.atMs });
     },
 
     async drainProjection(budgetMs: number): Promise<DrainRoundReport> {

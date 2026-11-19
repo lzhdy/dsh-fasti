@@ -11,7 +11,9 @@
  *  - 影子协议：产物先写影子库 → fsync → rename 原子换文件 → 追加 revisions 一行；
  *    任何一步失败：旧库保持在位、tmp 清理、抛错（§5 流 1 / M8）；
  *  - dryRun 不触碰真实 indexDir，影子落 os.tmpdir()，报告 outputDir 指向影子目录（§4.6⑦）；
- *  - 幂等：同真值同决策连跑两次，row_hash_sum 与逐行 card_id/content_hash 全等（§4.6⑥ / M4）。
+ *  - 幂等：同真值同决策连跑两次，row_hash_sum 与逐行 card_id/content_hash 全等（§4.6⑥ / M4）；
+ *  - #130 采用两列不从旧库搬运：每次重建折叠 indexDir 内 append-only adoptions.jsonl，
+ *    hit_count/last_hit_ms 是账本的确定性投影，旧库漂移值被整肃，账本缺失即归零。
  *
  * 决策回放（§5 流 2「下次构建以决策行为输入复现同一结果」）：
  *  - tombstone-card → status='superseded' + expired_ms/invalid_ms = 决策时刻（记账不物理删除）；
@@ -45,6 +47,8 @@ import {
   isCueDerivationEnabled,
 } from './cue-derive.ts';
 import { normalizeLexicalText } from './gate.ts';
+import { foldAdoptions } from './adoption.ts';
+import { openAdoptionStore } from './adoption-store.ts';
 import { CURRENT_RULES_VERSION } from './types.ts';
 import { classifyAnchors } from './derive.ts';
 import { aliasFromRow, syncFts } from './fts.ts';
@@ -486,6 +490,18 @@ export async function buildMemoryIndex(options: BuildOptions): Promise<BuildRepo
 
   const surviving = new Set(newCards.map((card) => card.cardId));
   const newAliases = existing.aliases.filter((alias) => surviving.has(alias.cardId));
+
+  // ── 5.1 #130 采用账本折叠：hit_count/last_hit_ms 两列只认真账本，不采信旧库搬运值 ──
+  // adoptions.jsonl 是投影内 append-only 账本，两列是 foldAdoptions 的确定性投影：
+  //  - 账本缺失（旧库/零采用）折叠表为空，所有卡两列归零；
+  //  - 窄写 crash 窗口或绕窄写直 UPDATE 造成的旧库两列漂移，在此被账本真值整肃；
+  //  - 账本指向已不存活卡的行属于 append-only 历史，投影无法承载也不删账本，留给 reconcile 发现。
+  const adoptionFold = foldAdoptions(openAdoptionStore(indexDir).read());
+  for (const card of newCards) {
+    const folded = adoptionFold.get(card.cardId);
+    card.hitCount = folded?.hitCount ?? 0;
+    card.lastHitMs = folded?.lastHitMs ?? null;
+  }
 
   // ── 6. 影子 diff：与旧库全量行哈希比对（sinceRevision 只记 reason，不改口径）──
   const oldHashes = new Map(existing.cards.map((card) => [card.cardId, cardRowHash(card)]));

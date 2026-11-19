@@ -21,6 +21,11 @@ import { isUlid } from '../core/ulid.ts';
 import { msToIso } from '../core/time.ts';
 import { applyMissAlias } from './alias-write.ts';
 import type { ApplyMissAliasOutcome } from './alias-write.ts';
+import { buildAdoptionRecord } from './adoption.ts';
+import type { AdoptionRecord } from './adoption.ts';
+import { openAdoptionStore } from './adoption-store.ts';
+import { applyAdoption } from './adoption-write.ts';
+import type { RecordAdoptionOutcome } from './adoption-write.ts';
 import { insertAuditItem, insertAuditRun } from './audit/metrics.ts';
 import { normalizeQuery, searchCards, searchCardsExplained } from './bm25.ts';
 import { castDecision } from './decision.ts';
@@ -127,6 +132,20 @@ export interface OpenMemoryWriteOptions {
   readonly missSentinel?: MissSentinelOptions;
 }
 
+/**
+ * 采用计数窄写请求（#130 P2）。桥接层已完成第③跳原文下钻成功确认、锚点→active 卡映射与
+ * 本检索情节去重；写柄只认 cardId + 注入时钟，不接收任何查询词/指针/原文形参。
+ */
+export interface RecordAnchorAdoptionRequest {
+  readonly cardId: string;
+  readonly atMs: number;
+}
+
+/** 写柄采用结果：成功携带账本行与新计数，拒绝透传低层受控原因码。 */
+export type RecordAnchorAdoptionHandleOutcome =
+  | (RecordAdoptionOutcome & { readonly ok: true; readonly record: AdoptionRecord })
+  | Extract<RecordAdoptionOutcome, { readonly ok: false }>;
+
 /** 写柄 —— 仅 builder 脚本可实例化（方案 §4.3）。 */
 export interface MemoryWriteHandle extends MemoryInternalReadHandle {
   /** meta stamp：写 schema_meta.stamped_revision / truth_fingerprint（§3.4）。 */
@@ -143,6 +162,13 @@ export interface MemoryWriteHandle extends MemoryInternalReadHandle {
    * 仅真实新增（changed）在 DB 提交后追加一条 action='add-alias' 决策，幂等/拒绝不写账本。
    */
   addMissAlias(request: AddMissAliasRequest): ApplyMissAliasOutcome;
+  /**
+   * 采用计数窄写（#130 P2，I10 重裁后实时采用唯一写口）：她钻真源原文成功后由桥接层调用。
+   * 单向委托无环低层 adoption-write.applyAdoption，单事务只 UPDATE hit_count/last_hit_ms 两列；
+   * DB 提交成功后向 indexDir/adoptions.jsonl 追加同内容键账本行（只记已提交事实）。
+   * 缺卡/非 active 结构化拒绝且零账本；模式门（on/shadow/off）在上层工具桥接，写柄本身不判模式。
+   */
+  recordAnchorAdoption(request: RecordAnchorAdoptionRequest): RecordAnchorAdoptionHandleOutcome;
   /** 审计落库（§4.10/I1-A）：单事务写 1 条 run 与其 items，委托 audit/metrics.ts 低层。 */
   writeAuditRun(run: AuditRunRecord, items: AuditItemRecord[]): void;
   /**
@@ -597,6 +623,27 @@ class WriteHandle extends ReadHandle implements MemoryWriteHandle {
       appendDecision(this.indexDir, decision);
     }
     return outcome;
+  }
+
+  recordAnchorAdoption(request: RecordAnchorAdoptionRequest): RecordAnchorAdoptionHandleOutcome {
+    // 无环低层权威窄写：单事务仅 hit_count/last_hit_ms 两列，active 守卫在事务内再核验。
+    const outcome = applyAdoption(this.require(), {
+      cardId: request.cardId,
+      atMs: request.atMs,
+    });
+    if (!outcome.ok) {
+      // 缺卡/非 active：不开账本、零半状态，原样透传受控原因码。
+      return outcome;
+    }
+    // DB 提交成功后才追加账本：账本只记已提交事实。contentHash 从事务内读到的卡面带出，
+    // 写柄不重新查询、不接受调用方传入。追加失败向上抛错（批6 reconcile 负责发现 DB/账本漂移）。
+    const record = buildAdoptionRecord({
+      cardId: outcome.cardId,
+      atMs: outcome.atMs,
+      contentHash: outcome.contentHash,
+    });
+    openAdoptionStore(this.indexDir).append(record);
+    return { ...outcome, record };
   }
 
   writeAuditRun(run: AuditRunRecord, items: AuditItemRecord[]): void {

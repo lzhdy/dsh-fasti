@@ -39,6 +39,8 @@ import { aliasFromRow, cueTextOf } from '../../src/memory/fts.ts';
 import { MemoryAnchorDanglingError, MemoryIndexStaleError } from '../../src/memory/memory-errors.ts';
 import { MEMORY_SCHEMA_VERSION } from '../../src/memory/schema.ts';
 import { MEMORY_INDEX_FILE, openMemoryRead, openMemoryWrite } from '../../src/memory/store.ts';
+import { buildAdoptionRecord } from '../../src/memory/adoption.ts';
+import { openAdoptionStore } from '../../src/memory/adoption-store.ts';
 import type { AliasRow, DecisionRecord, MemoryCard, RevisionRecord } from '../../src/memory/types.ts';
 import { cleanupTempRoot, countLines, listTree, makeExperience, makeTempRoot } from '../helpers.ts';
 
@@ -1143,6 +1145,128 @@ test('miss→add-alias→rebuild：补别名只改两列、cue 不变、重建�
         hash,
         `真源 ${file} 必须只读`,
       );
+    }
+  } finally {
+    cleanupTempRoot(t.root);
+  }
+});
+
+// ── #130 批6：builder 重建折叠 adoptions.jsonl，两列是账本的确定性投影 ──────────────
+
+test('#130 BF-1 重建折叠：账本三行（含乱序时刻）重算 hit_count=3、last_hit_ms=最大值，不搬旧列', async () => {
+  const t = makeTruth();
+  try {
+    const seeded = cardFor(t.eventA, ['线索甲'], [], '折叠口一', T0);
+    await seedIndex(t.root, [seeded], T0);
+    const indexDir = indexDirOf(t.root);
+    const ledger = openAdoptionStore(indexDir);
+    const at1 = T0 + DAY + 1000;
+    const at2 = T0 + DAY + 3000;
+    const at3 = T0 + DAY + 2000;
+    ledger.append(buildAdoptionRecord({ cardId: seeded.card.cardId, atMs: at1, contentHash: seeded.card.contentHash }));
+    ledger.append(buildAdoptionRecord({ cardId: seeded.card.cardId, atMs: at2, contentHash: seeded.card.contentHash }));
+    ledger.append(buildAdoptionRecord({ cardId: seeded.card.cardId, atMs: at3, contentHash: seeded.card.contentHash }));
+
+    const report = await buildMemoryIndex({ dataRoot: t.root, dryRun: false, nowMs: T0 + 2 * DAY });
+    assert.equal(report.cards, 1);
+    const read = openMemoryRead({ indexDir });
+    try {
+      const card = read.getCard(seeded.card.cardId);
+      assert.ok(card);
+      assert.equal(card.hitCount, 3, 'hit_count 必须由账本折叠重算，不采信旧库搬运值');
+      assert.equal(card.lastHitMs, at2, 'last_hit_ms 取账本最大 at_ms，与行序无关');
+    } finally {
+      await read.close();
+    }
+  } finally {
+    cleanupTempRoot(t.root);
+  }
+});
+
+test('#130 BF-2 折叠权威：旧库两列被外部直改漂移（99/null），重建后只认真账本值', async () => {
+  const t = makeTruth();
+  try {
+    const seeded = cardFor(t.eventA, ['线索甲'], [], '折叠口二', T0);
+    await seedIndex(t.root, [seeded], T0);
+    const indexDir = indexDirOf(t.root);
+    const ledger = openAdoptionStore(indexDir);
+    const at1 = T0 + DAY + 1000;
+    ledger.append(buildAdoptionRecord({ cardId: seeded.card.cardId, atMs: at1, contentHash: seeded.card.contentHash }));
+
+    // 模拟绕窄写直 UPDATE（crash 窗口/外部污染）：旧库两列与账本已不一致。
+    const live = new DatabaseSync(path.join(indexDir, MEMORY_INDEX_FILE));
+    try {
+      live.exec("UPDATE mem_card SET hit_count = 99, last_hit_ms = NULL");
+    } finally {
+      live.close();
+    }
+
+    await buildMemoryIndex({ dataRoot: t.root, dryRun: false, nowMs: T0 + 2 * DAY });
+    const read = openMemoryRead({ indexDir });
+    try {
+      const card = read.getCard(seeded.card.cardId);
+      assert.ok(card);
+      assert.equal(card.hitCount, 1, '账本只有一行，漂移值 99 必须被折叠结果覆盖');
+      assert.equal(card.lastHitMs, at1);
+    } finally {
+      await read.close();
+    }
+  } finally {
+    cleanupTempRoot(t.root);
+  }
+});
+
+test('#130 BF-3 无账本文件：重建不炸，两列归零（旧库残留非零值也清零，账本是唯一真值来源）', async () => {
+  const t = makeTruth();
+  try {
+    const seeded = cardFor(t.eventA, ['线索甲'], [], '折叠口三', T0);
+    await seedIndex(t.root, [seeded], T0);
+    const indexDir = indexDirOf(t.root);
+    const live = new DatabaseSync(path.join(indexDir, MEMORY_INDEX_FILE));
+    try {
+      live.exec("UPDATE mem_card SET hit_count = 7, last_hit_ms = 12345");
+    } finally {
+      live.close();
+    }
+
+    await assert.doesNotReject(() =>
+      buildMemoryIndex({ dataRoot: t.root, dryRun: false, nowMs: T0 + 2 * DAY }),
+    );
+    const read = openMemoryRead({ indexDir });
+    try {
+      const card = read.getCard(seeded.card.cardId);
+      assert.ok(card);
+      assert.equal(card.hitCount, 0);
+      assert.equal(card.lastHitMs, null);
+    } finally {
+      await read.close();
+    }
+  } finally {
+    cleanupTempRoot(t.root);
+  }
+});
+
+test('#130 BF-4 账本重复行（同内容键 at-least-once 重试）折叠幂等，重建计数不倍增', async () => {
+  const t = makeTruth();
+  try {
+    const seeded = cardFor(t.eventA, ['线索甲'], [], '折叠口四', T0);
+    await seedIndex(t.root, [seeded], T0);
+    const indexDir = indexDirOf(t.root);
+    const at1 = T0 + DAY + 1000;
+    const row = buildAdoptionRecord({ cardId: seeded.card.cardId, atMs: at1, contentHash: seeded.card.contentHash });
+    const ledger = openAdoptionStore(indexDir);
+    ledger.append(row);
+    ledger.append({ ...row }); // 逐字节同键再追加一次
+
+    await buildMemoryIndex({ dataRoot: t.root, dryRun: false, nowMs: T0 + 2 * DAY });
+    const read = openMemoryRead({ indexDir });
+    try {
+      const card = read.getCard(seeded.card.cardId);
+      assert.ok(card);
+      assert.equal(card.hitCount, 1, '重复 id 折叠去重，计数仍为 1');
+      assert.equal(card.lastHitMs, at1);
+    } finally {
+      await read.close();
     }
   } finally {
     cleanupTempRoot(t.root);

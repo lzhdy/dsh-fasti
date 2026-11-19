@@ -831,6 +831,13 @@ C5 裁决补充口径（I1-A/I2/I5/I11/I12，记录见 §11.8）：
 
 **hit_count 写边界（I10，补 §5 流3/§6.6）.** harness **只在内存/报告模拟** hit_count 累积以产 §6.6 写侧 ROI 三表，**不得产生任何 `UPDATE mem_card` 写路径**；生产卡 `hitCount` 恒 0、`lastHitMs` 恒 null。types.ts:58「v1 仅离线回放更新」据此解释为 **audit 报告/audit 库 item 的观测口径，绝非改生产卡**；真实回填留待实时阶段另案评审（§5 流3）。§6.6「模拟累积」= 报告口径，非落库口径。
 
+> **【#130 修订，2026-11-19】I10 实时阶段另案已落地，原"生产卡恒 0"表述自本卡起失效，离线纪律原样保留。** 修订后口径：
+> 1. **离线侧不变**：harness ROI 模拟仍然只在内存/报告累积，离线流程永不产生 `UPDATE mem_card`，audit 库 item 观测口径性质不变。
+> 2. **实时采用开唯一窄口**：生产卡 `hit_count`/`last_hit_ms` 两列只允许经 `recordAnchorAdoption` 窄写在单事务内更新（`BEGIN IMMEDIATE`，事务内再核验 active），planner 与模型永远拿不到写口；两列之外任何卡面字段不得经此路修改。
+> 3. **append-only 账本同生共死**：DB 事务提交成功后才向投影内 `adoptions.jsonl` 追加一行（形状 `{id,card_id,at_ms,content_hash}`，`id=sha256(card_id|at_ms|content_hash).slice(0,32)`，不记查询词不记原文）；追加失败上抛，crash 窗口的账实漂移由 reconcile 硬对账发现。两列是账本 `foldAdoptions` 的确定性投影，builder 每次重建折叠账本重算两列、不采信旧库搬运值，从零可恢复。
+> 4. **什么叫一次采用**：仅 mode=on 且第③跳 rawText 原文下钻成功才计数（她真的取回忆了，不管有没有说出口）；shadow/off 零写入返 deferred、不阻阅读；同一检索情节内同锚点翻页/重复下钻至多 +1（桥接闭包情节集，新检索重置）；锚点映不回 active 卡不计数。
+> 5. **硬对账**：`reconcileAdoptions` 纯比较器按 card_id 核对 DB 两列与账本折叠结果，漂移归类 `adoption-db-ledger-drift`/`adoption-ledger-db-missing`；`assertAdoptionsReconciled` 守卫遇 mismatch 即抛 IntegrityError，宁空勿错。
+
 **M7 投毒自证两通路（I13，补 §11.3 M7，勿混淆红线与硬失败）.** ①**硬失败通路**：造悬空 anchor/provenance 失败 → run 必须 `failed`、退出码非零；②**指标正确性通路**：向 decoy/gold 注入一条错标 `expected`/`goldCardId` → **不要求 run failed**，但断言 R2 精确捕获该注入错误（top1 不符被记、错误计数 ≥ 注入数，验证指标不漏报）。投毒后逐字节还原夹具（sha256 前后一致）→ 回绿，脚本与完整日志随收尾包。
 
 **LOEO 降级（I15，补 §6.1 L2）.** 触发判据冻结为「**可覆盖日历周数 < 5**（切不出后 20% 完整周）→ LOEO」；当前 10 个 ready 事件，C5 合成与 C6 真实首跑均预期走 LOEO，**禁止伪装独立 holdout**。LOEO 留一事件交叉验证，折数 = 参与事件数（C6 为 10 折，C5 合成夹具折数 = 合成事件数并显式标注），`notesJson` 记 `holdout:{mode:'loeo',folds:n}`；解封记录 README 模板 C5 写、C6 真实解封填。
@@ -1057,6 +1064,7 @@ I8 RNG/CI：自实现确定性 mulberry32（零依赖），具名常量种子 DE
 I9 metricsJson 按 retrieval/assembly/quality/roi 四组；比率类统一 {point,ciLower,ciUpper,n}；N/A 项统一 {status:'n-a',reason}，不填 0、不参与达标判定；notesJson 记 {consistency:{status,pairs},holdout:{mode,folds,unsealedAt?},rngSeed,sampleN,…}；三红线只进报告、不进代码断言、不卡命令退出码；唯一硬失败是 provenance 成功率<100%/悬空锚点（见 I13）。
 
 I10 hit_count 不回写生产卡：harness 只在内存/报告里模拟 hit_count 累积以产 §6.6 写侧 ROI 三表，不得产生任何 UPDATE mem_card 写路径；生产卡 hitCount 恒 0、lastHitMs 恒 null（types.ts:58「仅离线回放更新」据此解释为 audit 报告/audit 库 item 的观测口径，绝非改生产卡）；真实回填留待实时阶段另案。
+> 【#130 修订，2026-11-19】该另案已落地：离线模拟仍禁回写；实时采用只许经 recordAnchorAdoption 窄写＋投影内 append-only adoptions.jsonl 账本（DB 先提交、账本本提交后追加），两列是折叠结果的确定性投影、builder 重建折叠重算、reconcile 硬对账漂移即 IntegrityError；仅 on 态第③跳原文下钻计数，shadow/off 零写入。完整五条口径见 §6.8 I10 修订块。
 
 I11 audit CLI 旗标：--data-root 必填（缺省 exit2）；--out 必填（缺省 exit2）且不得位于 dataRoot 之内（exit2）；--json/--help 同 build CLI；--holdout 缺省不跑、仅显式传入才解封 L2；因写的是 dataRoot 外独立 --out 库、不触生产索引/真值，默认即可写 audit 库、不需要 --apply 二次确认；另提供 --dry-run 只校验/打印不落 audit 库（CI 预检用）；退出码：provenance 硬失败/悬空锚点非零，红线观测项无论是否越线均 exit0。
 

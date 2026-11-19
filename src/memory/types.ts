@@ -302,11 +302,30 @@ export type GateReasonCode =
   | 'time-conflict'
   | 'time-uncertain-ignored';
 
+/**
+ * #130 截窗槽位标记（与 rank.ts SlotTag 同字面量联合，结构同形不互引：types 是无环纯类型基座，
+ * rank 单向依赖 types，故此处独立声明联合，靠结构兼容与 gate/rank 测试锁同步）。
+ *  - marked：weight>0 的置顶卡；ranked：有效强度老卡；explore：8:2 探索位（零采用新卡随机抽出）。
+ */
+export type GatedSlotTag = 'marked' | 'ranked' | 'explore';
+
+/** #130 槽位汇总（结构同形 rank.ts ViewSlots，随 V2 hit 信封产出；v1 不产出该字段）。 */
+export interface GatedViewSlots {
+  readonly marked: number;
+  readonly ranked: number;
+  readonly explore: number;
+  /** 探索位名义名额（ceil 规则）与实际填充（池不足时如实暴露缺口，绝不造卡）。 */
+  readonly exploreWanted: number;
+  readonly exploreFilled: number;
+}
+
 /** 通过布尔门后的候选：在可解释候选上附加门原因。evidence 第一层恒 undefined（连续分演进项占位）。 */
 export interface GatedRankedCard extends ExplainedRankedCard {
   gateReasons: GateReasonCode[];
   /** 演进项占位：未来连续有界证据分承载位，第一层不填（恒 undefined），预留以避免未来破 API。 */
   evidence?: number;
+  /** #130 截窗槽位：仅 applyGateV2 产出；v1 冻结路径恒 undefined（零漂移）。 */
+  slot?: GatedSlotTag;
 }
 
 /** 布尔门一次检索的完整裁决结果（含被拒候选，不静默丢弃，供可解释与漏召统计）。 */
@@ -329,6 +348,8 @@ export interface GatedSearchOutcome {
   reason?: 'empty-query' | 'zero-lexical-hit' | 'all-rejected' | 'tie-no-strict-leader';
   /** 对截断后 accepted 建的请求级 1..n 私有序号（复用 serial.ts，不落库）。 */
   serialMap: SerialMap;
+  /** #130 截窗槽位汇总：仅 applyGateV2 hit 时产出；v1 与非 hit 分支恒 undefined。 */
+  slots?: GatedViewSlots;
 }
 
 /**

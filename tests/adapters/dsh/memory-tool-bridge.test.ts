@@ -9,6 +9,7 @@
  */
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
@@ -46,7 +47,7 @@ const NOW = () => T0 + 777;
 const ANCHOR = ulid();
 const EXEC = {} as ToolRunContext;
 
-function seedOneCard(root: string): string {
+async function seedOneCard(root: string): Promise<string> {
   const indexDir = path.join(root, 'projection', 'memory-index');
   const anchorJson = JSON.stringify([ANCHOR]);
   const displayCuesJson = JSON.stringify(['咖啡馆约会']);
@@ -118,7 +119,9 @@ function seedOneCard(root: string): string {
   try {
     handle.transactionApply({ cards: [card], aliases: aliasRows }, revision, []);
   } finally {
-    void handle.close();
+    // 必须 await：写单例 writeHandles.delete 在 await super.close() 之后的微任务才生效，
+    // 火并关闭会让紧随其后的运行期窄柄误降级只读（#130 采用窄写实测暴露的潜伏竞态）。
+    await handle.close();
   }
   return indexDir;
 }
@@ -247,7 +250,7 @@ test('WP4b 薄壳：未检索就解析序号 → fail-closed 提示先检索（�
 test('WP4b 薄壳：on 态检索后序号可解析；新检索替换序号表后旧序号 fail-closed（serial-stale）', async () => {
   const root = makeTempRoot('wp4b-bridge-serial-');
   try {
-    const indexDir = seedOneCard(root);
+    const indexDir = await seedOneCard(root);
     const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW, channel: 'dsh' });
     const tools = byName(bridge);
     const search = tools.get(MEMORY_TOOL_NAMES.gatedSearch) as ToolDefinition;
@@ -277,7 +280,7 @@ test('WP4b 薄壳：on 态检索后序号可解析；新检索替换序号表后
 test('WP4b 薄壳：卡详情经 N14 白名单投影，模型侧看不到任何内部/敏感字段', async () => {
   const root = makeTempRoot('wp4b-bridge-n14-');
   try {
-    const indexDir = seedOneCard(root);
+    const indexDir = await seedOneCard(root);
     const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW, channel: 'dsh' });
     const cards = byName(bridge).get(MEMORY_TOOL_NAMES.cardsByAnchor) as ToolDefinition;
     const result = await callTool(cards, { experienceId: ANCHOR });
@@ -601,7 +604,13 @@ test('#115 B3：摘要/原文 happy path 经端口窄 DTO 返回，入参只透�
       seq: 1,
     });
     assert.equal(rawResult.ok, true);
-    assert.deepEqual(rawResult.data, spy.envelope);
+    // #130：成功信封在原文信封之外 additive 带 adoption 注记；本夹具索引不存在（handle=null），
+    // 采用记账被隔离为 ok:false，阅读主链路照常成功。
+    const { adoption: b3Adoption, ...b3RawEnvelope } = (rawResult.data ?? {}) as Record<string, unknown> & {
+      adoption?: unknown;
+    };
+    assert.deepEqual(b3RawEnvelope, spy.envelope);
+    assert.deepEqual(b3Adoption, { ok: false, reason: 'adoption-failed-isolated' });
     assert.deepEqual(spy.rawCalls[0], { id: 'raw_1', shard: '2026-11', seq: 1, channel: 'dsh' });
     await bridge.dispose();
   } finally {
@@ -894,6 +903,118 @@ test('#122 接线透传：wireMemoryTools 注入 dataRoot 后第七法端口 dra
       assert.equal(countCardsViaBridge(indexDir), before + 1);
     } finally {
       await wiring.dispose();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+// ── #130 批5：第③跳 rawText 采用挂钩、情节去重与失败隔离（B6–B9）────────────
+
+function readHitCount(indexDir: string): number {
+  const db = new DatabaseSync(path.join(indexDir, MEMORY_INDEX_FILE), { readOnly: true });
+  try {
+    const row = db.prepare('SELECT hit_count FROM mem_card WHERE card_id = ?').get('mc_seed') as {
+      hit_count: number;
+    };
+    return row.hit_count;
+  } finally {
+    db.close();
+  }
+}
+
+test('B6 on＋真索引：rawText 下钻成功即记一次采用，DB 两列递增且账本同步，信封 additive 带注记', async () => {
+  const root = makeTempRoot('wp5-adoption-happy-');
+  try {
+    const indexDir = await seedOneCard(root);
+    const spy = makeSpyPort();
+    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW, channel: 'dsh', sourceLookup: spy.port });
+    try {
+      const result = await callTool(byName(bridge).get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition, {
+        id: ANCHOR,
+        shard: '2026-11',
+        seq: 1,
+      });
+      assert.equal(result.ok, true);
+      const data = result.data as Record<string, unknown>;
+      assert.deepEqual(data.adoption, { ok: true, matchedCards: 1, adoptedCount: 1, rejectedCount: 0 });
+      assert.equal(readHitCount(indexDir), 1);
+      const ledger = JSON.parse(
+        fs.readFileSync(path.join(indexDir, 'adoptions.jsonl'), 'utf8').trim().split('\n')[0]!,
+      ) as Record<string, unknown>;
+      assert.equal(ledger.card_id, 'mc_seed');
+      assert.deepEqual(Object.keys(ledger).sort(), ['at_ms', 'card_id', 'content_hash', 'id']);
+    } finally {
+      await bridge.dispose();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('B7 情节去重：同检索情节翻页/重复下钻只 +1；新 gatedSearch 重置后同锚点可再计一次', async () => {
+  const root = makeTempRoot('wp5-adoption-episode-');
+  try {
+    const indexDir = await seedOneCard(root);
+    const spy = makeSpyPort();
+    const bridge = openDshMemoryBridge({ indexDir, mode: 'on', now: NOW, channel: 'dsh', sourceLookup: spy.port });
+    try {
+      const rawDef = byName(bridge).get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition;
+      const first = await callTool(rawDef, { id: ANCHOR, shard: '2026-11', seq: 1 });
+      assert.equal((first.data as Record<string, unknown>).adoption !== undefined, true);
+      // 同情节第二次（翻页/重复）：不重复计数，信封不再带 adoption 注记。
+      const second = await callTool(rawDef, { id: ANCHOR, shard: '2026-11', seq: [1, 2] });
+      assert.equal((second.data as Record<string, unknown>).adoption, undefined);
+      assert.equal(readHitCount(indexDir), 1);
+
+      // 一次新检索开启新情节，去重集合随 serialMap 一并清空。
+      const searchResult = await callTool(byName(bridge).get(MEMORY_TOOL_NAMES.gatedSearch) as ToolDefinition, {
+        text: '咖啡馆',
+      });
+      assert.equal(searchResult.ok, true);
+      const third = await callTool(rawDef, { id: ANCHOR, shard: '2026-11', seq: 1 });
+      assert.equal((third.data as Record<string, unknown>).adoption !== undefined, true);
+      assert.equal(readHitCount(indexDir), 2);
+      assert.equal(
+        fs.readFileSync(path.join(indexDir, 'adoptions.jsonl'), 'utf8').trim().split('\n').length,
+        2,
+      );
+    } finally {
+      await bridge.dispose();
+    }
+  } finally {
+    cleanupTempRoot(root);
+  }
+});
+
+test('B8 shadow：下钻成功但采用 deferred 零写入，DB 不动、账本文件不诞生', async () => {
+  const root = makeTempRoot('wp5-adoption-shadow-');
+  try {
+    const indexDir = await seedOneCard(root);
+    const spy = makeSpyPort();
+    const bridge = openDshMemoryBridge({
+      indexDir,
+      mode: 'shadow',
+      now: NOW,
+      channel: 'dsh',
+      sourceLookup: spy.port,
+    });
+    try {
+      const result = await callTool(byName(bridge).get(MEMORY_TOOL_NAMES.rawText) as ToolDefinition, {
+        id: ANCHOR,
+        shard: '2026-11',
+        seq: 1,
+      });
+      assert.equal(result.ok, true, '阅读主链路不受模式影响');
+      assert.deepEqual((result.data as Record<string, unknown>).adoption, {
+        deferred: true,
+        mode: 'shadow',
+        reason: 'gate-not-on',
+      });
+      assert.equal(readHitCount(indexDir), 0);
+      assert.equal(fs.existsSync(path.join(indexDir, 'adoptions.jsonl')), false);
+    } finally {
+      await bridge.dispose();
     }
   } finally {
     cleanupTempRoot(root);

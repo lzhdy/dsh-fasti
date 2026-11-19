@@ -57,6 +57,9 @@ function extractImportSpecifiers(text: string): string[] {
  * time-lexicon.ts（#127 阶段1.5 L0 时间词表）纳入：纯 const 数据模块，只允许 import type 自 types，
  * 零时钟零 I/O；time-expr.ts（L1/L2）只依赖 lexicon 与 types 纯类型；
  * time-resolve.ts（L3/L4）只依赖 node:crypto、time-expr 与 types 纯类型，三者同入无环门禁。
+ * adoption.ts（#130 采用账本纯函数）只依赖 core/errors 与 content-hash；
+ * adoption-write.ts（#130 采用计数窄写）与 alias-write 同家法：只依赖 node:sqlite 类型、core/errors
+ * 与 types 纯类型，store 写柄单向引用，两者同入无环门禁。
  */
 const ACYCLIC_LEAF_FILES = [
   'content-hash.ts',
@@ -64,6 +67,8 @@ const ACYCLIC_LEAF_FILES = [
   'fts.ts',
   'gate.ts',
   'alias-write.ts',
+  'adoption.ts',
+  'adoption-write.ts',
   'shadow-write.ts',
   'audit/shadow-read.ts',
   'time-lexicon.ts',
