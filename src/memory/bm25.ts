@@ -70,8 +70,10 @@ interface Hit {
   terms: Set<string>;
   /** 该卡命中的全部通道（多通道取并集）。 */
   kinds: Set<MatchKind>;
-  /** FTS 复核读取的 cue_text（仅 fts-substring 命中携带，供布尔门词边界判定）。 */
+  /** FTS 复核读取的 cue_text（仅 fts 类命中携带，供布尔门词边界/反向包含判定）。 */
   cueText?: string;
+  /** rules-v2 结构化词面字段（仅 V2 fts-overlap 携带，gate 逐字段反向包含用）。 */
+  lexicalFields?: string[];
 }
 
 /**
@@ -238,6 +240,7 @@ export function searchCardsExplainedV2(
     bm25Raw: number | null,
     kind: MatchKind,
     cueText?: string,
+    lexicalFields?: string[],
   ): void => {
     let hit = hits.get(cardId);
     if (hit === undefined) {
@@ -248,6 +251,9 @@ export function searchCardsExplainedV2(
     hit.kinds.add(kind);
     if (cueText !== undefined) {
       hit.cueText = cueText;
+    }
+    if (lexicalFields !== undefined) {
+      hit.lexicalFields = lexicalFields;
     }
     if (bm25Raw !== null) {
       hit.bm25Raw = bm25Raw;
@@ -281,8 +287,17 @@ export function searchCardsExplainedV2(
           continue;
         }
         const aliases = (aliasStmt.all(row.card_id) as Array<Record<string, unknown>>).map(aliasFromRow);
-        // v2：OR 命中即宽召回入候选，不做完整 query 子串收口；携带原文拼接串供 gate 反向包含裁决。
-        addHit(row.card_id, q, row.bm25_raw, 'fts-overlap', cueTextOf(cardRow.display_cues_json, aliases));
+        const cues = JSON.parse(cardRow.display_cues_json) as string[];
+        const fields = [...cues, ...aliases.map((alias) => alias.termNorm)];
+        // v2：OR 命中即宽召回入候选，不做完整 query 子串收口；携带原文拼接串与结构化字段供 gate 反向包含裁决。
+        addHit(
+          row.card_id,
+          q,
+          row.bm25_raw,
+          'fts-overlap',
+          cueTextOf(cardRow.display_cues_json, aliases),
+          fields,
+        );
       }
       ftsOk = true;
     } catch {
@@ -321,6 +336,7 @@ export function searchCardsExplainedV2(
       matchedTerms: [...hit.terms].sort(),
       matchKinds: MATCH_KIND_ORDER_V2.filter((kind) => hit.kinds.has(kind)),
       ...(hit.cueText !== undefined ? { cueText: hit.cueText } : {}),
+      ...(hit.lexicalFields !== undefined ? { lexicalFields: hit.lexicalFields } : {}),
     });
   }
 

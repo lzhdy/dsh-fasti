@@ -259,6 +259,11 @@ export interface ExplainedRankedCard extends RankedCard {
    * 仅 v2 路径 fts-overlap 命中携带；v1 路径恒 undefined（加字段不删字段，v1 形状零漂移）。
    */
   containmentLength?: number;
+  /**
+   * rules-v2 裁决用结构化词面字段（#126）：原文 display_cues＋非敏感活跃别名的未拼接数组，
+   * 供 gate v2 逐字段做反向包含（拼接 cueText 无法可靠还原含空格字段）。仅 v2 路径填充，v1 恒缺省。
+   */
+  lexicalFields?: string[];
 }
 
 /** 布尔门裁决状态（#44）：hit=至少一卡过强通道；abstain=有候选但全被拒；no-match=无词面候选/空查询。 */
@@ -286,7 +291,8 @@ export type GateReasonCode =
   // #126 rules-v2 反向包含裁决原因码（v1 路径不产出）。
   | 'reverse-containment-pass'
   | 'no-containment'
-  | 'tie-no-strict-leader';
+  | 'tie-no-strict-leader'
+  | 'not-strict-leader';
 
 /** 通过布尔门后的候选：在可解释候选上附加门原因。evidence 第一层恒 undefined（连续分演进项占位）。 */
 export interface GatedRankedCard extends ExplainedRankedCard {

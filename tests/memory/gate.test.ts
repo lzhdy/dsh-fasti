@@ -14,8 +14,10 @@ import { normalizeBigramText } from '../../src/memory/bigram.ts';
 import { normalizeQuery } from '../../src/memory/bm25.ts';
 import {
   GATE_POLICY,
+  GATE_POLICY_V2,
   applyGate,
   applyGateV1,
+  applyGateV2,
   hasAsciiWordBoundary,
   normalizeLexicalText,
 } from '../../src/memory/gate.ts';
@@ -72,6 +74,9 @@ const fts = (cueText: string): ExplainedRankedCard =>
   makeRanked({ matchKinds: ['fts-substring'], cueText });
 const like = (termNorm: string): ExplainedRankedCard =>
   makeRanked({ matchKinds: ['like-fallback'], matchedTerms: [termNorm] });
+// #126 rules-v2 宽召回候选：携带结构化词面字段供反向包含逐字段裁决。
+const overlap = (lexicalFields: string[]): ExplainedRankedCard =>
+  makeRanked({ matchKinds: ['fts-overlap'], cueText: lexicalFields.join(' '), lexicalFields });
 
 // ── 词边界纯函数（提案 §5.2.1 反例表，入参均为已规范化小写串）──────────────
 
@@ -118,6 +123,8 @@ test('#124 红测11 静态扫描：gate/rules 不引用任何索引几何常量�
   assert.ok(!/MIN_FTS_CODEPOINTS|MIN_TRIGRAM_LENGTH/.test(gateSource), 'gate 不得出现几何阈值常量');
   assert.ok(!/from '\.\/bigram\.ts'/.test(gateSource), 'gate 不得 import bigram 纯函数模块');
   assert.ok(!/from '\.\/bm25\.ts'/.test(gateSource), 'gate 不得 import bm25（无环纪律，裁决独立于索引几何）');
+  // #126 R-07：v2 裁决不得反向依赖任何 FTS 短语构造，门只做字符串级反向包含。
+  assert.ok(!/ftsPhraseOf|ftsOrExprOf/.test(gateSource), 'gate 不得引用索引 MATCH 表达式构造函数');
 });
 
 // ── 三态与原因码 ──────────────────────────────────────────────────────────
@@ -264,3 +271,85 @@ test('R-06 版本分派：CURRENT_RULES_VERSION 冻结为 rules-v1，门分派�
     assert.deepEqual(applyGate(fixture), applyGateV1(fixture), '分派壳必须委托 V1 冻结门几何');
   }
 });
+
+// #126 批次3 rules-v2 反向包含＋严格优超门红测（先红后绿）────────────────────────────────────
+
+test('R-02 v2 反向包含：线索字段完整出现于问句才过门，挂最长证据码点数', () => {
+  const q = '周末一起去咖啡馆约会怎么样';
+  // 正向：cue“咖啡馆约会”（5 码点）是问句子串 → 过门且证据长度 5。
+  const pass = applyGateV2({ qNorm: normalizeLexicalText(q), candidates: [overlap(['咖啡馆约会'])] });
+  assert.equal(pass.status, 'hit');
+  assert.equal(pass.accepted.length, 1);
+  assert.ok(pass.accepted[0]!.gateReasons.includes('reverse-containment-pass'));
+  assert.equal(pass.accepted[0]!.containmentLength, 5);
+
+  // 反向：仅可能共享 bigram（“咖啡”）但完整字段“猫咪咖啡”不在问句里 → no-containment 弃权。
+  const block = applyGateV2({ qNorm: normalizeLexicalText(q), candidates: [overlap(['猫咪咖啡'])] });
+  assert.equal(block.status, 'abstain');
+  assert.equal(block.reason, 'all-rejected');
+  assert.ok(block.rejected[0]!.gateReasons.includes('no-containment'));
+
+  // 最小证据长度：2 码点字段低于 GATE_POLICY_V2 门槛（观测初值 3）→ 拒，不放水短串。
+  assert.equal(GATE_POLICY_V2.minContainCodepoints, 3);
+  const tooShort = applyGateV2({ qNorm: 'ab', candidates: [overlap(['ab'])] });
+  assert.equal(tooShort.status, 'abstain');
+  assert.ok(tooShort.rejected[0]!.gateReasons.includes('no-containment'));
+
+  // 防御：fts-overlap 候选却缺结构化字段 → 保守拒绝（missing-cue-text），绝不静默放行。
+  const missing = applyGateV2({
+    qNorm: normalizeLexicalText(q),
+    candidates: [makeRanked({ matchKinds: ['fts-overlap'] })],
+  });
+  assert.equal(missing.status, 'abstain');
+  assert.ok(missing.rejected[0]!.gateReasons.includes('missing-cue-text'));
+
+  // 弱通道依旧构造性拒绝。
+  const weak = applyGateV2({ qNorm: '猫', candidates: [like('猫咪咖啡')] });
+  assert.equal(weak.status, 'abstain');
+  assert.ok(weak.rejected[0]!.gateReasons.includes('like-only-weak-match'));
+});
+
+test('R-03 v2 严格优超：等长证据平局弃权；长短并存唯一最长者提交；exact 证据恒领先', () => {
+  const q = '周末一起去咖啡馆约会怎么样';
+  // 平局：两张卡各被同一等长字段包含 → tie-no-strict-leader，零提交、双落 rejected。
+  const tie = applyGateV2({
+    qNorm: normalizeLexicalText(q),
+    candidates: [overlap(['咖啡馆约会']), overlap(['咖啡馆约会'])],
+  });
+  assert.equal(tie.status, 'abstain');
+  assert.equal(tie.reason, 'tie-no-strict-leader');
+  assert.equal(tie.accepted.length, 0);
+  assert.equal(tie.rejected.length, 2);
+  assert.ok(tie.rejected.every((c) => c.gateReasons.includes('tie-no-strict-leader')));
+
+  // 一长一短：长证据卡唯一提交，短证据卡落 rejected 标 not-strict-leader。
+  const lead = applyGateV2({
+    qNorm: normalizeLexicalText(q),
+    candidates: [overlap(['咖啡馆']), overlap(['咖啡馆约会'])],
+  });
+  assert.equal(lead.status, 'hit');
+  assert.equal(lead.accepted.length, 1);
+  assert.equal(lead.accepted[0]!.containmentLength, 5);
+  assert.ok(lead.rejected[0]!.gateReasons.includes('not-strict-leader'));
+
+  // exact-alias 证据长度视为无穷：与 fts 卡并存时精确卡唯一过门。
+  const exactWin = applyGateV2({
+    qNorm: normalizeLexicalText(q),
+    candidates: [overlap(['咖啡馆约会']), exact('咖啡馆约会')],
+  });
+  assert.equal(exactWin.status, 'hit');
+  assert.equal(exactWin.accepted.length, 1);
+  assert.ok(exactWin.accepted[0]!.gateReasons.includes('exact-alias-pass'));
+  assert.ok(exactWin.rejected[0]!.gateReasons.includes('not-strict-leader'));
+});
+
+test('R-08 v2 纯函数确定性：同输入两次深相等，空查询/零候选三态原因码与 v1 同构', () => {
+  const q = '周末一起去咖啡馆约会怎么样';
+  const fixture = [overlap(['咖啡馆约会']), like('x')];
+  const first = applyGateV2({ qNorm: normalizeLexicalText(q), candidates: fixture });
+  const second = applyGateV2({ qNorm: normalizeLexicalText(q), candidates: fixture });
+  assert.deepEqual(first, second);
+  assert.equal(applyGateV2({ qNorm: '', candidates: fixture }).reason, 'empty-query');
+  assert.equal(applyGateV2({ qNorm: '无人提及', candidates: [] }).reason, 'zero-lexical-hit');
+});
+
