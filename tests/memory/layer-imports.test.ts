@@ -54,6 +54,8 @@ function extractImportSpecifiers(text: string): string[] {
  * 经 runtime 在上层引用，自身不得落回 store 闭包。
  * audit/shadow-read.ts（#114/S1 影子只读读取器）同样纳入：只依赖 core/errors、types 与 shadow-write 常量，
  * 是离线审计件，若将来被写柄/store 反向拉入即报红。
+ * time-lexicon.ts（#127 阶段1.5 L0 时间词表）纳入：纯 const 数据模块，只允许 import type 自 types，
+ * 零时钟零 I/O；批 2/批 3 落地的 time-expr.ts/time-resolve.ts 在创建当批各自登记入本数组。
  */
 const ACYCLIC_LEAF_FILES = [
   'content-hash.ts',
@@ -63,6 +65,7 @@ const ACYCLIC_LEAF_FILES = [
   'alias-write.ts',
   'shadow-write.ts',
   'audit/shadow-read.ts',
+  'time-lexicon.ts',
 ] as const;
 
 /** 显式直接拉黑（闭包判定的双保险，意图清晰且不依赖图计算正确性）。 */

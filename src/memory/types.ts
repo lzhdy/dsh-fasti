@@ -292,7 +292,10 @@ export type GateReasonCode =
   | 'reverse-containment-pass'
   | 'no-containment'
   | 'tie-no-strict-leader'
-  | 'not-strict-leader';
+  | 'not-strict-leader'
+  // #127 阶段1.5 时间槽裁决原因码（仅 V2 路径产出；v1 不读取 TimeConstraint）。
+  | 'time-conflict'
+  | 'time-uncertain-ignored';
 
 /** 通过布尔门后的候选：在可解释候选上附加门原因。evidence 第一层恒 undefined（连续分演进项占位）。 */
 export interface GatedRankedCard extends ExplainedRankedCard {
@@ -370,3 +373,237 @@ export interface TruthFingerprint {
   /** 有序聚合哈希（含文件名）。 */
   aggregate: string;
 }
+
+// ===========================================================================
+// #127 阶段 1.5 时间表达式硬约束 —— P0 冻结契约（2026-11-19，只加不删）。
+//
+// 四层结构：time-lexicon（L0 数据词表）→ time-expr（L1 词法 + L2 文法产 TIR，
+// 不读时钟、不含毫秒）→ time-resolve（L3 整数日历求解 + L4 proveClosure 证明门，
+// 全栈唯一读取 TimeAnchor 处）→ gate V2 时间槽布尔裁决。
+// 本块类型在批 1 一次性冻结；批 2-4 只允许新增不允许改形，改形须主控重拍。
+// ===========================================================================
+
+/**
+ * 时间资产版本三元组：词表（说法增删）、文法（规则增删）、策略（硬编码 policy）
+ * 各自独立版本号。三者全部进 replayKey；任一 bump，历史 golden 必须可重放对账。
+ */
+export interface TimeAssetVersions {
+  /** 词表资产版本（time-lexicon 数据面）。 */
+  readonly lexicon: string;
+  /** 文法资产版本（time-expr 规则面）。 */
+  readonly grammar: string;
+  /** 策略资产版本（时区/日界/周开篇等冻结 policy）。 */
+  readonly policy: string;
+}
+
+/**
+ * 时间零件唯一允许读取的外部环境（#127 闭合证明的输入端）。
+ *
+ * - 零件内禁止读系统时钟、宿主 TZ、`new Date(字符串)`、Intl.*；
+ * - zoneId/weekStartsOn 首期为字面量唯一值（中国大陆 UTC+8 无 DST、周一开篇），
+ *   跨时区 civilDateTime 已挂账，放开前联合域不得扩口；
+ * - tzdata/农历等重资产首期不建，assets 只留版本位。
+ */
+export interface TimeAnchor {
+  /** 装配层 deps.now() 注入的当前时刻（ms），零件内不得自取时钟。 */
+  readonly epochMs: number;
+  /** 固定 IANA 时区；首期唯一合法值。 */
+  readonly zoneId: 'Asia/Shanghai';
+  /** 周一为一周首日（ISO 口径 1=周一…7=周日）；首期字面量固定为 1。 */
+  readonly weekStartsOn: 1;
+  /** 资产版本快照，随每次解析落 provenance。 */
+  readonly assets: TimeAssetVersions;
+}
+
+/** 原文切片：UTF-16 码元半开区间 [start,end)，与 String.slice 同口径。 */
+export type TextSpan = readonly [start: number, end: number];
+
+/**
+ * 时间表达在句中的言语角色（G 类内容型时间处置依据）。
+ *
+ * - FILTER：检索过滤诉求（"周六的野餐"）；
+ * - CONTENT：叙事内容（"她提醒我周五交表"），仲裁不对称——只降级不升级；
+ * - QUESTION_FOCUS：疑问焦点（"几点/什么时候"），问的是答案不是过滤窗；
+ * - UNKNOWN：角色证据不足，与 CONTENT 同权处置（宁空勿错，错杀率=0）。
+ */
+export type TimeRole = 'FILTER' | 'CONTENT' | 'QUESTION_FOCUS' | 'UNKNOWN';
+
+/** 星期序（ISO：1=周一 … 7=周日）。 */
+export type IsoWeekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+/**
+ * 符号化日期原子（TIR 的载荷）：刻意只含 civil 整数，不含任何毫秒。
+ *
+ * - REL_DAY：相对今天的天偏移（0=今天，-1=昨天，+1=明天）；
+ * - WEEKDAY_OF_WEEK：周偏移 + 星期序（weekOffset 0=本周，-1=上周，+1=下周）；
+ * - YEAR_MONTH_DAY：完整年月日（非法日历日期不 clamp，由文法层直接打 INVALID_CALENDAR）；
+ * - MONTH_DAY：无年份月日，首期必落 MISSING_YEAR，不补今年、不产候选。
+ */
+export type TimeDateExpr =
+  | { readonly kind: 'REL_DAY'; readonly delta: number }
+  | { readonly kind: 'WEEKDAY_OF_WEEK'; readonly weekOffset: number; readonly weekday: IsoWeekday }
+  | { readonly kind: 'YEAR_MONTH_DAY'; readonly year: number; readonly month: number; readonly day: number }
+  | { readonly kind: 'MONTH_DAY'; readonly month: number; readonly day: number };
+
+/** 时间粒度：DAY/WEEK 首期可产窗；CLOCK/DURATION/RECURRING 契约冻结但无生产产出者。 */
+export type TimeGranularity =
+  | 'DAY'
+  | 'WEEK'
+  | 'CLOCK'
+  | 'DURATION'
+  | 'RECURRING';
+
+/**
+ * 文法层标记位（与 UncertainReason 一一对应但语义不同：flag 是 TIR 事实，
+ * reason 是四态信封的裁决出口；同一 flag 在不同 role 下可能走不同 reason）。
+ */
+export type TimeFlag =
+  | 'VAGUE'
+  | 'CONTENT_SUSPECT'
+  | 'QUESTION_FOCUS'
+  | 'INVALID_CALENDAR'
+  | 'DURATION'
+  | 'RECURRING'
+  | 'OUT_OF_ASSET_RANGE'
+  | 'NOISE';
+
+/** 单条符号证据：哪条规则、来自哪类资产、命中的原文片段。 */
+export interface TimeEvidence {
+  /** 词表条目 id 或文法规则 id（稳定标识，不写自由文本解释）。 */
+  readonly ruleId: string;
+  /** 证据来源资产面。 */
+  readonly source: 'LEXICON' | 'NUMERAL' | 'GRAMMAR';
+  /** 命中原样子串（审计可读，不参与判定）。 */
+  readonly matchedText: string;
+}
+
+/**
+ * L2 文法产出的时间中间表示（Time IR）。
+ *
+ * 无毫秒、不持有 TimeAnchor、不可读时钟；同输入 + 同资产版本必逐字节同形。
+ * 一条原句可产出多条 TIR（多候选在信封层 OR 并集，不在此结构内嵌数组排序）。
+ */
+export interface TimeIR {
+  /** 命中原句切片。 */
+  readonly span: TextSpan;
+  /** 言语角色（G 类处置依据）。 */
+  readonly role: TimeRole;
+  /** 符号日期原子；被 flag 短路时可为 null。 */
+  readonly date: TimeDateExpr | null;
+  readonly granularity: TimeGranularity;
+  readonly flags: readonly TimeFlag[];
+  /** 证据只增不删（模型提议路径同此约束）。 */
+  readonly evidence: readonly TimeEvidence[];
+}
+
+/**
+ * 显式不确定原因封闭枚举（UNCERTAIN 态 reason 字段唯一合法取值域）。
+ * 新增原因必须 bump policy 资产版本并同步补 golden 夹具，禁止临时字符串。
+ */
+export type TimeUncertainReason =
+  | 'VAGUE_EXPRESSION'
+  | 'MISSING_YEAR'
+  | 'CONTENT_TIME_SUSPECTED'
+  | 'QUESTION_FOCUS'
+  | 'DURATION_NOT_FILTER'
+  | 'RECURRING_NOT_SINGLETON'
+  | 'INVALID_CALENDAR_DATE'
+  | 'OUT_OF_ASSET_RANGE'
+  | 'UNPARSEABLE_NOISE';
+
+/**
+ * 闭合证明的维度状态（盲审收敛铁律：不存在 INFERRED 态）。
+ *
+ * - EXPLICIT：原句显式证据（"2026 年 11 月 19 日"）；
+ * - POLICY：冻结策略补全（日界/时区/周开篇，策略版本可追溯）。
+ */
+export type ClosureState = 'EXPLICIT' | 'POLICY';
+
+/** 证明门逐维度核验项。 */
+export type ClosureDimension =
+  | 'YEAR'
+  | 'MONTH'
+  | 'DAY'
+  | 'ZONE'
+  | 'WEEK_START'
+  | 'DAY_BOUNDARY';
+
+/** 单个维度的闭合证据：状态 + 经由的规则/策略 id。 */
+export interface ClosureDimProof {
+  readonly dim: ClosureDimension;
+  readonly state: ClosureState;
+  /** 证据规则 id（EXPLICIT）或策略键（POLICY）。 */
+  readonly via: string;
+  /** state=POLICY 时携带策略资产版本；EXPLICIT 时缺省。 */
+  readonly policyVersion?: string;
+}
+
+/**
+ * 闭合证明：WINDOW 构造器（proveClosure，批 3）模块私有，
+ * 任一维度缺失或出现非 EXPLICIT/POLICY 状态则类型上构造不出 WINDOW。
+ */
+export interface ClosednessProof {
+  /** 覆盖全部必需维度；构造器内部断言完整性，外部只读取不拼装。 */
+  readonly dimensions: readonly ClosureDimProof[];
+}
+
+/**
+ * 半开整数毫秒窗 [startMs, endMs)。
+ *
+ * - endMs 严格大于 startMs（点事件不靠零长度窗表达，点命中用 t∈[s,t) 谓词）；
+ * - 仅 DAY/WEEK 粒度首期有生产产出者；CLOCK 窗口挂账，类型冻结不接线。
+ */
+export interface TimeWindow {
+  readonly startMs: number;
+  readonly endMs: number;
+  /** 半开区间标记，类型层面固定为 true。 */
+  readonly halfOpen: true;
+  readonly granularity: 'DAY' | 'WEEK';
+}
+
+/** 解析 provenance：重放对账键的全部输入面。 */
+export interface TimeProvenance {
+  /** 解析所用锚点时刻快照。 */
+  readonly anchorEpochMs: number;
+  /** 解析所用资产版本快照。 */
+  readonly assets: TimeAssetVersions;
+  /**
+   * 重放键：hash(规范化查询, anchorEpochMs, assets)。
+   * 同键必逐字节同输出；生成函数批 3 落地，批 1 仅冻结字段形状。
+   */
+  readonly replayKey: string;
+}
+
+/**
+ * 时间约束四态信封（gate V2 时间槽唯一接收形状，判别联合禁止混形）。
+ *
+ * - NONE：无时间表达，不参与时间槽裁决；
+ * - UNCERTAIN：识别到时间但不可闭合，留痕放行（time-uncertain-ignored），绝不猜；
+ * - CANDIDATES：多义多窗，类型上**没有** preferred/score/rank/confidence 字段，
+ *   禁止 windows[0] 直取，gate 按 OR 并集裁决，澄清反问在阶段 2 新卷；
+ * - WINDOW：唯一闭合窗，必带 ClosednessProof，构造器模块私有。
+ */
+export type TimeConstraint =
+  | { readonly kind: 'NONE'; readonly provenance: TimeProvenance }
+  | {
+      readonly kind: 'UNCERTAIN';
+      readonly reason: TimeUncertainReason;
+      /** 触发不确定的原文切片（可多条，审计用）。 */
+      readonly spans: readonly TextSpan[];
+      readonly provenance: TimeProvenance;
+    }
+  | {
+      readonly kind: 'CANDIDATES';
+      /** 无序同位候选；消费方不得按数组下标取首选。 */
+      readonly windows: readonly TimeWindow[];
+      /** 各候选歧义来源的规则 id（与 windows 同位对应，不含排序语义）。 */
+      readonly ambiguity: readonly string[];
+      readonly provenance: TimeProvenance;
+    }
+  | {
+      readonly kind: 'WINDOW';
+      readonly window: TimeWindow;
+      /** 闭合证明为必填，缺证明在类型层面构造不出本态。 */
+      readonly closure: ClosednessProof;
+      readonly provenance: TimeProvenance;
+    };
