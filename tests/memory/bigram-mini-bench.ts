@@ -129,7 +129,7 @@ function runArm(
   for (const item of queries) {
     const explained = searchCardsExplained(db, { text: item.q, atMs: T0 + 10 * DAY });
     const qNorm = normalizeLexicalText(item.q);
-    const gated = applyGate({ qNorm, candidates: explained });
+    const gated = applyGate({ qNorm, candidates: explained, atMs: T0 + 10 * DAY });
     // 门层按 cardId 取数（accepted 是 GatedRankedCard 带上 gateReasons，不含 serial 字段）。
     const acceptedCardIds = gated.accepted.map((row) => row.card.cardId);
     const expectedCardId = `mc_${item.expected}`;

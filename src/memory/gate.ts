@@ -14,8 +14,10 @@
  * #126 rules-v2 双轨（applyGateV2，与 V1 并存、CURRENT 仍冻结 rules-v1）：
  *  - 召回侧 OR 宽召回只负责把候选捞齐，本门以反向包含谓词 reverseContainment 逐卡裁定
  *    （线索字段规范化后完整出现于问句、码点 ≥ GATE_POLICY_V2.minContainCodepoints）；
- *  - 过门卡再比最长证据：唯一最长才 hit，等长平局 tie-no-strict-leader 弃权，短证据落 not-strict-leader，
- *    精确别名证据视为无穷；布尔家法（无连续分/无 cutoff/宁空勿错）与无环纪律原样保留。
+ *  - #129 排序化改造：词面门只判合格性，合格卡一张不删，全体交 rankCards 字典序排序
+ *    （weight→strength→occurred→cardId）；旧严格优超/tie 弃权已废，
+ *    tie-no-strict-leader/not-strict-leader 枚举保留备查但 V2 不再产出；
+ *    布尔家法（无连续分/无 cutoff/宁空勿错）与无环纪律原样保留。
  *
  * #127 阶段 1.5 时间槽（仅 applyGateV2 消费可选 timeConstraint；v1 函数体不读该字段，T7 静态锁）：
  *  - NONE/缺省槽位休眠输出零漂移；UNCERTAIN 留痕放行（time-uncertain-ignored）；
@@ -23,6 +25,7 @@
  */
 
 import { asciiLower } from '../projection/types.ts';
+import { RANK_POLICY, rankCards } from './rank.ts';
 import { buildSerialMap } from './serial.ts';
 import { timeConstraintAdmits } from './time-resolve.ts';
 import { CURRENT_RULES_VERSION } from './types.ts';
@@ -100,7 +103,12 @@ export function hasAsciiWordBoundary(qNorm: string, haystackNorm: string): boole
 export interface ApplyGateInput {
   qNorm: string;
   candidates: readonly ExplainedRankedCard[];
-  /** 动态 top-k：过滤完成后才截断，不用弱尾凑数；缺省保留全部过门卡。 */
+  /**
+   * 注入时钟（ms，#129）：仅 applyGateV2 的排序器消费（strength 衰减/人话时间标签）。
+   * v1 函数体刻意不读（与 timeConstraint 同款静态锁），门内禁止 Date.now。
+   */
+  atMs: number;
+  /** 动态 top-k：排序完成后才截断，不用弱尾凑数；缺省回落 RANK_POLICY.defaultLimit。 */
   limit?: number;
   /**
    * #127 时间约束四态信封（仅 applyGateV2 消费；v1 函数体刻意不读本字段，T7 静态锁）。
@@ -277,14 +285,15 @@ function withTimeTag(reasons: GateReasonCode[], tag: GateReasonCode | null): Gat
 }
 
 /**
- * rules-v2 布尔门（#126）：逐卡反向包含裁决后，再做**最长证据严格优超**。
- * - 无卡过单卡门 → abstain/all-rejected；
- * - 过门卡中最大证据长度唯一 → 仅该卡 hit，其余过门卡落 rejected/not-strict-leader；
- * - 最大证据并列（含多卡精确别名）→ abstain/tie-no-strict-leader，绝不靠分数赌选；
- * - 空查询/零候选/candidateCount/limit 语义与 v1 同构。
+ * rules-v2 门（#126 合格性裁决；#129 起排序化改造，严格优超/tie 弃权已废）：
+ * - 逐卡反向包含＋时间槽判"合格不合格"，不合格落 rejected 留痕；
+ * - 合格卡一张不删，全体交 rank 排序器字典序定先后（weight→strength→occurred→cardId），
+ *   证据长度只留痕不删卡；平局不再弃权，澄清权归她；
+ * - 无合格卡 → no-match/all-rejected（V2 不再产出 abstain；abstain 仅 v1 保留）；
+ * - 空查询/零候选/candidateCount 语义与 v1 同构；limit 缺省回落 RANK_POLICY.defaultLimit。
  */
 export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
-  const { qNorm, candidates, limit, timeConstraint } = input;
+  const { qNorm, candidates, atMs, limit, timeConstraint } = input;
   const candidateCount = candidates.length;
 
   if (qNorm === '') {
@@ -318,60 +327,34 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
     passed.push({ candidate, judgement, timeTag: slot.tag });
   }
 
+  // #129：合格集为空属 no-match（abstain 语义在 V2 退役；v1 路径保留 abstain 不动）。
   if (passed.length === 0) {
-    return { status: 'abstain', candidateCount, accepted: [], rejected, reason: 'all-rejected', serialMap: buildSerialMap([]) };
+    return { status: 'no-match', candidateCount, accepted: [], rejected, reason: 'all-rejected', serialMap: buildSerialMap([]) };
   }
 
-  const maxEvidence = Math.max(...passed.map((entry) => entry.judgement.evidence));
-  const leaders = passed.filter((entry) => entry.judgement.evidence === maxEvidence);
+  // #129：废严格优超/tie 弃权——词面合格卡一张不删，全体交 rank 排序器按
+  // weight→strength（遗忘）→occurred→cardId 字典序定先后，澄清权归她。
+  // 证据长度仅随门原因留痕（containmentLength），不再承担删卡职责。
+  const ranked = rankCards(
+    passed.map((entry) => entry.candidate.card),
+    { nowMs: atMs, limit: limit ?? RANK_POLICY.defaultLimit },
+  );
+  const passedById = new Map(passed.map((entry) => [entry.candidate.card.cardId, entry]));
+  const accepted: GatedRankedCard[] = ranked.entries.map((rankedEntry) => {
+    const entry = passedById.get(rankedEntry.cardId);
+    if (entry === undefined) throw new Error(`rank 排序返回了未过门卡：${rankedEntry.cardId}`);
+    const reasons = withTimeTag(entry.judgement.reasons, entry.timeTag);
+    return Number.isFinite(entry.judgement.evidence)
+      ? { ...toGated(entry.candidate, reasons), containmentLength: entry.judgement.evidence }
+      : toGated(entry.candidate, reasons);
+  });
 
-  if (leaders.length > 1) {
-    // 证据平局：领袖卡彼此无严格优超，一律不许提交；更短证据卡本就不是领袖，沿用 not-strict-leader。
-    // 整体 abstain 零提交（C-10：原因码按是否领袖分流，不再给全体盖同一个 tie 码）。
-    const leaderSet = new Set(leaders);
-    for (const entry of passed) {
-      const leaderReason: GateReasonCode = leaderSet.has(entry) ? 'tie-no-strict-leader' : 'not-strict-leader';
-      const reasons = withTimeTag([leaderReason], entry.timeTag);
-      const gated: GatedRankedCard = Number.isFinite(entry.judgement.evidence)
-        ? { ...toGated(entry.candidate, reasons), containmentLength: entry.judgement.evidence }
-        : toGated(entry.candidate, reasons);
-      rejected.push(gated);
-    }
-    return {
-      status: 'abstain',
-      candidateCount,
-      accepted: [],
-      rejected,
-      reason: 'tie-no-strict-leader',
-      serialMap: buildSerialMap([]),
-    };
-  }
-
-  // 唯一最长证据者提交；其余过门卡因未取得严格领先而落选（不静默丢弃，落 rejected 留痕）。
-  const winner = leaders[0]!;
-  const winnerGated: GatedRankedCard =
-    Number.isFinite(winner.judgement.evidence)
-      ? { ...toGated(winner.candidate, withTimeTag(winner.judgement.reasons, winner.timeTag)), containmentLength: winner.judgement.evidence }
-      : toGated(winner.candidate, withTimeTag(winner.judgement.reasons, winner.timeTag));
-  for (const entry of passed) {
-    if (entry === winner) {
-      continue;
-    }
-    const loserReasons = withTimeTag(['not-strict-leader'], entry.timeTag);
-    const loserGated: GatedRankedCard = Number.isFinite(entry.judgement.evidence)
-      ? { ...toGated(entry.candidate, loserReasons), containmentLength: entry.judgement.evidence }
-      : toGated(entry.candidate, loserReasons);
-    rejected.push(loserGated);
-  }
-
-  const accepted = [winnerGated];
-  const truncated = limit === undefined ? accepted : accepted.slice(0, limit);
   return {
     status: 'hit',
     candidateCount,
-    accepted: truncated,
+    accepted,
     rejected,
-    serialMap: buildSerialMap(truncated),
+    serialMap: buildSerialMap(accepted),
   };
 }
 

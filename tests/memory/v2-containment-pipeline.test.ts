@@ -28,6 +28,8 @@ import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
 
 const T0 = Date.parse('2026-09-01T00:00:00.000Z');
 const DAY = 24 * 3600 * 1000;
+/** #129 门入参注入时钟（固定值，禁系统时钟，保证可重放）。 */
+const TEST_NOW_MS = T0 + 10 * DAY;
 const AT = T0 + 30 * DAY;
 
 interface Spec {
@@ -102,7 +104,7 @@ async function seed(): Promise<{ root: string; file: string }> {
 
 function ask(db: DatabaseSync, text: string) {
   const candidates = searchCardsExplainedV2(db, { text, atMs: AT, limit: undefined });
-  return applyGateV2({ qNorm: normalizeLexicalText(text), candidates });
+  return applyGateV2({ atMs: TEST_NOW_MS, qNorm: normalizeLexicalText(text), candidates });
 }
 
 test('R-04① 簇内近邻调包：共享 bigram 的两卡，证据完整者唯一过门、绝不黏错', async () => {
@@ -149,8 +151,10 @@ test('R-04③ 仅 bigram 重合无线索完整包含：宽召回捞得到但门�
     // “喝咖啡的馆子”与线索共享“咖啡/啡馆”bigram，但没有任何线索字段完整出现于问句。
     const candidates = searchCardsExplainedV2(db, { text: '喝咖啡的馆子', atMs: AT, limit: undefined });
     assert.ok(candidates.length > 0, 'OR 宽召回确实捞回了共享 bigram 的卡');
-    const outcome = applyGateV2({ qNorm: normalizeLexicalText('喝咖啡的馆子'), candidates });
-    assert.equal(outcome.status, 'abstain');
+    const outcome = applyGateV2({ atMs: TEST_NOW_MS, qNorm: normalizeLexicalText('喝咖啡的馆子'), candidates });
+    // #129：V2 全拒归 no-match/all-rejected（abstain 仅 v1 保留），wrong-commit 仍为 0。
+    assert.equal(outcome.status, 'no-match');
+    assert.equal(outcome.reason, 'all-rejected');
     assert.equal(outcome.accepted.length, 0);
     assert.ok(outcome.rejected.every((c) => c.gateReasons.includes('no-containment')));
   } finally {

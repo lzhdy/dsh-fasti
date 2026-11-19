@@ -266,7 +266,11 @@ export interface ExplainedRankedCard extends RankedCard {
   lexicalFields?: string[];
 }
 
-/** 布尔门裁决状态（#44）：hit=至少一卡过强通道；abstain=有候选但全被拒；no-match=无词面候选/空查询。 */
+/**
+ * 布尔门裁决状态（#44；#129 起 V2 语义调整）：
+ * hit=至少一卡合格；abstain=有候选但全被拒（仅 rules-v1 路径产出，V2 已并入 no-match）；
+ * no-match=无词面候选/空查询/合格集为空。
+ */
 export type GatedStatus = 'hit' | 'abstain' | 'no-match';
 
 /**
@@ -291,6 +295,7 @@ export type GateReasonCode =
   // #126 rules-v2 反向包含裁决原因码（v1 路径不产出）。
   | 'reverse-containment-pass'
   | 'no-containment'
+  // #129 排序化后严格优超/tie 弃权已废：两枚举保留备查（冻结词表不删码），V2 不再产出。
   | 'tie-no-strict-leader'
   | 'not-strict-leader'
   // #127 阶段1.5 时间槽裁决原因码（仅 V2 路径产出；v1 不读取 TimeConstraint）。
@@ -313,11 +318,14 @@ export interface GatedSearchOutcome {
    * 供影子观测在不二次检索的前提下记录门控口径（gated-full）全集规模。加字段不删字段。
    */
   candidateCount: number;
-  /** 过门候选，保持检索 score 排序并已按调用方 limit 截断。 */
+  /**
+   * 过门候选。v1 保持检索 score 排序；#129 起 V2 为 rankCards 字典序
+   * （weight→strength→occurred→cardId），均已按 limit（V2 缺省 10）截断。
+   */
   accepted: GatedRankedCard[];
   /** 被拒候选全集（不截断），每张附原因码。 */
   rejected: GatedRankedCard[];
-  /** 仅 no-match/abstain 携带的汇总原因；hit 时为 undefined。tie-no-strict-leader 为 rules-v2 严格优超弃权（#126）。 */
+  /** 仅 no-match/abstain 携带的汇总原因；hit 时为 undefined。tie-no-strict-leader 仅历史 v2 严格优超期产出，#129 起 V2 不可达。 */
   reason?: 'empty-query' | 'zero-lexical-hit' | 'all-rejected' | 'tie-no-strict-leader';
   /** 对截断后 accepted 建的请求级 1..n 私有序号（复用 serial.ts，不落库）。 */
   serialMap: SerialMap;

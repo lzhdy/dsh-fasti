@@ -38,11 +38,11 @@ function buildTimeAnchor(atMs: number): TimeAnchor {
 /**
  * 门控召回编排（纯函数式，不持有 IO）：
  * 窄柄 searchExplained 返回 limit=undefined 的完整排序全集 → 规范化查询词 → applyGate 逐卡裁决，
- * limit 仅在门内过滤完成后生效。装配层不重建/截断候选，杜绝门前进片。
+ * limit 仅在门内排序完成后生效。装配层不重建/截断候选，杜绝门前进片。
  *
  * @param handle 调用方（宿主）注入的记忆窄柄；本函数不打开也不关闭它。
  * @param query  无 limit 键的窄查询（RuntimeSearchQuery），任何额外字段在窄柄边界即被丢弃。
- * @param limit  动态 top-k；缺省时保留全部过门卡。
+ * @param limit  动态 top-k；v1 缺省保留全部过门卡，#129 起 V2 缺省回落 RANK_POLICY.defaultLimit（10）。
  */
 export async function runGatedSearch(
   handle: RuntimeMemoryHandle,
@@ -54,5 +54,5 @@ export async function runGatedSearch(
   // #127 时间约束编译：同进程纯函数，Anchor 只由注入的 atMs 组装，不读系统时钟。
   // CURRENT 仍 rules-v1 时 applyGate 分派 V1 会忽略本信封（T7 零漂移）；切 v2 后时间槽即生效。
   const timeConstraint = resolveTimeConstraint(query.text, buildTimeAnchor(query.atMs));
-  return applyGate({ qNorm, candidates, limit, timeConstraint });
+  return applyGate({ qNorm, candidates, atMs: query.atMs, limit, timeConstraint });
 }

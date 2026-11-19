@@ -381,6 +381,8 @@ const ASSEMBLY_VALUE_ALLOWLIST: Record<string, ReadonlySet<string>> = {
   // #127 阶段 1.5：装配层组 Anchor、编译时间信封仅允许命名引用这两个值符号。
   'time-lexicon': new Set(['TIME_ASSET_VERSIONS']),
   'time-resolve': new Set(['resolveTimeConstraint']),
+  // #129：DTO 排序可见性字段只允许命名引用这两个纯函数（强度衰减/人话时间标签）。
+  rank: new Set(['humanTimeLabel', 'memoryStrength']),
 };
 
 /** 装配层禁止的内置模块（不得自开连接/直开文件，N1）。 */

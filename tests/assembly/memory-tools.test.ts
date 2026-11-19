@@ -245,6 +245,32 @@ test('on：唯一召回路径走门，弱卡被拒、唯一席位给强卡，DTO
   assert.equal(view.serialMap.get(1), 'mc_strong');
 });
 
+test('#129 DTO：卡视图带排序可见性五字段，candidateTotal 报门过滤前全集（截断可见）', async () => {
+  const handle = makeFakeHandle({ explained: strongThenWeak(), addCalls: [], missCalls: [] });
+  const { tools } = build('on', handle);
+
+  const view = await tools.gatedSearch({ text: 'cat', limit: 1 });
+
+  assert.equal(view.status, 'hit');
+  assert.equal(view.candidateTotal, 2, '词面候选全集 2 条，不受 limit=1 截断影响');
+  assert.equal(view.cards.length, 1);
+  const only = view.cards[0]!;
+  assert.equal(only.occurredMs, NOW - 1000);
+  assert.equal(only.timeLabel, '今天', '东八区同日卡人话标签为“今天”');
+  assert.equal(only.weight, 0, '权威根现状 weight 恒 0（P3 复盘工具前无写路径）');
+  assert.equal(only.hitCount, 0);
+  assert.equal(only.strength, 0, '零采用次数 → 遗忘强度 0');
+});
+
+test('#129 DTO：observing 空信封带 candidateTotal=0，形状与 on 态同构', async () => {
+  const handle = makeFakeHandle({ explained: strongThenWeak(), addCalls: [], missCalls: [] });
+  const { tools } = build('shadow', handle);
+  const view = await tools.gatedSearch({ text: 'cat' });
+  assert.equal(view.status, 'observing');
+  assert.equal(view.candidateTotal, 0);
+  assert.deepEqual(view.cards, []);
+});
+
 test('N14：任何态返回 DTO 与卡写回包均不含 sensitive/内部别名/原始查询字段', async () => {
   const handle = makeFakeHandle({ explained: strongThenWeak(), addCalls: [], missCalls: [] });
   const on = build('on', handle);

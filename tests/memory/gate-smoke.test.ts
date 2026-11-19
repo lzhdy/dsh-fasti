@@ -26,6 +26,8 @@ import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
 
 const T0 = Date.parse('2026-11-01T00:00:00.000Z');
 const DAY = 24 * 3600 * 1000;
+/** #129 门入参注入时钟（固定值，禁系统时钟，保证可重放）。 */
+const TEST_NOW_MS = T0 + 10 * DAY;
 
 interface Spec {
   cardId: string;
@@ -128,7 +130,7 @@ function gatedQuery(file: string, text: string, atMs: number, limit?: number) {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     const candidates = searchCardsExplained(db, { text, atMs, limit });
-    return applyGate({ qNorm: normalizeQuery(text), candidates, limit });
+    return applyGate({ atMs: TEST_NOW_MS, qNorm: normalizeQuery(text), candidates, limit });
   } finally {
     db.close();
   }

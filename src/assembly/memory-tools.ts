@@ -20,6 +20,7 @@
 
 import { UnavailableError } from '../core/errors.ts';
 import { normalizeLexicalText } from '../memory/gate.ts';
+import { humanTimeLabel, memoryStrength } from '../memory/rank.ts';
 import { resolveSerials } from '../memory/serial.ts';
 import { runGatedSearch } from './index.ts';
 import type {
@@ -65,16 +66,24 @@ export interface GatedCardView {
   readonly anchorIds: readonly string[];
   readonly displayCues: readonly string[];
   readonly gateReasons: readonly string[];
+  // #129 排序可见性字段：让她看得见"这条凭什么排这"，对抗位置偏见（N14 安全字段白名单）。
+  readonly occurredMs: number;
+  readonly timeLabel: string;
+  readonly weight: number;
+  readonly strength: number;
+  readonly hitCount: number;
 }
 
 /**
  * 工具统一返回形状（#114 拆除后单形态）：
- *  - on：门裁决状态 hit/abstain/no-match + 过门卡视图；
+ *  - on：门裁决状态 hit/abstain/no-match + 过门卡视图（abstain 仅 rules-v1 产出，#129 起 V2 全拒归 no-match）；
  *  - shadow：恒定 observing 空信封（7.2 DTO 定死，无 source 双形态键）。
  */
 export interface GatedSearchView {
   readonly status: GatedStatus | 'observing';
   readonly cards: readonly GatedCardView[];
+  /** 门过滤前词面候选全集条数（#129 截断可见：cards 可能少于总数）。 */
+  readonly candidateTotal: number;
   readonly reason?: string;
   readonly serialMap: SerialMap;
 }
@@ -116,8 +125,8 @@ function parseStringArray(json: string): readonly string[] {
   return Array.isArray(parsed) ? (parsed as string[]) : [];
 }
 
-/** 门结果 → 安全 DTO（逐字段白名单投影）。 */
-function toGateView(outcome: GatedSearchOutcome): GatedSearchView {
+/** 门结果 → 安全 DTO（逐字段白名单投影；#129 附排序可见性字段）。 */
+function toGateView(outcome: GatedSearchOutcome, atMs: number): GatedSearchView {
   const serialOf = new Map<string, number>();
   for (const [serial, cardId] of outcome.serialMap) {
     serialOf.set(cardId, serial);
@@ -128,10 +137,16 @@ function toGateView(outcome: GatedSearchOutcome): GatedSearchView {
     anchorIds: parseStringArray(gated.card.anchorJson),
     displayCues: parseStringArray(gated.card.displayCuesJson),
     gateReasons: [...gated.gateReasons],
+    occurredMs: gated.card.occurredMs,
+    timeLabel: humanTimeLabel(gated.card.occurredMs, atMs),
+    weight: gated.card.weight,
+    strength: memoryStrength(gated.card, atMs),
+    hitCount: gated.card.hitCount,
   }));
   return {
     status: outcome.status,
     cards,
+    candidateTotal: outcome.candidateCount,
     ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
     serialMap: outcome.serialMap,
   };
@@ -142,7 +157,7 @@ function toGateView(outcome: GatedSearchOutcome): GatedSearchView {
  * 不携带 source 键或任何候选，reason 留空（观测期检索不可用由工具 description 显式声明）。
  */
 function observingView(): GatedSearchView {
-  return { status: 'observing', cards: [], serialMap: new Map<number, string>() };
+  return { status: 'observing', cards: [], candidateTotal: 0, serialMap: new Map<number, string>() };
 }
 
 /**
@@ -252,7 +267,7 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
       if (outcome.status === 'abstain' || outcome.status === 'no-match') {
         recordMissOrSwallow(handle, deps.missChannel, input.text, atMs, outcome.status);
       }
-      return toGateView(outcome);
+      return toGateView(outcome, atMs);
     },
 
     getCardsByAnchor(experienceId: string): MemoryCard[] {
