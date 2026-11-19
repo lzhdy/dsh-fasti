@@ -55,7 +55,8 @@ function extractImportSpecifiers(text: string): string[] {
  * audit/shadow-read.ts（#114/S1 影子只读读取器）同样纳入：只依赖 core/errors、types 与 shadow-write 常量，
  * 是离线审计件，若将来被写柄/store 反向拉入即报红。
  * time-lexicon.ts（#127 阶段1.5 L0 时间词表）纳入：纯 const 数据模块，只允许 import type 自 types，
- * 零时钟零 I/O；批 2/批 3 落地的 time-expr.ts/time-resolve.ts 在创建当批各自登记入本数组。
+ * 零时钟零 I/O；time-expr.ts（L1/L2）只依赖 lexicon 与 types 纯类型；
+ * time-resolve.ts（L3/L4）只依赖 node:crypto、time-expr 与 types 纯类型，三者同入无环门禁。
  */
 const ACYCLIC_LEAF_FILES = [
   'content-hash.ts',
@@ -66,6 +67,8 @@ const ACYCLIC_LEAF_FILES = [
   'shadow-write.ts',
   'audit/shadow-read.ts',
   'time-lexicon.ts',
+  'time-expr.ts',
+  'time-resolve.ts',
 ] as const;
 
 /** 显式直接拉黑（闭包判定的双保险，意图清晰且不依赖图计算正确性）。 */
