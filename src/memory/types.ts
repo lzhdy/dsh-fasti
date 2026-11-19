@@ -436,12 +436,16 @@ export type IsoWeekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
  *
  * - REL_DAY：相对今天的天偏移（0=今天，-1=昨天，+1=明天）；
  * - WEEKDAY_OF_WEEK：周偏移 + 星期序（weekOffset 0=本周，-1=上周，+1=下周）；
- * - YEAR_MONTH_DAY：完整年月日（非法日历日期不 clamp，由文法层直接打 INVALID_CALENDAR）；
- * - MONTH_DAY：无年份月日，首期必落 MISSING_YEAR，不补今年、不产候选。
+ * - WEEK_OF：裸周偏移整周（主控 2026-11-19 拍板增补；"上周"默认周一到周日一整周，
+ *   L3 产 7 日半开窗，粒度 WEEK）；
+ * - YEAR_MONTH_DAY：完整四位年份的年月日（非法日历日期不 clamp；两位年份不闭合，
+ *   主控同日拍板只认四位，两位年回落 MONTH_DAY 走 MISSING_YEAR）；
+ * - MONTH_DAY：无年份（或年份不完整）的月日，必落 MISSING_YEAR，不补今年、不产候选。
  */
 export type TimeDateExpr =
   | { readonly kind: 'REL_DAY'; readonly delta: number }
   | { readonly kind: 'WEEKDAY_OF_WEEK'; readonly weekOffset: number; readonly weekday: IsoWeekday }
+  | { readonly kind: 'WEEK_OF'; readonly weekOffset: number }
   | { readonly kind: 'YEAR_MONTH_DAY'; readonly year: number; readonly month: number; readonly day: number }
   | { readonly kind: 'MONTH_DAY'; readonly month: number; readonly day: number };
 

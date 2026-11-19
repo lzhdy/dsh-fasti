@@ -94,8 +94,27 @@ test('P0 资产版本：三元组字段齐备且整体冻结，锚点直接引�
 });
 
 test('P0 词表骨架：批 1 主数据为空数组且冻结（批 2 填充时改写本断言）', () => {
-  assert.deepEqual([...TIME_LEXICON_ENTRIES], []);
+  // 批 2 已按封闭清单填满：断言从"空"改判为"非空、全冻结、id 与 surface 全局唯一"。
+  assert.ok(TIME_LEXICON_ENTRIES.length > 0, '批 2 起词表不得为空');
   assert.equal(Object.isFrozen(TIME_LEXICON_ENTRIES), true);
+
+  const ids = new Set<string>();
+  const surfaces = new Set<string>();
+  for (const entry of TIME_LEXICON_ENTRIES) {
+    assert.equal(ids.has(entry.id), false, `词条 id 重复：${entry.id}`);
+    assert.equal(surfaces.has(entry.surface), false, `surface 重复：${entry.surface}`);
+    ids.add(entry.id);
+    surfaces.add(entry.surface);
+    assert.equal(Object.isFrozen(entry), true, `词条未冻结：${entry.id}`);
+    assert.equal(Object.isFrozen(entry.atom), true, `原子未冻结：${entry.id}`);
+  }
+
+  // 封闭区间边界：-3..+3 两端在册，区间外不建词。
+  assert.ok(surfaces.has('大前天'));
+  assert.ok(surfaces.has('大后天'));
+  assert.equal(surfaces.has('大大后天'), false);
+  // 裸周偏移只是词偏移原子，不产日期原子（组合责任在文法产生式）。
+  assert.ok(surfaces.has('上上周'));
 });
 
 test('P0 四态信封：四种合法形态可构造，判别 switch 穷尽且各带 provenance', () => {
