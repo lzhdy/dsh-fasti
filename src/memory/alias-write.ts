@@ -32,7 +32,8 @@ export type MissAliasRejectReason =
   | 'card-not-active'
   | 'empty-term'
   | 'bad-sensitive'
-  | 'alias-cap-exceeded';
+  | 'alias-cap-exceeded'
+  | 'term-globally-conflicts';
 
 /** 低层入参：termNorm 已由写柄规范化（N5）；时钟 createdMs 注入，函数内无 Date.now()。 */
 export interface BuildMissAliasInput {
@@ -218,6 +219,18 @@ export function applyMissAlias(db: DatabaseSync, input: BuildMissAliasInput): Ap
   }
   if (!decision.changed) {
     return { ok: true, changed: false, reason: 'already-active', cardId: input.cardId, termNorm: input.termNorm };
+  }
+
+  // #126 全库唯一性守卫：gate 对 exact-alias 直接放行，以 term_norm 全局唯一为安全前提；
+  // 复合主键 (term_norm, card_id) 本身不防跨卡重复，故在权威写入侧 fail-closed。
+  // 只查 active 他卡；本卡同名已在上面走 already-active 幂等，不可能到达这里。
+  const globalConflict = db
+    .prepare(
+      "SELECT 1 FROM mem_alias WHERE term_norm = ? AND card_id <> ? AND status = 'active' LIMIT 1",
+    )
+    .get(input.termNorm, input.cardId);
+  if (globalConflict !== undefined) {
+    return { ok: false, reason: 'term-globally-conflicts', cardId: input.cardId, termNorm: input.termNorm };
   }
 
   const existingCard = card as MissAliasCardView;

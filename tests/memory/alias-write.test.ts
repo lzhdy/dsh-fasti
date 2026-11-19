@@ -495,3 +495,48 @@ test('读柄 getCardsByAnchor：ULID 校验、按 anchor_json 含经历 id 过�
     cleanupTempRoot(root);
   }
 });
+
+// #126 R-05 别名全库唯一守卫：同一 term_norm 禁止挂到两张卡（gate exact-alias 恒过的安全前提）─────
+
+test('R-05 全库唯一守卫：term 已被他卡 active 持有时拒绝 term-globally-conflicts 且零写入；本卡幂等与不冲突词不受影响', () => {
+  const OTHER_CARD = 'mc_alias_neighbor';
+  const { db } = seedDb([]);
+  try {
+    // 第二张卡持有 active 别名 shared-term。
+    const other = mkCard([], { cardId: OTHER_CARD, eventId: 'evt-alias-neighbor' });
+    writeCards(db, [other]);
+    writeAliases(db, [row('shared-term', { cardId: OTHER_CARD })]);
+    syncFts(db, [OTHER_CARD]);
+
+    const cardBefore = db.prepare('SELECT * FROM mem_card WHERE card_id=?').get(CARD_ID) as Record<string, unknown>;
+    const outcome = applyMissAlias(db, newInput('shared-term'));
+    assert.deepEqual(outcome, {
+      ok: false,
+      reason: 'term-globally-conflicts',
+      cardId: CARD_ID,
+      termNorm: 'shared-term',
+    });
+
+    // 零写入：shared-term 仍只属他卡一行，本卡 aliases_json 与整行零变化，别名总数不增。
+    const rows = db.prepare('SELECT card_id FROM mem_alias WHERE term_norm=?').all('shared-term') as Array<{ card_id: string }>;
+    assert.deepEqual(rows.map((r) => r.card_id), [OTHER_CARD]);
+    assert.deepEqual(db.prepare('SELECT * FROM mem_card WHERE card_id=?').get(CARD_ID), cardBefore);
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM mem_alias').get() as { n: number }).n, 1);
+
+    // 对照 1：本卡自己持有的词仍走幂等 already-active，不被守卫误伤。
+    applyMissAlias(db, newInput('own-term'));
+    const idem = applyMissAlias(db, newInput('own-term'));
+    assert.equal(idem.ok, true);
+    if (idem.ok) {
+      assert.equal(idem.changed, false);
+      assert.equal(idem.reason, 'already-active');
+    }
+
+    // 对照 2：与全库不冲突的新词正常写入。
+    const fresh = applyMissAlias(db, newInput('fresh-term'));
+    assert.equal(fresh.ok, true);
+  } finally {
+    db.close();
+  }
+});
+

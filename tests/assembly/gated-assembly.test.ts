@@ -146,7 +146,7 @@ test('N9 接线反例：弱子串卡被门拒，limit=1 的 accepted 只取 exac
   }
 });
 
-test('multi-accept：同别名两卡均过门，limit 在门后截断，缺省返回全集', async () => {
+test('#126 别名全库唯一：同 term 挂第二张卡被 term-globally-conflicts 拒绝，精确过门只属一卡；异 term 互不影响', async () => {
   const { root, indexDir } = await seed([
     { cardId: 'mc_x', cues: ['unrelated alpha'], aliases: [] },
     { cardId: 'mc_y', cues: ['unrelated beta'], aliases: [] },
@@ -154,20 +154,30 @@ test('multi-accept：同别名两卡均过门，limit 在门后截断，缺省�
   try {
     const handle = openMemoryRuntime({ indexDir });
     try {
-      handle.addMissAlias({ term: 'cat', cardId: 'mc_x', atMs: AT });
-      handle.addMissAlias({ term: 'cat', cardId: 'mc_y', atMs: AT });
+      const first = handle.addMissAlias({ term: 'cat', cardId: 'mc_x', atMs: AT });
+      assert.equal(first.ok, true);
+      // 同一 term_norm 禁止跨卡复用（exact-alias 恒过的全局唯一前提）。
+      const conflict = handle.addMissAlias({ term: 'cat', cardId: 'mc_y', atMs: AT });
+      assert.equal(conflict.ok, false);
+      if (!conflict.ok) {
+        assert.equal(conflict.reason, 'term-globally-conflicts');
+      }
 
-      const capped = await runGatedSearch(handle, { text: 'cat', atMs: AT }, 1);
-      assert.equal(capped.status, 'hit');
-      assert.equal(capped.accepted.length, 1, '门后截断到 1 席');
-      assert.equal(capped.rejected.length, 0, '过门卡不进 rejected，仅被 top-k 截断');
-
-      const full = await runGatedSearch(handle, { text: 'cat', atMs: AT });
-      assert.equal(full.status, 'hit');
+      const hitCat = await runGatedSearch(handle, { text: 'cat', atMs: AT });
+      assert.equal(hitCat.status, 'hit');
       assert.deepEqual(
-        full.accepted.map((c) => c.card.cardId).sort(),
-        ['mc_x', 'mc_y'],
-        '缺省 limit 返回全部过门卡（窄柄全集不预切片）',
+        hitCat.accepted.map((c) => c.card.cardId),
+        ['mc_x'],
+        '精确别名唯一归属 mc_x，mc_y 不得凭同 term 过门',
+      );
+
+      // 不冲突的异 term 正常写入并独立过门。
+      const second = handle.addMissAlias({ term: 'dog', cardId: 'mc_y', atMs: AT });
+      assert.equal(second.ok, true);
+      const hitDog = await runGatedSearch(handle, { text: 'dog', atMs: AT });
+      assert.deepEqual(
+        hitDog.accepted.map((c) => c.card.cardId),
+        ['mc_y'],
       );
     } finally {
       await handle.close();
