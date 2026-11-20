@@ -16,14 +16,17 @@
  *    就只能落 NONE，宁空勿错。
  *  本文件刻意零正则字面量（T9 静态门禁），扫描是单趟线性、无回溯风险。
  *
- * 边界（细则第四节 + 主控 2026-11-19 两条拍板）：产窗原子为 REL_DAY / WEEK_OFFSET×WEEKDAY /
- * WEEK_OF（裸周偏移整周）/ YEAR_MONTH_DAY（仅四位年份）/ MONTH_DAY；清单外说法一律 NONE 或
- * UNCERTAIN，绝不抛错、绝不猜；两位年份不闭合，回落 MONTH_DAY 走 MISSING_YEAR。
+ * 边界（细则第四节 + 主控 2026-11-19 两条拍板 + #132 扩面）：产窗原子为 REL_DAY /
+ * WEEK_OFFSET×WEEKDAY / WEEK_OF（裸周偏移整周）/ YEAR_MONTH_DAY（仅四位年份）/ MONTH_DAY /
+ * RELATIVE_SPAN（#132 方位＋数字＋天/周单位的有限半开跨度，周折 7N 天、粒度仍 DAY）；
+ * #132 无界方位/月年冻结/指示只产 flag 留痕（date=null）不造窗，指代词不在日历通道；
+ * 清单外说法一律 NONE 或 UNCERTAIN，绝不抛错、绝不猜、绝不补开放区间另一端；
+ * 两位年份不闭合，回落 MONTH_DAY 走 MISSING_YEAR。
  */
 
 import { TIME_LEXICON_ENTRIES } from './time-lexicon.ts';
-import type { TimeLexiconAtom } from './time-lexicon.ts';
-import type { IsoWeekday, TextSpan, TimeDateExpr, TimeEvidence, TimeFlag, TimeGranularity, TimeIR, TimeRole } from './types.ts';
+import type { TimeDirectionSense, TimeLexiconAtom } from './time-lexicon.ts';
+import type { IsoWeekday, RelativeSpanMode, TextSpan, TimeDateExpr, TimeEvidence, TimeFlag, TimeGranularity, TimeIR, TimeRole } from './types.ts';
 
 // ===========================================================================
 // 文法终结符（不在词表原子里、但文法必须认识的单字/词：单位与星期前缀）
@@ -56,6 +59,12 @@ const DAY_UNIT_TERMS: readonly GrammarTerminal[] = Object.freeze(['RI', 'HAO'] a
 
 /** 星期序=7 的两种写法（"星期日/礼拜天"）。 */
 const WEEKDAY7_TERMS: readonly GrammarTerminal[] = Object.freeze(['RI', 'TIAN'] as GrammarTerminal[]);
+
+/** #132 可闭合相对跨度的封闭单位：天/周（周滚动折 7N 天，仍产 DAY 窗）。 */
+const SPAN_UNIT_TERMS: readonly GrammarTerminal[] = Object.freeze(['TIAN', 'ZHOU'] as GrammarTerminal[]);
+
+/** #132 粒度冻结单位：年/月只认出留痕（GRAIN_NOT_SUPPORTED），不造窗、禁 clamp。 */
+const FROZEN_GRAIN_TERMS: readonly GrammarTerminal[] = Object.freeze(['YUE', 'NIAN'] as GrammarTerminal[]);
 
 // ===========================================================================
 // 词表索引（构建期一次性装配，运行期只读；确定性排序保证重放同形）
@@ -251,12 +260,15 @@ interface AtomPart {
   readonly type: 'ATOM';
   readonly optional?: boolean;
   readonly atomKinds: readonly TimeLexiconAtom['kind'][];
+  /** #132：当 atomKinds 含 DIRECTION 时，可进一步限定封闭方位 sense（不填则任意 sense）。 */
+  readonly sense?: TimeDirectionSense;
 }
 
 type Part = NumPart | TermPart | AtomPart;
 
 interface ProductionResult {
-  readonly date: TimeDateExpr;
+  /** #132 起文法留痕产生式可只产 flag、date=null（开放方位/月年冻结/指示），交由 L3 降级。 */
+  readonly date: TimeDateExpr | null;
   readonly granularity: TimeGranularity;
   readonly flags: readonly TimeFlag[];
   readonly extraEvidence: readonly TimeEvidence[];
@@ -305,6 +317,36 @@ function weekdayOfNum(token: TimeToken | undefined): IsoWeekday | null {
 /** 构造期冻结（保留对象字面量的上下文类型推导，避免 Object.freeze 把联合类型拓宽）。 */
 function production(p: Production): Production {
   return Object.freeze(p);
+}
+
+/** #132 封闭单位终结符 → RELATIVE_SPAN 单位（年/月不在此列，返回 null）。 */
+function spanUnitOf(token: TimeToken | undefined): 'DAY' | 'WEEK' | null {
+  if (token === undefined || token.kind !== 'TERM') return null;
+  if (token.term === 'TIAN') return 'DAY';
+  if (token.term === 'ZHOU') return 'WEEK';
+  return null;
+}
+
+/** #132 构造 RELATIVE_SPAN 符号原子；amount 必须正整数、单位仅天/周，否则结构不成立。 */
+function relativeSpanResult(
+  mode: RelativeSpanMode,
+  numTok: TimeToken | undefined,
+  unitTok: TimeToken | undefined,
+): ProductionResult | null {
+  const num = numToken(numTok);
+  const unit = spanUnitOf(unitTok);
+  if (num === null || unit === null || num.value < 1) return null;
+  return {
+    date: { kind: 'RELATIVE_SPAN', mode, amount: num.value, unit },
+    granularity: 'DAY',
+    flags: [],
+    extraEvidence: [],
+  };
+}
+
+/** #132 只认出不造窗的留痕结果（date=null，L3 按 flag 裁决到对应新 reason）。 */
+function flaggedResult(flag: TimeFlag): ProductionResult {
+  return { date: null, granularity: 'DAY', flags: [flag], extraEvidence: [] };
 }
 
 const PRODUCTIONS: readonly Production[] = Object.freeze([
@@ -479,6 +521,129 @@ const PRODUCTIONS: readonly Production[] = Object.freeze([
       };
     },
   }),
+
+  // ===========================================================================
+  // #132 时间结构识别扩面：方位＋数字＋封闭单位的声明式产生式（F1–F9 + 留痕）
+  // 可闭合者只产符号 RELATIVE_SPAN（无毫秒），端点半开公式在 L3 整数日历落地；
+  // 无界/冻结粒度/指示只产 flag、date=null，宁空勿错，绝不造开放区间、绝不 clamp。
+  // ===========================================================================
+
+  // 10. 前置往过去段 F1/F7：前/过去/上 N 天·周 → [D0-Nu,D0) 不含今天。
+  production({
+    id: 'gram:span-back',
+    parts: [
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'BEFORE' },
+      { type: 'NUM', min: 1 },
+      { type: 'TERM', terms: SPAN_UNIT_TERMS },
+    ],
+    build: (m) => relativeSpanResult('BACK', m[1], m[2]),
+  }),
+  // 11. 前置往未来段 F2/F8：后/下 N 天·周 → [D0+1,D0+1+Nu) 不含今天。
+  production({
+    id: 'gram:span-forward',
+    parts: [
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'AFTER' },
+      { type: 'NUM', min: 1 },
+      { type: 'TERM', terms: SPAN_UNIT_TERMS },
+    ],
+    build: (m) => relativeSpanResult('FORWARD', m[1], m[2]),
+  }),
+  // 12. 前置含今未来段 F3：未来/接下来 N 天·周 → [D0,D0+Nu) 含今天。
+  production({
+    id: 'gram:span-within-pre',
+    parts: [
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'AFTER_INCLUSIVE' },
+      { type: 'NUM', min: 1 },
+      { type: 'TERM', terms: SPAN_UNIT_TERMS },
+    ],
+    build: (m) => relativeSpanResult('WITHIN', m[1], m[2]),
+  }),
+  // 13. 后置界内段 F4/F9：N 天·周 之内/以内/内 → [D0,D0+Nu) 含今天。
+  production({
+    id: 'gram:span-within-post',
+    parts: [
+      { type: 'NUM', min: 1 },
+      { type: 'TERM', terms: SPAN_UNIT_TERMS },
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'WITHIN' },
+    ],
+    build: (m) => relativeSpanResult('WITHIN', m[0], m[1]),
+  }),
+  // 14. 后置单点 F5：N 天·周 前（单纯方位词，非"之前"）→ D0-N 单日窗。
+  production({
+    id: 'gram:point-before',
+    parts: [
+      { type: 'NUM', min: 1 },
+      { type: 'TERM', terms: SPAN_UNIT_TERMS },
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'BEFORE' },
+    ],
+    build: (m) => relativeSpanResult('BEFORE_POINT', m[0], m[1]),
+  }),
+  // 15. 后置单点 F6：N 天·周 后（单纯方位词，非"以后"）→ D0+N 单日窗。
+  production({
+    id: 'gram:point-after',
+    parts: [
+      { type: 'NUM', min: 1 },
+      { type: 'TERM', terms: SPAN_UNIT_TERMS },
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'AFTER' },
+    ],
+    build: (m) => relativeSpanResult('AFTER_POINT', m[0], m[1]),
+  }),
+  // 16. 裸方位无界 U1：之前/之后/以前/以后/以来… 单说只留痕，不补另一端。
+  production({
+    id: 'gram:open-direction-bare',
+    parts: [{ type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'OPEN' }],
+    build: () => flaggedResult('OPEN_DIRECTIONAL'),
+  }),
+  // 17. 后置合成方位无界 U2/U4：N 天·周 以后/之后/以来/之外…（与单纯"前/后"单点严格区分）。
+  production({
+    id: 'gram:open-post-span',
+    parts: [
+      { type: 'NUM', min: 1 },
+      { type: 'TERM', terms: SPAN_UNIT_TERMS },
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'OPEN' },
+    ],
+    build: () => flaggedResult('OPEN_DIRECTIONAL'),
+  }),
+  // 18a. 星期序7＋开放方位 U2：周日之后（整体留痕，最长匹配压过单用"周日"造窗）。
+  production({
+    id: 'gram:open-after-weekday7',
+    parts: [
+      { type: 'TERM', terms: WEEK_PREFIX_TERMS },
+      { type: 'TERM', terms: WEEKDAY7_TERMS },
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'OPEN' },
+    ],
+    build: () => flaggedResult('OPEN_DIRECTIONAL'),
+  }),
+  // 18b. 星期前缀＋数字星期序＋开放方位：周三之后、礼拜五以前。
+  production({
+    id: 'gram:open-after-prefix-weekday',
+    parts: [
+      { type: 'TERM', terms: WEEK_PREFIX_TERMS },
+      { type: 'NUM', digitLen: [1], min: 1, max: 7 },
+      { type: 'ATOM', atomKinds: ['DIRECTION'], sense: 'OPEN' },
+    ],
+    build: () => flaggedResult('OPEN_DIRECTIONAL'),
+  }),
+  // 19. 指示限定 T6：这/那 N 天·周方向靠语境，首版开放留痕、不硬选方向（区别于指代通道）。
+  production({
+    id: 'gram:open-demonstrative',
+    parts: [
+      { type: 'ATOM', atomKinds: ['DEMONSTRATIVE'] },
+      { type: 'NUM', min: 1 },
+      { type: 'TERM', terms: SPAN_UNIT_TERMS },
+    ],
+    build: () => flaggedResult('OPEN_DIRECTIONAL'),
+  }),
+  // 20. 月/年粒度冻结 T9：方向（＋数）＋年/月 只认出留痕，不引"个"、不建 MONTH/YEAR 窗、禁折算。
+  production({
+    id: 'gram:grain-frozen-direction',
+    parts: [
+      { type: 'ATOM', atomKinds: ['DIRECTION'] },
+      { type: 'NUM', optional: true, min: 1 },
+      { type: 'TERM', terms: FROZEN_GRAIN_TERMS },
+    ],
+    build: () => flaggedResult('GRAIN_NOT_SUPPORTED'),
+  }),
 ]);
 
 function consumePart(part: Part, tokens: readonly TimeToken[], at: number): { token: TimeToken; next: number } | null {
@@ -498,6 +663,9 @@ function consumePart(part: Part, tokens: readonly TimeToken[], at: number): { to
   }
   if (token.kind !== 'ATOM') return null;
   if (!part.atomKinds.includes(token.atom.kind)) return null;
+  if (part.sense !== undefined) {
+    if (token.atom.kind !== 'DIRECTION' || token.atom.sense !== part.sense) return null;
+  }
   return { token, next: at + 1 };
 }
 

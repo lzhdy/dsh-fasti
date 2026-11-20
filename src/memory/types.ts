@@ -472,14 +472,26 @@ export type IsoWeekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
  *   L3 产 7 日半开窗，粒度 WEEK）；
  * - YEAR_MONTH_DAY：完整四位年份的年月日（非法日历日期不 clamp；两位年份不闭合，
  *   主控同日拍板只认四位，两位年回落 MONTH_DAY 走 MISSING_YEAR）；
- * - MONTH_DAY：无年份（或年份不完整）的月日，必落 MISSING_YEAR，不补今年、不产候选。
+ * - MONTH_DAY：无年份（或年份不完整）的月日，必落 MISSING_YEAR，不补今年、不产候选；
+ * - RELATIVE_SPAN（#132）：相对锚点的有限跨度（"前三天/后两周/三天之内/三天前"），
+ *   不含毫秒、只载形态 mode＋正整数 amount＋封闭单位 unit；L3 按整数日历折成半开 DAY 窗，
+ *   周单位滚动折 7N 天且不对齐周一；无界方位/月年/指代不产此原子（只产 flag 留痕）。
  */
+/** 相对跨度形态（#132，对应调研公式 F1–F6；端点含不含 D0 由 mode 唯一确定）。 */
+export type RelativeSpanMode = 'BACK' | 'FORWARD' | 'WITHIN' | 'BEFORE_POINT' | 'AFTER_POINT';
+
 export type TimeDateExpr =
   | { readonly kind: 'REL_DAY'; readonly delta: number }
   | { readonly kind: 'WEEKDAY_OF_WEEK'; readonly weekOffset: number; readonly weekday: IsoWeekday }
   | { readonly kind: 'WEEK_OF'; readonly weekOffset: number }
   | { readonly kind: 'YEAR_MONTH_DAY'; readonly year: number; readonly month: number; readonly day: number }
-  | { readonly kind: 'MONTH_DAY'; readonly month: number; readonly day: number };
+  | { readonly kind: 'MONTH_DAY'; readonly month: number; readonly day: number }
+  | {
+      readonly kind: 'RELATIVE_SPAN';
+      readonly mode: RelativeSpanMode;
+      readonly amount: number;
+      readonly unit: 'DAY' | 'WEEK';
+    };
 
 /** 时间粒度：DAY/WEEK 首期可产窗；CLOCK/DURATION/RECURRING 契约冻结但无生产产出者。 */
 export type TimeGranularity =
@@ -501,7 +513,11 @@ export type TimeFlag =
   | 'DURATION'
   | 'RECURRING'
   | 'OUT_OF_ASSET_RANGE'
-  | 'NOISE';
+  | 'NOISE'
+  // #132 扩面三枚：flag 是 TIR 事实，与末端 reason 同构但分属两层。
+  | 'OPEN_DIRECTIONAL'
+  | 'GRAIN_NOT_SUPPORTED'
+  | 'DEICTIC_REFERENCE';
 
 /** 单条符号证据：哪条规则、来自哪类资产、命中的原文片段。 */
 export interface TimeEvidence {
@@ -534,7 +550,9 @@ export interface TimeIR {
 
 /**
  * 显式不确定原因封闭枚举（UNCERTAIN 态 reason 字段唯一合法取值域）。
- * 新增原因必须 bump policy 资产版本并同步补 golden 夹具，禁止临时字符串。
+ * 新增原因禁止临时字符串并须同步补 golden 夹具；版本纪律（#132 订正）：reason 是词法/文法
+ * 识别结果的裁决标签，扩枚随识别能力 bump lexicon/grammar；仅当时区/日界/周开篇等闭合策略
+ * 本身变更才 bump policy（#132 三枚新 reason 对应 lexicon 2.1.0/grammar 4.1.0、policy 1.0.0 不动）。
  */
 export type TimeUncertainReason =
   | 'VAGUE_EXPRESSION'
@@ -545,7 +563,11 @@ export type TimeUncertainReason =
   | 'RECURRING_NOT_SINGLETON'
   | 'INVALID_CALENDAR_DATE'
   | 'OUT_OF_ASSET_RANGE'
-  | 'UNPARSEABLE_NOISE';
+  | 'UNPARSEABLE_NOISE'
+  // #132 扩面：只在联合末尾追加，旧九枚不删不改、排序语义冻结（见 time-resolve.REASON_PRIORITY）。
+  | 'OPEN_DIRECTIONAL_UNBOUNDED'
+  | 'GRAIN_NOT_SUPPORTED'
+  | 'DEICTIC_REFERENCE';
 
 /**
  * 闭合证明的维度状态（盲审收敛铁律：不存在 INFERRED 态）。

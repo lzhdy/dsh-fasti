@@ -27,8 +27,8 @@ import type { IsoWeekday, TimeFlag } from './types.ts';
  * 三者随 TimeAnchor 注入并进入 replayKey，保证重放可对账。
  */
 export const TIME_ASSET_VERSIONS = Object.freeze({
-  lexicon: '2.0.0',
-  grammar: '4.0.0',
+  lexicon: '2.1.0',
+  grammar: '4.1.0',
   policy: '1.0.0',
 } as const);
 
@@ -40,14 +40,27 @@ export const TIME_ASSET_VERSIONS = Object.freeze({
  * - WEEKDAY：星期序原子（1=周一…7=周日）；
  * - SHORT_CIRCUIT：短路词（疑问焦点/内容嫌疑/模糊/时长/周期/超资产范围触发词），
  *   携带对应 TimeFlag，文法层见即走 UNCERTAIN/NONE 路径，不进入日历求解；
- * - NUMERAL：汉字/全角数字归一（零〇○一壹两二…十廿卅），值即阿拉伯数值。
+ * - NUMERAL：汉字/全角数字归一（零〇○一壹两二…十廿卅），值即阿拉伯数值；
+ * - DIRECTION（#132）：方位/方向词，sense 在封闭五值内——BEFORE（前/过去/上，前置往过去段或
+ *   后置单点）、AFTER（后/下，前置未来段不含今天或后置单点）、AFTER_INCLUSIVE（未来/接下来，
+ *   含今天）、WITHIN（内/之内/以内，后置界内含今天）、OPEN（之前/之后/以前/以后/以来/开外…
+ *   任意位置都无界，只留痕不造窗）；只在文法产生式内被消费，孤立不匹配模板不产 IR；
+ * - DEMONSTRATIVE（#132）：这/那指示限定词，方向依赖语境，首版只走开放留痕、不硬选方向。
  */
+/**
+ * 方位词封闭语义（#132）：方向由 sense 承载，句法位置（前置/后置/裸用）由文法产生式序列决定，
+ * 词表原子本身不区分位置。OPEN 是"认得出但边界不可闭"的唯一去向。
+ */
+export type TimeDirectionSense = 'BEFORE' | 'AFTER' | 'AFTER_INCLUSIVE' | 'WITHIN' | 'OPEN';
+
 export type TimeLexiconAtom =
   | { readonly kind: 'REL_DAY'; readonly delta: number }
   | { readonly kind: 'WEEK_OFFSET'; readonly offset: number }
   | { readonly kind: 'WEEKDAY'; readonly weekday: IsoWeekday }
   | { readonly kind: 'SHORT_CIRCUIT'; readonly flag: TimeFlag }
-  | { readonly kind: 'NUMERAL'; readonly value: number };
+  | { readonly kind: 'NUMERAL'; readonly value: number }
+  | { readonly kind: 'DIRECTION'; readonly sense: TimeDirectionSense }
+  | { readonly kind: 'DEMONSTRATIVE' };
 
 /**
  * 词表条目：一条自然语言 surface 对应一个封闭原子。
@@ -218,6 +231,63 @@ const NUMERAL_ENTRIES: readonly TimeLexiconEntry[] = Object.freeze([
   entry('lex:num:30:sa', '卅', { kind: 'NUMERAL', value: 30 }),
 ]);
 
+// --- #132 方位词（封闭 sense；开放义一律只留痕，孤立单字不进模板则不产 IR） ---------------
+
+const DIRECTION_ENTRIES: readonly TimeLexiconEntry[] = Object.freeze([
+  // 往过去 / 后置单点过去。
+  entry('lex:dir:before:qian', '前', { kind: 'DIRECTION', sense: 'BEFORE' }),
+  entry('lex:dir:before:guoqu', '过去', { kind: 'DIRECTION', sense: 'BEFORE' }),
+  entry('lex:dir:before:shang', '上', { kind: 'DIRECTION', sense: 'BEFORE' }),
+  // 往未来（不含今天）/ 后置单点未来。
+  entry('lex:dir:after:hou', '后', { kind: 'DIRECTION', sense: 'AFTER' }),
+  entry('lex:dir:after:xia', '下', { kind: 'DIRECTION', sense: 'AFTER' }),
+  // 往未来含今天（只用于前置"未来/接下来 N 单位"）。
+  entry('lex:dir:after-incl:weilai', '未来', { kind: 'DIRECTION', sense: 'AFTER_INCLUSIVE' }),
+  entry('lex:dir:after-incl:jiexialai', '接下来', { kind: 'DIRECTION', sense: 'AFTER_INCLUSIVE' }),
+  // 后置界内，含今天。
+  entry('lex:dir:within:nei', '内', { kind: 'DIRECTION', sense: 'WITHIN' }),
+  entry('lex:dir:within:zhinei', '之内', { kind: 'DIRECTION', sense: 'WITHIN' }),
+  entry('lex:dir:within:yinei', '以内', { kind: 'DIRECTION', sense: 'WITHIN' }),
+  // 无界方位：任何位置都只认出留痕，绝不补另一端（裸用 / X 之后 / N 天以后 / 以来 / 界限）。
+  entry('lex:dir:open:zhiqian', '之前', { kind: 'DIRECTION', sense: 'OPEN' }),
+  entry('lex:dir:open:zhihou', '之后', { kind: 'DIRECTION', sense: 'OPEN' }),
+  entry('lex:dir:open:yiqian', '以前', { kind: 'DIRECTION', sense: 'OPEN' }),
+  entry('lex:dir:open:yihou', '以后', { kind: 'DIRECTION', sense: 'OPEN' }),
+  entry('lex:dir:open:yilai', '以来', { kind: 'DIRECTION', sense: 'OPEN' }),
+  entry('lex:dir:open:kaiwai', '开外', { kind: 'DIRECTION', sense: 'OPEN' }),
+  entry('lex:dir:open:zhiwai', '之外', { kind: 'DIRECTION', sense: 'OPEN' }),
+  entry('lex:dir:open:yishang', '以上', { kind: 'DIRECTION', sense: 'OPEN' }),
+  entry('lex:dir:open:yixia', '以下', { kind: 'DIRECTION', sense: 'OPEN' }),
+]);
+
+// --- #132 指示限定词（这/那 N 单位：方向靠语境，首版开放留痕不硬选方向） -----------------
+
+const DEMONSTRATIVE_ENTRIES: readonly TimeLexiconEntry[] = Object.freeze([
+  entry('lex:dem:zhe', '这', { kind: 'DEMONSTRATIVE' }),
+  entry('lex:dem:na', '那', { kind: 'DEMONSTRATIVE' }),
+]);
+
+// --- #132 月/年粒度冻结：结构认得但 MONTH/YEAR 契约挂账，只留痕、禁 clamp 30 天 -------------
+// 整词收编以避免引入分类词"个"与未建的 YEAR 粒度；"上月/上 N 月/N 月份"走文法 T9 产生式。
+
+const GRAIN_NOT_SUPPORTED_ENTRIES: readonly TimeLexiconEntry[] = Object.freeze([
+  entry('lex:short:grain:shang-ge-yue', '上个月', { kind: 'SHORT_CIRCUIT', flag: 'GRAIN_NOT_SUPPORTED' }),
+  // 带分类词"个"的月指称不走进文法（#128 邻接铁律不许跨"个"拼装、Q7 首版不收通用分类词），
+  // 月/年本是封闭粒度，按数据层整词收编；"上 N 个月"其余变体待真实语料再按词条增补、不开放文法。
+  entry('lex:short:grain:shang-liang-ge-yue', '上两个月', { kind: 'SHORT_CIRCUIT', flag: 'GRAIN_NOT_SUPPORTED' }),
+  entry('lex:short:grain:qu-nian', '去年', { kind: 'SHORT_CIRCUIT', flag: 'GRAIN_NOT_SUPPORTED' }),
+  entry('lex:short:grain:ming-nian', '明年', { kind: 'SHORT_CIRCUIT', flag: 'GRAIN_NOT_SUPPORTED' }),
+  entry('lex:short:grain:san-yue-fen', '三月份', { kind: 'SHORT_CIRCUIT', flag: 'GRAIN_NOT_SUPPORTED' }),
+]);
+
+// --- #132 指代词：日历通道永不解，弱留痕归对话指代通道 -----------------------------------
+
+const DEICTIC_ENTRIES: readonly TimeLexiconEntry[] = Object.freeze([
+  entry('lex:short:deictic:shang-ci', '上次', { kind: 'SHORT_CIRCUIT', flag: 'DEICTIC_REFERENCE' }),
+  entry('lex:short:deictic:gangcai', '刚才', { kind: 'SHORT_CIRCUIT', flag: 'DEICTIC_REFERENCE' }),
+  entry('lex:short:deictic:nahuir', '那会儿', { kind: 'SHORT_CIRCUIT', flag: 'DEICTIC_REFERENCE' }),
+]);
+
 /**
  * L0 词表主数据（批 2 已按封闭清单填满）。
  * 运行期只读：数组与每个条目、每个原子均在构建期 Object.freeze，
@@ -233,4 +303,9 @@ export const TIME_LEXICON_ENTRIES: readonly TimeLexiconEntry[] = Object.freeze([
   ...RECURRING_ENTRIES,
   ...OUT_OF_ASSET_RANGE_ENTRIES,
   ...NUMERAL_ENTRIES,
+  // #132 扩面：方位/指示为组合原子，月年冻结与指代走短路留痕。
+  ...DIRECTION_ENTRIES,
+  ...DEMONSTRATIVE_ENTRIES,
+  ...GRAIN_NOT_SUPPORTED_ENTRIES,
+  ...DEICTIC_ENTRIES,
 ]);

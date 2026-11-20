@@ -25,6 +25,7 @@ import type {
   ClosednessProof,
   ClosureDimProof,
   ClosureState,
+  RelativeSpanMode,
   TimeAnchor,
   TimeConstraint,
   TimeIR,
@@ -192,6 +193,10 @@ function uncertaintyOf(ir: TimeIR): TimeUncertainReason | null {
   if (ir.flags.includes('VAGUE')) return 'VAGUE_EXPRESSION';
   if (ir.flags.includes('INVALID_CALENDAR')) return 'INVALID_CALENDAR_DATE';
   if (ir.flags.includes('NOISE')) return 'UNPARSEABLE_NOISE';
+  // #132 扩面三枚 TIR 事实 → 末端 reason（命名在文法事实之上显式"无界"）。
+  if (ir.flags.includes('OPEN_DIRECTIONAL')) return 'OPEN_DIRECTIONAL_UNBOUNDED';
+  if (ir.flags.includes('GRAIN_NOT_SUPPORTED')) return 'GRAIN_NOT_SUPPORTED';
+  if (ir.flags.includes('DEICTIC_REFERENCE')) return 'DEICTIC_REFERENCE';
   if (ir.date === null) return 'UNPARSEABLE_NOISE';
   if (ir.date.kind === 'MONTH_DAY') return 'MISSING_YEAR';
   // 角色证据不足（UNKNOWN）与内容型同权：只降级不升级，宁空勿错。
@@ -221,6 +226,41 @@ function dayIndexForDate(ir: TimeIR, anchor: TimeAnchor): number | null {
     }
     case 'MONTH_DAY':
       return null;
+    case 'RELATIVE_SPAN':
+      // 跨度窗不走单日索引：resolveTimeConstraint 以 relativeSpanBounds 单独分流，
+      // 此分支仅为 switch 穷尽性防御，正常路径不可达。
+      return null;
+  }
+}
+
+/**
+ * #132 RELATIVE_SPAN → 半开整数日序号区间 [startDay,endDay)（D0＝锚点民用日）。
+ *
+ * 端点口径（主控 2026-11-20 拍板，调研公式 F1–F6，方位不含分界点）：
+ *  - BACK 前/过去 N：[D0-Nu,D0)；FORWARD 后 N：[D0+1,D0+1+Nu)，二者以 D0 严格对称、不含 D0；
+ *  - WITHIN 未来/之内 N：[D0,D0+Nu) 含 D0；
+ *  - BEFORE_POINT/AFTER_POINT 后置 N 前/后：锚定单个日子的一日窗；
+ *  - unit=WEEK 时 Nu=7·amount（滚动、不对齐周一），粒度统一记 DAY。
+ * 纯整数加法，amount≥1 由文法层保证，故恒有 endDay>startDay。
+ */
+function relativeSpanBounds(
+  anchorDayIndex: number,
+  mode: RelativeSpanMode,
+  amount: number,
+  unit: 'DAY' | 'WEEK',
+): { readonly startDay: number; readonly endDay: number } {
+  const nu = unit === 'WEEK' ? 7 * amount : amount;
+  switch (mode) {
+    case 'BACK':
+      return { startDay: anchorDayIndex - nu, endDay: anchorDayIndex };
+    case 'FORWARD':
+      return { startDay: anchorDayIndex + 1, endDay: anchorDayIndex + 1 + nu };
+    case 'WITHIN':
+      return { startDay: anchorDayIndex, endDay: anchorDayIndex + nu };
+    case 'BEFORE_POINT':
+      return { startDay: anchorDayIndex - amount, endDay: anchorDayIndex - amount + 1 };
+    case 'AFTER_POINT':
+      return { startDay: anchorDayIndex + amount, endDay: anchorDayIndex + amount + 1 };
   }
 }
 
@@ -254,6 +294,11 @@ const REASON_PRIORITY: readonly TimeUncertainReason[] = Object.freeze([
   'DURATION_NOT_FILTER',
   'RECURRING_NOT_SINGLETON',
   'UNPARSEABLE_NOISE',
+  // #132 三枚新因追加在末位冻结：旧九枚仲裁优先级全部更高，确保既有降级（如"月底之前"
+  // 的 VAGUE）不被新开放因翻盘；新因之间按"无界→粒度→指代"排序。
+  'OPEN_DIRECTIONAL_UNBOUNDED',
+  'GRAIN_NOT_SUPPORTED',
+  'DEICTIC_REFERENCE',
 ] as TimeUncertainReason[]);
 
 /**
@@ -285,6 +330,18 @@ export function resolveTimeConstraint(text: string, anchor: TimeAnchor): TimeCon
       const bucket = uncertaintySpans.get(reason);
       if (bucket === undefined) uncertaintySpans.set(reason, [ir.span]);
       else bucket.push(ir.span);
+      continue;
+    }
+    // #132 相对跨度窗：独立的 [startDay,endDay) 半开区间，粒度一律 DAY（周滚动折 7N 天）。
+    if (ir.date !== null && ir.date.kind === 'RELATIVE_SPAN') {
+      const anchorDay = localDayIndexOf(anchor.epochMs);
+      const bounds = relativeSpanBounds(anchorDay, ir.date.mode, ir.date.amount, ir.date.unit);
+      const spanProof = proveClosedness(ir, anchor);
+      windows.push({
+        window: makeWindow(dayStartMsOf(bounds.startDay), dayStartMsOf(bounds.endDay), 'DAY', spanProof),
+        rule: ir.evidence[0]?.ruleId ?? 'gram:unknown',
+        proof: spanProof,
+      });
       continue;
     }
     const dayIndex = dayIndexForDate(ir, anchor);

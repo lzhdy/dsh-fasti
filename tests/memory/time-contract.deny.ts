@@ -20,6 +20,7 @@ import type {
   ClosureState,
   TimeAnchor,
   TimeConstraint,
+  TimeDateExpr,
   TimeUncertainReason,
   TimeWindow,
 } from '../../src/memory/types.ts';
@@ -94,8 +95,17 @@ const denyZone: TimeAnchor = { epochMs: 0, zoneId: 'UTC', weekStartsOn: 1, asset
 const denyWeekStart: TimeAnchor = { epochMs: 0, zoneId: 'Asia/Shanghai', weekStartsOn: 0, assets: prov.assets };
 
 // 7. UNCERTAIN reason 是封闭枚举，自由字符串必须编译失败。
-// @ts-expect-error 禁止枚举外临时原因码，新增须 bump policy 版本并补夹具
+// @ts-expect-error 禁止枚举外临时原因码；#132 起新增原因码随识别能力 bump lexicon/grammar（非 policy）并补夹具
 const denyReason: TimeUncertainReason = 'SOMETHING_FUZZY';
+
+// 8. #132 RELATIVE_SPAN 单位封闭为 DAY/WEEK：月/年粒度冻结，逃逸成跨度窗必须编译失败。
+const denySpanMonthUnit: Extract<TimeDateExpr, { kind: 'RELATIVE_SPAN' }> = {
+  kind: 'RELATIVE_SPAN',
+  mode: 'BACK',
+  amount: 2,
+  // @ts-expect-error MONTH 不是可闭合跨度单位（月年只许 GRAIN_NOT_SUPPORTED 留痕，禁 clamp 造窗）
+  unit: 'MONTH',
+};
 
 export default [
   denyNoneWithWindow,
@@ -109,4 +119,5 @@ export default [
   denyZone,
   denyWeekStart,
   denyReason,
+  denySpanMonthUnit,
 ];

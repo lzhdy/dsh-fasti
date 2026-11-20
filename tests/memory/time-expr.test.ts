@@ -284,3 +284,92 @@ test('T9 静态纪律：time-lexicon/time-expr 零正则零时钟零 I/O（词�
     assert.equal(/(^|[=(,:]\s*)\/(?![/*])/.test(text), false, `${rel} 不得使用正则字面量`);
   }
 });
+
+// ===========================================================================
+// #132 时间结构识别扩面：RELATIVE_SPAN 符号原子与三类留痕的 TIR 层表驱动夹具
+// （只断言不含毫秒的 TIR shape/flag/ruleId；半开毫秒窗在 time-relative-span.test 断言）
+// ===========================================================================
+
+test('#132 T1 RELATIVE_SPAN：方位＋数字＋天/周单位归一到封闭 mode/amount/unit，粒度 DAY、FILTER', () => {
+  const cases: ReadonlyArray<[string, string, number, 'DAY' | 'WEEK', string]> = [
+    ['前三天', 'BACK', 3, 'DAY', 'gram:span-back'],
+    ['过去三天', 'BACK', 3, 'DAY', 'gram:span-back'],
+    ['后三天', 'FORWARD', 3, 'DAY', 'gram:span-forward'],
+    ['未来三天', 'WITHIN', 3, 'DAY', 'gram:span-within-pre'],
+    ['接下来三天', 'WITHIN', 3, 'DAY', 'gram:span-within-pre'],
+    ['三天之内', 'WITHIN', 3, 'DAY', 'gram:span-within-post'],
+    ['三天内', 'WITHIN', 3, 'DAY', 'gram:span-within-post'],
+    ['三天前', 'BEFORE_POINT', 3, 'DAY', 'gram:point-before'],
+    ['三天后', 'AFTER_POINT', 3, 'DAY', 'gram:point-after'],
+    ['前两周', 'BACK', 2, 'WEEK', 'gram:span-back'],
+    ['后两周', 'FORWARD', 2, 'WEEK', 'gram:span-forward'],
+    ['两周内', 'WITHIN', 2, 'WEEK', 'gram:span-within-post'],
+  ];
+  for (const [text, mode, amount, unit, ruleId] of cases) {
+    const ir = only(text);
+    assert.equal(ir.role, 'FILTER', `「${text}」角色`);
+    assert.equal(ir.granularity, 'DAY', `「${text}」滚动跨度 IR 粒度统一 DAY`);
+    assert.equal(ir.date?.kind, 'RELATIVE_SPAN', `「${text}」TIR 类型`);
+    if (ir.date?.kind === 'RELATIVE_SPAN') {
+      assert.equal(ir.date.mode, mode, `「${text}」mode`);
+      assert.equal(ir.date.amount, amount, `「${text}」amount`);
+      assert.equal(ir.date.unit, unit, `「${text}」unit`);
+    }
+    assert.equal(ir.evidence[0]?.ruleId, ruleId, `「${text}」规则 id`);
+    assert.equal(ir.evidence[0]?.source, 'GRAMMAR');
+    assert.deepEqual(ir.flags, [], `「${text}」可闭合结构不带留痕 flag`);
+  }
+});
+
+test('#132 T1 单纯方位 vs 合成方位：三天后闭合、三天以后开放（sense 不同产不同 TIR）', () => {
+  const closed = only('三天后');
+  assert.equal(closed.date?.kind, 'RELATIVE_SPAN');
+  const open = only('三天以后');
+  assert.equal(open.date, null, '合成方位"以后"无界，不产日期原子');
+  assert.ok(open.flags.includes('OPEN_DIRECTIONAL'));
+  assert.equal(open.evidence[0]?.ruleId, 'gram:open-post-span');
+});
+
+test('#132 T5 开放方位留痕：裸用/星期后/指示词 都 date=null 且带 OPEN_DIRECTIONAL', () => {
+  const bare: ReadonlyArray<[string, string]> = [
+    ['之前', 'gram:open-direction-bare'],
+    ['之后', 'gram:open-direction-bare'],
+    ['以来', 'gram:open-direction-bare'],
+    ['周三之后', 'gram:open-after-prefix-weekday'],
+    ['这三天', 'gram:open-demonstrative'],
+    ['那三天', 'gram:open-demonstrative'],
+  ];
+  for (const [text, ruleId] of bare) {
+    const ir = only(text);
+    assert.equal(ir.date, null, `「${text}」无界不得产日期原子`);
+    assert.ok(ir.flags.includes('OPEN_DIRECTIONAL'), `「${text}」flag`);
+    assert.equal(ir.evidence[0]?.ruleId, ruleId, `「${text}」规则 id`);
+  }
+  // 现行犯：周日之后整体一条开放 TIR（最长匹配压过单用"周日"），不拆成两条。
+  const afterWeekday = only('周日之后');
+  assert.equal(afterWeekday.date, null);
+  assert.ok(afterWeekday.flags.includes('OPEN_DIRECTIONAL'));
+  assert.equal(afterWeekday.evidence[0]?.ruleId, 'gram:open-after-weekday7');
+  // 孤立"周日"仍是可闭合星期 TIR，证明差异来自方位词被接住。
+  assert.equal(only('周日').date?.kind, 'WEEKDAY_OF_WEEK');
+});
+
+test('#132 T5 月年粒度冻结与指代：GRAIN/DEICTIC 留痕、date=null，词表短路与文法产生式分路', () => {
+  // 文法 T9：方向（＋数）＋年/月，邻接成立才命中。
+  const grainGrammar = only('上月');
+  assert.equal(grainGrammar.date, null);
+  assert.ok(grainGrammar.flags.includes('GRAIN_NOT_SUPPORTED'));
+  assert.equal(grainGrammar.evidence[0]?.ruleId, 'gram:grain-frozen-direction');
+  // 数据层整词（含分类词"个"的不进文法、年粒度词）走 LEXICON 短路。
+  for (const text of ['上两个月', '上个月', '去年', '明年', '三月份']) {
+    const ir = only(text);
+    assert.equal(ir.date, null, `「${text}」冻结粒度不产日期原子`);
+    assert.ok(ir.flags.includes('GRAIN_NOT_SUPPORTED'), `「${text}」flag`);
+    assert.equal(ir.evidence[0]?.source, 'LEXICON', `「${text}」整词来自词表短路`);
+  }
+  for (const text of ['上次', '刚才', '那会儿']) {
+    const ir = only(text);
+    assert.equal(ir.date, null, `「${text}」指代日历永不解`);
+    assert.ok(ir.flags.includes('DEICTIC_REFERENCE'), `「${text}」flag`);
+  }
+});
