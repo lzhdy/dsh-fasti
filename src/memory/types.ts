@@ -298,9 +298,12 @@ export type GateReasonCode =
   // #129 排序化后严格优超/tie 弃权已废：两枚举保留备查（冻结词表不删码），V2 不再产出。
   | 'tie-no-strict-leader'
   | 'not-strict-leader'
-  // #127 阶段1.5 时间槽裁决原因码（仅 V2 路径产出；v1 不读取 TimeConstraint）。
+  // #127 阶段1.5 时间槽原因码（仅 V2 路径产出；v1 不读取 TimeConstraint）。
+  // #131 起时间窗摘出热路径、不再否决删卡：time-conflict 枚举冻结保留备查但 V2 永久不可达；
+  // WINDOW/CANDIDATES 词面合格卡一律留痕放行（time-window-ignored），UNCERTAIN 仍 time-uncertain-ignored。
   | 'time-conflict'
-  | 'time-uncertain-ignored';
+  | 'time-uncertain-ignored'
+  | 'time-window-ignored';
 
 /**
  * #130 截窗槽位标记（与 rank.ts SlotTag 同字面量联合，结构同形不互引：types 是无环纯类型基座，

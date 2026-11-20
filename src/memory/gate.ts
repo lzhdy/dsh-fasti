@@ -21,13 +21,14 @@
  *
  * #127 阶段 1.5 时间槽（仅 applyGateV2 消费可选 timeConstraint；v1 函数体不读该字段，T7 静态锁）：
  *  - NONE/缺省槽位休眠输出零漂移；UNCERTAIN 留痕放行（time-uncertain-ignored）；
- *  - WINDOW/CANDIDATES 经 time-resolve 预注册布尔谓词裁决，窗外卡 time-conflict，多候选 OR 并集。
+ *  - #131（P4）起 WINDOW/CANDIDATES 不再有否决权：时间窗摘出热路径、降为诊断留痕，
+ *    词面合格卡一张不删，统一盖 time-window-ignored 交排序。窗几何（半开/相交/OR 并集）
+ *    谓词保留在 time-resolve 供离线与单测直调，本模块不再 import 或调用任何时间裁决谓词。
  */
 
 import { asciiLower } from '../projection/types.ts';
 import { RANK_POLICY, composeView, mulberry32, rankCards } from './rank.ts';
 import { buildSerialMap } from './serial.ts';
-import { timeConstraintAdmits } from './time-resolve.ts';
 import { CURRENT_RULES_VERSION } from './types.ts';
 import type {
   ExplainedRankedCard,
@@ -112,8 +113,8 @@ export interface ApplyGateInput {
   limit?: number;
   /**
    * #127 时间约束四态信封（仅 applyGateV2 消费；v1 函数体刻意不读本字段，T7 静态锁）。
-   * 缺省或 NONE：时间槽休眠，裁决与批 3 之前逐字节一致；UNCERTAIN：留痕放行；
-   * WINDOW/CANDIDATES：窗外卡落 rejected/time-conflict，多候选 OR 并集禁直取首项。
+   * 缺省或 NONE：时间槽休眠，裁决与无信封逐字节一致；UNCERTAIN：留痕放行；
+   * #131 起 WINDOW/CANDIDATES 只产 time-window-ignored 留痕、不再否决删卡，词面合格卡一张不删。
    */
   timeConstraint?: TimeConstraint;
 }
@@ -257,26 +258,21 @@ function judgeV2(candidate: ExplainedRankedCard, qNorm: string): V2Judgement {
 }
 
 /**
- * #127 时间槽裁决（仅 v2 调用；谓词本体在 time-resolve，门内不做任何日历算术）：
- *  - 无信封/NONE：槽位休眠，不加标记、不否决（T7 零漂移的结构保证）；
- *  - UNCERTAIN：宁空勿错，一律放行并盖 time-uncertain-ignored 留痕；
- *  - WINDOW/CANDIDATES：预注册布尔谓词判相交，不相交即 time-conflict；
- *    多候选 OR 并集封在 timeConstraintAdmits 内，这里看不到候选数组、无从直取首项。
+ * #131（P4）时间槽留痕标签（仅 v2 调用；门内不做任何日历算术、不调用时间谓词）：
+ *  - 无信封/NONE：槽位休眠，返回 null、不加标记（T7 零漂移的结构保证）；
+ *  - UNCERTAIN：宁空勿错，盖 time-uncertain-ignored 留痕；
+ *  - WINDOW/CANDIDATES：时间窗摘出热路径后无否决权，词面合格卡统一盖 time-window-ignored
+ *    留痕交排序；窗内窗外一张不删，窗几何谓词留在 time-resolve 离线直调。
  */
-function decideTimeSlot(
-  occurredMs: number,
-  endedMs: number,
-  constraint: TimeConstraint | undefined,
-): { admit: boolean; tag: GateReasonCode | null } {
+function decideTimeTag(constraint: TimeConstraint | undefined): GateReasonCode | null {
   if (constraint === undefined || constraint.kind === 'NONE') {
-    return { admit: true, tag: null };
+    return null;
   }
   if (constraint.kind === 'UNCERTAIN') {
-    return { admit: true, tag: 'time-uncertain-ignored' };
+    return 'time-uncertain-ignored';
   }
-  return timeConstraintAdmits(occurredMs, endedMs, constraint)
-    ? { admit: true, tag: null }
-    : { admit: false, tag: 'time-conflict' };
+  // WINDOW/CANDIDATES：#131 起只留痕不裁决。
+  return 'time-window-ignored';
 }
 
 /** 词面原因之后附加时间槽留痕码（无留痕时原数组不动）。 */
@@ -286,9 +282,9 @@ function withTimeTag(reasons: GateReasonCode[], tag: GateReasonCode | null): Gat
 
 /**
  * rules-v2 门（#126 合格性裁决；#129 起排序化改造，严格优超/tie 弃权已废）：
- * - 逐卡反向包含＋时间槽判"合格不合格"，不合格落 rejected 留痕；
- * - 合格卡一张不删，全体交 rank 排序器字典序定先后（weight→strength→occurred→cardId），
- *   证据长度只留痕不删卡；平局不再弃权，澄清权归她；
+ * - 逐卡反向包含判"词面合格不合格"，词面不合格落 rejected 留痕；
+ * - #131 起时间槽只加留痕标签、不参与合格性，词面合格卡一张不删，全体交 rank 排序器
+ *   字典序定先后（weight→strength→occurred→cardId），证据长度只留痕不删卡；平局不弃权，澄清权归她；
  * - 无合格卡 → no-match/all-rejected（V2 不再产出 abstain；abstain 仅 v1 保留）；
  * - 空查询/零候选/candidateCount 语义与 v1 同构；limit 缺省回落 RANK_POLICY.defaultLimit。
  */
@@ -318,13 +314,9 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
       rejected.push(toGated(candidate, judgement.reasons));
       continue;
     }
-    // 词面过门后再进 #127 时间槽：词面原因与时间原因各司其职，不互相覆盖。
-    const slot = decideTimeSlot(candidate.card.occurredMs, candidate.card.endedMs, timeConstraint);
-    if (!slot.admit) {
-      rejected.push(toGated(candidate, ['time-conflict']));
-      continue;
-    }
-    passed.push({ candidate, judgement, timeTag: slot.tag });
+    // 词面过门后再贴 #131 时间槽留痕：时间只留痕不否决，词面合格卡一张不删。
+    const timeTag = decideTimeTag(timeConstraint);
+    passed.push({ candidate, judgement, timeTag });
   }
 
   // #129：合格集为空属 no-match（abstain 语义在 V2 退役；v1 路径保留 abstain 不动）。

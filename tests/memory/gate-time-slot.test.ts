@@ -1,10 +1,17 @@
 /**
- * #127 批 4（P3）gate V2 时间槽红测：T6 多候选 OR 并集/去重/留痕，T7 v1 零漂移静态＋深相等锁。
+ * #131（P4）gate V2 时间槽红测：查询时间窗摘出热路径、降诊断留痕。
+ *
+ * #127 时代时间槽对 WINDOW/CANDIDATES 持有布尔否决权（窗外卡落 rejected/time-conflict）。
+ * e10 封存卷实证该否决在口语查询上误杀合格卡（时间词是事件内容而非检索约束），#131 定稿：
+ *  - 时间解析器/证明门/`timeConstraintAdmits` 谓词全部保留在 time-resolve，门层不再调用；
+ *  - WINDOW/CANDIDATES 信封下，**词面合格卡一张不删**，统一盖留痕码 `time-window-ignored` 后交排序；
+ *  - `time-conflict` 枚举在 types 保留（冻结先例），但 V2 产出路径永久不可达；
+ *  - 半开边界 t∈[s,t)、区间相交、CANDIDATES OR 并集等谓词几何，下沉 time-resolve.test.ts 直测。
  *
  * 纪律：
  *  - 信封只能经 resolveTimeConstraint 真实产出（WINDOW 构造器模块私有，测试也拼不出假窗）；
  *  - 锚点固定注入，测试内可用 Date.UTC 做民用日换算，生产模块不碰宿主日期对象；
- *  - v1 门函数体静态不得出现 TimeConstraint 字样，带不带信封结果必须逐字节深相等。
+ *  - v1 门函数体静态不得出现 TimeConstraint 字样，带不带信封结果必须逐字节深相等（T7 冻结维持）。
  */
 
 import { test } from 'node:test';
@@ -100,13 +107,17 @@ function likeCard(occurredMs: number): ExplainedRankedCard {
 }
 
 function constraintOf(text: string): TimeConstraint {
-  const c = resolveTimeConstraint(text, anchor);
-  return c;
+  return resolveTimeConstraint(text, anchor);
 }
 
-// ── T6 WINDOW 单日窗裁决 ──────────────────────────────────────────────────
+/** 收集一次门裁决里所有卡（过门＋拒绝）的原因码。 */
+function allReasonCodes(out: ReturnType<typeof applyGateV2>): string[] {
+  return [...out.accepted, ...out.rejected].flatMap((g) => g.gateReasons);
+}
 
-test('T6 WINDOW：窗内 exact 卡过门，窗外卡落 rejected/time-conflict', () => {
+// ── #131 WINDOW：时间窗无否决权，词面合格卡一张不删 ─────────────────────────
+
+test('T6 WINDOW：窗内与窗外 exact 卡全部过门，各盖 time-window-ignored，rejected 清空', () => {
   const c = constraintOf('周六的野餐');
   assert.equal(c.kind, 'WINDOW');
   const saturday = localDayStart(2026, 11, 21);
@@ -118,40 +129,47 @@ test('T6 WINDOW：窗内 exact 卡过门，窗外卡落 rejected/time-conflict',
     timeConstraint: c,
   });
   assert.equal(out.status, 'hit');
-  assert.equal(out.accepted.length, 1);
-  assert.deepEqual(out.accepted[0]?.gateReasons, ['exact-alias-pass']);
-  assert.equal(out.rejected.length, 1);
-  assert.deepEqual(out.rejected[0]?.gateReasons, ['time-conflict']);
+  assert.equal(out.accepted.length, 2);
+  assert.equal(out.rejected.length, 0, '时间窗不再拥有删卡权，窗外卡不得落 rejected');
+  assert.ok(
+    out.accepted.every((g) => g.gateReasons.includes('time-window-ignored')),
+    `两张词面过门卡都应携带时间窗留痕码，实际 ${JSON.stringify(out.accepted.map((g) => g.gateReasons))}`,
+  );
+  assert.ok(
+    out.accepted.every((g) => g.gateReasons.includes('exact-alias-pass')),
+    '留痕码追加在词面原因之后，不替代词面合格证据',
+  );
 });
 
-test('T6 WINDOW 半开边界：点事件 t∈[s,t)，起点命中、终点不命中', () => {
+test('T6 WINDOW：门层不再区分窗起点/终点，两张点事件卡都过门（半开几何下沉谓词直测）', () => {
   const c = constraintOf('周六的野餐');
   if (c.kind !== 'WINDOW') throw new Error('前置失效：应为 WINDOW');
   const s = c.window.startMs;
   const t = c.window.endMs;
   const atStart = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [exactCard(s)], timeConstraint: c });
   const atEnd = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [exactCard(t)], timeConstraint: c });
-  assert.equal(atStart.accepted.length, 1, '窗起点毫秒应命中');
-  assert.equal(atEnd.accepted.length, 0, '窗终点毫秒属下一窗，不命中');
-  assert.deepEqual(atEnd.rejected[0]?.gateReasons, ['time-conflict']);
+  assert.equal(atStart.accepted.length, 1, '窗起点卡过门');
+  assert.equal(atEnd.accepted.length, 1, '窗终点卡（属下一窗）门层也不再删，留痕交排序');
+  assert.ok(atStart.accepted[0]?.gateReasons.includes('time-window-ignored'));
+  assert.ok(atEnd.accepted[0]?.gateReasons.includes('time-window-ignored'));
+  assert.equal(atStart.rejected.length + atEnd.rejected.length, 0);
 });
 
-test('T6 WINDOW：跨窗区间 o<t 且 e>s 相交即命中，完全在窗外才否决', () => {
+test('T6 WINDOW：跨窗相交卡与完全窗外卡都过门（相交裁决已下沉 time-resolve 谓词直测）', () => {
   const c = constraintOf('周六的野餐');
   if (c.kind !== 'WINDOW') throw new Error('前置失效');
   const s = c.window.startMs;
-  // 区间从周五伸入周六（相交）。
   const straddle = exactCard(s - DAY_MS + 3600_000, s + 3600_000);
-  // 区间完全落在周五（不相交）。
   const before = exactCard(s - 2 * DAY_MS, s - DAY_MS);
   const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [straddle, before], timeConstraint: c });
-  assert.equal(out.accepted.length, 1);
-  assert.equal(out.rejected[0]?.gateReasons[0], 'time-conflict');
+  assert.equal(out.accepted.length, 2);
+  assert.equal(out.rejected.length, 0);
+  assert.ok(out.accepted.every((g) => g.gateReasons.includes('time-window-ignored')));
 });
 
-// ── T6 CANDIDATES 多候选 OR 并集 ──────────────────────────────────────────
+// ── #131 CANDIDATES：多候选不再删卡，OR 并集几何下沉谓词直测 ─────────────────
 
-test('T6 CANDIDATES：两个日子 OR 并集，第二个窗内的卡必须命中（禁直取首项）', () => {
+test('T6 CANDIDATES：三个候选日词面合格卡全部过门（OR 并集/禁直取首项由 time-resolve T4 直测）', () => {
   const c = constraintOf('周六和周日的安排');
   assert.equal(c.kind, 'CANDIDATES');
   if (c.kind !== 'CANDIDATES') throw new Error('前置失效');
@@ -159,8 +177,7 @@ test('T6 CANDIDATES：两个日子 OR 并集，第二个窗内的卡必须命中
   const friday = localDayStart(2026, 11, 20) + 12 * 3600_000;
   const saturday = localDayStart(2026, 11, 21) + 12 * 3600_000;
   const sunday = localDayStart(2026, 11, 22) + 12 * 3600_000;
-  // #129：词面合格卡不再因证据长短互删；周五卡被时间槽否决，周六/周日两张都过门，
-  // 排序器按 occurredMs 新→旧，周日卡排第一（第二候选窗不被直取首项吞掉）。
+  // #131：周五卡即便不在任何候选窗内也不再被时间槽否决，三张词面合格卡一张不删。
   const qNorm = '周五的安排 周六安排 周日的安排啊';
   const out = applyGateV2({
     atMs: TEST_NOW_MS,
@@ -173,36 +190,28 @@ test('T6 CANDIDATES：两个日子 OR 并集，第二个窗内的卡必须命中
     timeConstraint: c,
   });
   assert.equal(out.status, 'hit');
-  assert.equal(out.accepted.length, 2);
-  // #130：两张零采用卡都在探索池，截窗内次序归 atMs 派生 RNG（不再保证 occurred 序）；
-  // 本测职责是 OR 并集不吞候选——集合口径核验两张窗内卡一张不丢，排序职责归 rank.test。
+  assert.equal(out.accepted.length, 3);
+  assert.equal(out.rejected.length, 0);
   assert.deepEqual(
     [...out.accepted.map((g) => g.card.occurredMs)].sort((a, b) => a - b),
-    [saturday, sunday],
-    '周六/周日两个候选窗的卡都命中，第二窗不被直取首项吞掉',
+    [friday, saturday, sunday],
   );
+  assert.ok(out.accepted.every((g) => g.gateReasons.includes('time-window-ignored')));
   assert.ok(out.accepted.every((g) => g.slot === 'explore'));
-  const rejectedByTime = out.rejected.filter((g) => g.gateReasons.includes('time-conflict'));
-  assert.equal(rejectedByTime.length, 1, '周五卡应被时间槽否决');
-  assert.equal(rejectedByTime[0]?.card.occurredMs, friday);
-  assert.ok(
-    out.rejected.every((g) => !g.gateReasons.includes('not-strict-leader')),
-    '#129 起 not-strict-leader 在 V2 不再产出',
-  );
 });
 
 test('T6 CANDIDATES：同一卡横跨两个候选窗只提交一次（按卡去重不重复）', () => {
   const c = constraintOf('周六和周日的安排');
   if (c.kind !== 'CANDIDATES') throw new Error('前置失效');
   const saturday = localDayStart(2026, 11, 21);
-  // 区间从周六中午到周日中午，与两个窗都相交。
   const spanning = exactCard(saturday + 12 * 3600_000, saturday + DAY_MS + 12 * 3600_000);
   const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [spanning], timeConstraint: c });
   assert.equal(out.accepted.length, 1);
   assert.equal(out.rejected.length, 0);
+  assert.ok(out.accepted[0]?.gateReasons.includes('time-window-ignored'));
 });
 
-// ── 不确定与无时间：留痕放行 / 不参与 ─────────────────────────────────────
+// ── 不确定与无时间：留痕放行 / 不参与（语义维持） ────────────────────────────
 
 test('T6 UNCERTAIN：时间不可闭合一律放行，过门卡盖 time-uncertain-ignored 留痕', () => {
   const c = constraintOf('最近聚餐的事情');
@@ -214,6 +223,10 @@ test('T6 UNCERTAIN：时间不可闭合一律放行，过门卡盖 time-uncertai
     out.accepted[0]?.gateReasons.includes('time-uncertain-ignored'),
     `应携带留痕码，实际 ${JSON.stringify(out.accepted[0]?.gateReasons)}`,
   );
+  assert.ok(
+    !out.accepted.some((g) => g.gateReasons.includes('time-window-ignored')),
+    'UNCERTAIN 走 uncertain 留痕，不盖 window 留痕',
+  );
 });
 
 test('T6 NONE：无时间原子不参与裁决，过门卡不带任何时间原因码', () => {
@@ -223,27 +236,31 @@ test('T6 NONE：无时间原子不参与裁决，过门卡不带任何时间原�
   assert.deepEqual(out.accepted[0]?.gateReasons, ['exact-alias-pass']);
 });
 
-test('T6 词面本就拒绝的弱卡：保留词面原因，不盖时间码（#129 全拒归 no-match）', () => {
+test('T6 词面本就拒绝的弱卡：保留词面原因，不盖时间窗留痕（留痕只盖过门卡）', () => {
   const c = constraintOf('周六的野餐');
   const saturday = localDayStart(2026, 11, 21) + 3600_000;
   const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [likeCard(saturday)], timeConstraint: c });
   assert.equal(out.status, 'no-match');
   assert.equal(out.reason, 'all-rejected');
   assert.deepEqual(out.rejected[0]?.gateReasons, ['like-only-weak-match']);
+  assert.ok(
+    !out.rejected.some((g) => g.gateReasons.some((r) => r.startsWith('time-'))),
+    '词面拒绝卡不得追加任何时间原因码',
+  );
 });
 
-test('T6 词面过门卡被时间槽全部否决 → no-match/all-rejected 且逐卡 time-conflict', () => {
+test('T6 #131 核心反转：词面合格卡即便全在窗外也不再 no-match，全部 hit 并盖 time-window-ignored', () => {
   const c = constraintOf('周六的野餐');
   const monday = localDayStart(2026, 11, 23) + 3600_000;
   const tuesday = localDayStart(2026, 11, 24) + 3600_000;
   const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [exactCard(monday), exactCard(tuesday)], timeConstraint: c });
-  assert.equal(out.status, 'no-match');
-  assert.equal(out.reason, 'all-rejected');
-  assert.equal(out.accepted.length, 0);
-  assert.ok(out.rejected.every((g) => g.gateReasons.includes('time-conflict')));
+  assert.equal(out.status, 'hit', '#127 时代此处是 no-match/all-rejected，#131 起时间无权清空合格集');
+  assert.equal(out.accepted.length, 2);
+  assert.equal(out.rejected.length, 0);
+  assert.ok(out.accepted.every((g) => g.gateReasons.includes('time-window-ignored')));
 });
 
-test('T6 #129 时间槽放行的双 exact 平局不再弃权：两张都过门、一张不删（#130 探索池次序归 RNG，集合核验）', () => {
+test('T6 #129 双 exact 平局不放权：两张都过门，WINDOW 信封下各带 time-window-ignored（探索池次序归 RNG）', () => {
   const c = constraintOf('周六的野餐');
   const saturday = localDayStart(2026, 11, 21);
   const out = applyGateV2({
@@ -260,10 +277,34 @@ test('T6 #129 时间槽放行的双 exact 平局不再弃权：两张都过门�
     [saturday + 3600_000, saturday + 2 * 3600_000],
   );
   assert.ok(out.accepted.every((g) => !g.gateReasons.includes('tie-no-strict-leader')));
+  assert.ok(out.accepted.every((g) => g.gateReasons.includes('time-window-ignored')));
   assert.ok(out.accepted.every((g) => g.slot === 'explore'));
 });
 
-// ── T7 零漂移锁 ───────────────────────────────────────────────────────────
+// ── #131 V2 可达原因码锁：time-conflict 永久不可达 ───────────────────────────
+
+test('T6 V2 原因码可达集锁：WINDOW/CANDIDATES 混合场景全扫描，任何卡都不得出现 time-conflict', () => {
+  const windowC = constraintOf('周六的野餐');
+  const candC = constraintOf('周六和周日的安排');
+  const saturday = localDayStart(2026, 11, 21) + 3600_000;
+  const monday = localDayStart(2026, 11, 23) + 3600_000;
+  const friday = localDayStart(2026, 11, 20) + 12 * 3600_000;
+  const battery = [
+    applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [exactCard(saturday), exactCard(monday), likeCard(monday)], timeConstraint: windowC }),
+    applyGateV2({
+      atMs: TEST_NOW_MS,
+      qNorm: '周五的安排 周六安排',
+      candidates: [overlapCard('周五的安排', friday), overlapCard('周六安排', saturday)],
+      timeConstraint: candC,
+    }),
+  ];
+  for (const out of battery) {
+    const codes = allReasonCodes(out);
+    assert.ok(!codes.includes('time-conflict'), `V2 产出路径不得可达 time-conflict，实际 ${JSON.stringify(codes)}`);
+  }
+});
+
+// ── T7 零漂移锁（v1 冻结维持） ───────────────────────────────────────────────
 
 test('T7 v1 带不带时间信封逐字节深相等（v1 几何冻结，不读 TimeConstraint）', () => {
   const envelope = constraintOf('周六的野餐');
@@ -282,14 +323,14 @@ test('T7 v1 带不带时间信封逐字节深相等（v1 几何冻结，不读 T
   }
 });
 
-test('T7 v2 无信封＝时间槽休眠：窗外卡仍按纯词面几何过门', () => {
+test('T7 v2 无信封＝时间槽休眠：窗外卡仍按纯词面几何过门且无任何时间原因码', () => {
   const monday = localDayStart(2026, 11, 23) + 3600_000;
   const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates: [exactCard(monday)] });
   assert.equal(out.status, 'hit');
   assert.deepEqual(out.accepted[0]?.gateReasons, ['exact-alias-pass']);
 });
 
-test('T7 静态锁：applyGateV1 函数体不含 TimeConstraint 字样，时间槽只在 v2 落地', () => {
+test('T7 静态锁：v1 函数体不含 TimeConstraint；gate 模块整体摘除否决谓词调用与 time-conflict 产出', () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const gateSrc = fs.readFileSync(path.join(here, '../../src/memory/gate.ts'), 'utf8');
   const v1Start = gateSrc.indexOf('export function applyGateV1');
@@ -298,5 +339,7 @@ test('T7 静态锁：applyGateV1 函数体不含 TimeConstraint 字样，时间�
   const v1Body = gateSrc.slice(v1Start, v2PolicyStart);
   assert.equal(v1Body.includes('TimeConstraint'), false, 'v1 函数体不得出现 TimeConstraint');
   assert.equal(v1Body.includes('timeConstraint'), false, 'v1 函数体不得出现 timeConstraint 入参');
-  assert.equal(gateSrc.includes('timeConstraintAdmits'), true, 'v2 应经预注册谓词裁决');
+  // #131：否决谓词保留在 time-resolve 供离线/单测直调，gate 不再 import 或调用。
+  assert.equal(gateSrc.includes('timeConstraintAdmits'), false, 'gate 模块不得再引用否决谓词（调用与 import 都应摘除）');
+  assert.equal(gateSrc.includes("'time-conflict'"), false, 'gate 模块不得再产出 time-conflict 原因码');
 });
