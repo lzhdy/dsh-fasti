@@ -2249,7 +2249,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 2. 服务端自托管极简同源页面：`GET /` 直开即得，页面与 API 同源（免 CORS/PNA 预检），一次性 token 在服务端渲染时注入页面；路由另含 `GET /health`（免凭证存活检查）、`GET /experiences?channel=`（带 token 读回**经历**，走门面 `query` 的经历口径而非 `queryEvents` 的事件段口径，避免"多轮归并成一段、计数不随轮次增长"的口径误导）、`POST /channels/:ch/turns`（带 token 写入一条原文）；错误分类码 400（坏 JSON／缺必填）、401（凭证缺失或错误）、403（Host 不被允许）、404（未知路径／未注册通道，fail-closed）、405（方法不符）、413（请求体超 1 MiB）、500（统一信封不泄堆栈）。
 3. loopback 三层防护（外部安全资料核实后定稿，非拍脑袋）：①**只绑 `127.0.0.1` 且 host 不开放配置**，外网不可达；②**Host 头硬白名单**（去端口后必须 ∈ `localhost`／`127.0.0.1`／`[::1]`，绝不通配），且该校验在代码顺序上先于 token 校验——这是防 DNS-rebinding 的核心：rebinding 请求必带攻击者域名 Host，且带不上有效凭证；③**每次启动随机 token**（`crypto.randomBytes(32)`，`timingSafeEqual` 常量时间比较，不落盘、进程重启即换），写入与读回均须 `Authorization: Bearer`。同源之外的任何跨源 OPTIONS 一律不开放。
 4. 同进程零网络冒烟脚本 `scripts/smoke-standalone-kernel.ts`（`da1e2e2`）：`Fasti.open({llmPort:null})`→登记中性通道→写入→经历口径读回→同 event_id 幂等重放→`close`；沿用 scripts/ 离线脚本惯例，不进 tsconfig 编译图与 verify；三连实跑（干净根 0→1、同句重放 1→1、新句 1→2，均 EXIT=0、进程自愈无悬挂句柄）。
-5. 测试与反证：行为测试 11 例（临时根＋系统分配端口，含伪 Host=403、无／错 token=401、超限 413、未注册=404、错方法=405、close 后 ECONNREFUSED、import 面自证）；新增架构门 `tests/architecture/node-adapter-boundary.test.ts` 5 例（机制层导入白名单、组合根唯一且只许引 headless、只听回环无 `0.0.0.0`／`::` 字面、两道防线顺序、前置自证）。四发实弹变异（拔 Host 校验／拔 token 校验／机制层横向引 dsh／改绑 `0.0.0.0`）均如期标红后逐字节还原（`cmp` 一致）；其中改绑外网一发行为测试全绿、仅静态门标红，证明该红线无法由行为测试替代。全量 `npm run verify` **1538/1538 全绿**（1522＋11＋5），双 tsc 零错误。
+5. 测试与反证：行为测试 11 例（临时根＋系统分配端口，含伪 Host=403、无／错 token=401、超限 413、未注册=404、错方法=405、close 后 ECONNREFUSED、import 面自证）；新增架构门 `tests/architecture/node-adapter-boundary.test.ts` 5 例（机制层导入白名单、组合根唯一且只许引 headless、只听回环无 `0.0.0.0`／`::` 字面、两道防线顺序、前置自证）。四发实弹变异（拔 Host 校验／拔 token 校验／机制层横向引 dsh／改绑 `0.0.0.0`）均如期标红后逐字节还原（`cmp` 一致）；其中改绑外网一发行为测试全绿、仅静态门标红，证明该红线无法由行为测试替代。全量 `npm run verify` **1541/1541 全绿**（1522＋11＋5＋3 真源护栏），双 tsc 零错误。
 
 **二、可验架构事实**
 
@@ -2263,6 +2263,10 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 - 以下 #72 子项维持 11.13.7 的冻结结论，本次未动：clock／embedding／storage 业务能力端口、R1 `agent_meta.persona_version` 删除、真源迁移脚本规范；五个装配作用域端口与这些业务端口不是一回事（见 11.13.7 三）。
 - 本刀严格限定**单机单实例 loopback**：不改变"同一数据根只许一个写实例"；同源页面的安全前提是浏览器同源策略，未来任何跨源开放必须先做第二刀的白名单预检，禁止 `Access-Control-Allow-Origin: *` 式通配。
 - 三不动（真源 append-only／投影可重建、复盘做梦判断归她、不注入人设）与封存 350 题只读纪律全程未触碰。
+
+**四、附加安全护栏：真源永不入库（commit `be423d4`）**
+
+本仓库为公开仓库，而真源装的是她本人的对话与生活信息；一旦误提交，删除后仍留在 Git 历史与远端引用里，不可撤回。故增设可执行红门 `tests/architecture/truth-source-not-committed.test.ts`：① `.gitignore` 必须显式覆盖 `.fasti/`（默认兜底根 `~/.fasti` 的仓库内形态，并保留 `fasti/` 旧形态）、`raw-data/`；② 以 `git ls-files` 为准，已跟踪文件不得落在 `raw/`、`experiences/`、`events/`、`projection/`、`state/`、`trash/` 与根级 `channels.json` 等数据布局下；③ 前置自证（扫描规模与锚定文件）＋投毒自证（真实数据路径必判红）＋反误伤（`examples/*.jsonl` 等合法语料不得误判）。本门只查已跟踪文件，不限制本地未跟踪的运行目录，避免正常本地演示把 verify 弄红。全量 verify 随之 **1541/1541 全绿**。
 
 ---
 
