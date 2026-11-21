@@ -31,7 +31,9 @@ import type { Context } from '@deepseek-ai/cordis';
 import { Fasti } from '../../api/index.ts';
 import type { MemoryGateMode } from '../../assembly/memory-tools.ts';
 import { createSourceLookupPort } from '../../assembly/source-lookup.ts';
+import type { LoggerPort } from '../../ports/logger-port.ts';
 import { convertSessionEvent } from './convert-event.ts';
+import { createDshLogger } from './logger.ts';
 import {
   DEFAULT_MEMORY_PROJECTION_BUDGET_MS,
   createDshLLMPort,
@@ -114,10 +116,10 @@ interface DropCounter {
 }
 
 /** 记一次「门面不可用」的丢弃，按节奏告警（不刷屏、不静默）。 */
-function noteDrop(ctx: Context, drops: DropCounter, reason: string): void {
+function noteDrop(logger: LoggerPort, drops: DropCounter, reason: string): void {
   drops.count += 1;
   if (drops.count === 1 || drops.count % DROP_WARN_EVERY === 0) {
-    ctx.logger.warn('%s %s（累计 %d 条未写入）', LOG_PREFIX, reason, drops.count);
+    logger.warn('%s %s（累计 %d 条未写入）', LOG_PREFIX, reason, drops.count);
   }
 }
 
@@ -243,6 +245,8 @@ function resolveToolRegistry(ctx: Context): DshToolRegistry | null {
 export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   const config = parseAdapterConfig(rawConfig);
   const channel = config.channel ?? 'dsh';
+  // 日志口：内核与装配层只拿中立 LoggerPort，宿主日志设施在这一处薄插进来。
+  const logger = createDshLogger(ctx.logger);
 
   /**
    * Fasti 就绪信号 —— resolve(fasti) 表示可写入，resolve(null) 表示不可写入。
@@ -273,7 +277,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   // 监听器**同步注册**（不放在异步 effect 体内 —— 见文件头时序要点）。
   ctx.on('session/event', (session: unknown, event: unknown) => {
     // 不 await —— 旁路捕获，不阻断 dsh 主链路。
-    void handleSessionEvent(ctx, state, drops, ready, channel, session, event);
+    void handleSessionEvent(logger, state, drops, ready, channel, session, event);
   });
 
   // ── 闭合 worker（T8/T9）──
@@ -327,7 +331,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           : { closureCallTimeoutMs: config.closureTimeoutMs }),
         // 摘要失败上报宿主日志（可观测性三处之一：内存明细 / 检查点 / 宿主日志）。
         onClosureFailure: (failure) => {
-          ctx.logger.warn(
+          logger.warn(
             '%s 摘要未生成（%s，已试 %d 次）：%s',
             LOG_PREFIX,
             failure.state,
@@ -337,7 +341,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
         },
         // L3 观测逐事件 warn（不设代码阈值；三率派生与人工阈值进 runbook，定稿 §7.2）。
         onClosureObservation: (observation) => {
-          ctx.logger.warn(
+          logger.warn(
             '%s 摘要观测：%s',
             LOG_PREFIX,
             JSON.stringify(observation),
@@ -346,12 +350,12 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
         // 门面内部诊断（目前只有「待补摘要数读不出来」）—— 转给宿主日志。
         onDiagnostic: (level, message) => {
           if (level === 'warn') {
-            ctx.logger.warn('%s %s', LOG_PREFIX, message);
+            logger.warn('%s %s', LOG_PREFIX, message);
           }
         },
       });
     } catch (error) {
-      ctx.logger.error('%s 打开数据根失败：%s', LOG_PREFIX, String(error));
+      logger.error('%s 打开数据根失败：%s', LOG_PREFIX, String(error));
       markReady(null);
       return () => undefined;
     }
@@ -362,7 +366,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
     // 既有条目永不被改写（定案稿 §10.2）。缺失则告警并停写，
     // 避免覆盖用户可能已调整的注册表内容。
     if (!fasti.channels.has(channel)) {
-      ctx.logger.warn(
+      logger.warn(
         '%s 通道「%s」未注册（channels.json 中无此 id）—— 本次会话不写入原文与经历；请先注册通道。',
         LOG_PREFIX,
         channel,
@@ -372,7 +376,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
       return () => undefined;
     }
 
-    ctx.logger.info(
+    logger.info(
       '%s 适配器已装载：通道=%s，数据根=%s，摘要模型=%s',
       LOG_PREFIX,
       channel,
@@ -407,9 +411,9 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           // L6 注入只读下钻端口（#114 E.4.1／#115 通道闸）：第二参盖章本通道，
           // 门面结构满足 SourceLookupFacade，装配层不反向 import 门面。
           sourceLookup: createSourceLookupPort(fasti, { channel }),
-          log: (message) => ctx.logger.warn('%s %s', LOG_PREFIX, message),
+          log: (message) => logger.warn('%s %s', LOG_PREFIX, message),
           // #117 哨兵：跨过硬顶 70% 那一刻告警一次（走同一条宿主日志通道，不新增输出面）。
-          onMissRetentionWarning: (message) => ctx.logger.warn('%s %s', LOG_PREFIX, message),
+          onMissRetentionWarning: (message) => logger.warn('%s %s', LOG_PREFIX, message),
         });
         memoryWiring = wiring;
         // DI 绑定：把装配运行面的第七法端口挂到门面（端口未就绪时为 null，门面短路 not-wired）。
@@ -419,7 +423,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           }
         });
         if (wiring.registered) {
-          ctx.logger.info('%s 记忆工具已注册：门模式=%s', LOG_PREFIX, gateMode);
+          logger.info('%s 记忆工具已注册：门模式=%s', LOG_PREFIX, gateMode);
         }
         // 子 fiber 卸载兜底；主 cleanup 已显式 dispose，wireMemoryTools 幂等故重复调用安全。
         toolCtx.effect(() => () => {
@@ -431,7 +435,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
     return async () => {
       state.closed = true;
       wiringClosed = true;
-      ctx.logger.info('%s 适配器卸载：注销记忆工具并关闭数据根', LOG_PREFIX);
+      logger.info('%s 适配器卸载：注销记忆工具并关闭数据根', LOG_PREFIX);
       if (memoryWiring !== null) {
         await memoryWiring.dispose();
       }
@@ -446,7 +450,7 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
  * 失败**不抛给 dsh 主链路**，但必须 logger.error（失败可观测，不静默吞事件）。
  */
 async function handleSessionEvent(
-  ctx: Context,
+  logger: LoggerPort,
   state: { closed: boolean },
   drops: DropCounter,
   ready: Promise<Fasti | null>,
@@ -458,15 +462,15 @@ async function handleSessionEvent(
     const { input, skip, warnings } = convertSessionEvent(session, event);
 
     for (const warning of warnings) {
-      ctx.logger.warn('%s %s', LOG_PREFIX, warning);
+      logger.warn('%s %s', LOG_PREFIX, warning);
     }
 
     if (input === null) {
       // 系统注入是 harness 的正常形态 → debug 级别；其余异常形态 → warn。
       if (skip?.kind === 'system-injection' || skip?.kind === 'not-message') {
-        ctx.logger.debug('%s 跳过事件：%s', LOG_PREFIX, skip?.detail ?? '未知原因');
+        logger.debug('%s 跳过事件：%s', LOG_PREFIX, skip?.detail ?? '未知原因');
       } else {
-        ctx.logger.warn('%s 跳过事件：%s', LOG_PREFIX, skip?.detail ?? '未知原因');
+        logger.warn('%s 跳过事件：%s', LOG_PREFIX, skip?.detail ?? '未知原因');
       }
       return;
     }
@@ -476,7 +480,7 @@ async function handleSessionEvent(
       // 卸载中（state.closed）是正常收尾，静默；门面没打开（fasti === null）则
       // 意味着**每条事件都白掉了** —— 首条 warn + 计数，不刷屏也不静默（m6）。
       if (fasti === null && !state.closed) {
-        noteDrop(ctx, drops, `门面未就绪，事件未写入（通道=${channel}）`);
+        noteDrop(logger, drops, `门面未就绪，事件未写入（通道=${channel}）`);
       }
       return;
     }
@@ -484,7 +488,7 @@ async function handleSessionEvent(
     await fasti.ingestRawTurn(channel, input);
   } catch (error) {
     // 旁路捕获：吞掉异常以免阻断 dsh 主链路，但必须留下可观测的记录。
-    ctx.logger.error('%s 摄入失败：%s', LOG_PREFIX, String(error));
+    logger.error('%s 摄入失败：%s', LOG_PREFIX, String(error));
   }
 }
 
