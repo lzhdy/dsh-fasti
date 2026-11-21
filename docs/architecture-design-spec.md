@@ -1270,7 +1270,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 |---|---|---|---|
 | #42 | 记忆卡运行期建卡通道 | **④实现完成，待主控验收**（编码已完成，L1→B0→B1→B2 四批全绿：1019/1019/0、双 tsc 0、静态门 50/50，全部改动在工作区未提交） | 机械自动建卡（闭合且 ready 的经历确定性派生零正文轻卡）＋她的判断经同一窄写通道落 `decisions.jsonl`（`created_by=her`）；不存在逐条人工审批环节。**立项定稿（2026-11-15，三家外审整合）见 `docs/task42-runtime-autocard-final-spec.md`，七问终裁已闭合，与本文旧口径冲突处以该定稿为准** |
 | #43 | 工作记忆窗口参数 | pending，待评审 | 依赖 #42；历史自系误挂已注明；700 字硬顶与每轮补取 ≤1 次为暂定结构预算 |
-| #72 | 平台化目标架构（C6） | 整卡挂起未关闭；**首批子集已落地** | 去宿主化＋LLM/五装配端口＋参考适配器薄壳化＋独立核验已凭逐次显式授权入库（落地登记见 11.13.7）；宿主无关启动器第一刀（loopback 同源 HTTP＋零网络冒烟）已落地（见 11.13.8）；node 身体直连模型纯聊天回路（POST /chat、真源重建上下文、零工具）已落地（见 11.13.9）；R1 删除、embedding/storage/clock、跨进程锁、跨源/外网服务面、迁移脚本等其余子项仍冻结，整卡解冻仍待主控拍板 |
+| #72 | 平台化目标架构（C6） | 整卡挂起未关闭；**首批子集已落地** | 去宿主化＋LLM/五装配端口＋参考适配器薄壳化＋独立核验已凭逐次显式授权入库（落地登记见 11.13.7）；宿主无关启动器第一刀（loopback 同源 HTTP＋零网络冒烟）已落地（见 11.13.8）；node 身体直连模型纯聊天回路（POST /chat、真源重建上下文、零工具）已落地（见 11.13.9）；对话第二刀——node 内存工具宿主（固定 on、无模式开关）＋记忆投影 worker＋进程内 function-calling agent 回路（六工具不 HTTP 化）已落地（见 11.13.10）；R1 删除、embedding/storage/clock、跨进程锁、跨源/外网服务面、迁移脚本等其余子项仍冻结，整卡解冻仍待主控拍板 |
 
 ## 11.4 卡号台账与待建卡总表
 
@@ -2182,7 +2182,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 | 事项 | 归属 | 说明 |
 |---|---|---|
 | 两阶段遗忘、`trash/` 与 tombstone 落地 | **既有 #95** | 卡面已含 30／180 天口径，11.13.4 为其细化；动工前先订正 ADR-4/6 |
-| 平台独立化契约重议（R1 删除、目录去宿主化）、能力端口抽象（LLM／embedding／storage／clock）、跨进程写者锁、宿主无关启动器、真源迁移脚本规范 | **既有 #72**（方向已立宪，施工解冻门待主控拍板） | #72 台账原口径"挂起勿擅启，只在 C 线首期跑通后重议"与 11.13 已立宪的方向存在张力，**未拍板前不得据 11.13 直接开工** ｜【2026-11-21 补】其中目录去宿主化、LLM 与五个装配作用域端口、参考适配器薄壳化、内核独立运行核验子集已落地，部分履约登记见 11.13.7；【2026-11-21 再补】宿主无关启动器第一刀（单机 loopback 同源 HTTP＋零网络冒烟，不含跨源/外网/多实例）已落地，见 11.13.8，跨进程锁等其余子项继续按本行冻结；【2026-11-21 三补】node 身体直连模型纯聊天回路（零工具第一刀，记忆门在 node 身体固定 on 的拍板口径见该节三）已落地，见 11.13.9，六工具 node 化与 agent 回路仍冻结 |
+| 平台独立化契约重议（R1 删除、目录去宿主化）、能力端口抽象（LLM／embedding／storage／clock）、跨进程写者锁、宿主无关启动器、真源迁移脚本规范 | **既有 #72**（方向已立宪，施工解冻门待主控拍板） | #72 台账原口径"挂起勿擅启，只在 C 线首期跑通后重议"与 11.13 已立宪的方向存在张力，**未拍板前不得据 11.13 直接开工** ｜【2026-11-21 补】其中目录去宿主化、LLM 与五个装配作用域端口、参考适配器薄壳化、内核独立运行核验子集已落地，部分履约登记见 11.13.7；【2026-11-21 再补】宿主无关启动器第一刀（单机 loopback 同源 HTTP＋零网络冒烟，不含跨源/外网/多实例）已落地，见 11.13.8，跨进程锁等其余子项继续按本行冻结；【2026-11-21 三补】node 身体直连模型纯聊天回路（零工具第一刀，记忆门在 node 身体固定 on 的拍板口径见该节三）已落地，见 11.13.9；【2026-11-21 四补】对话第二刀（node 记忆工具宿主＋投影 worker＋function-calling 回路，六工具进程内化、不开放 HTTP 面）已落地，见 11.13.10，跨源/外网/TLS/跨进程锁等其余子项继续按本行冻结 |
 | 窗口重议（降级线索触发器、identity／obligation 取消） | **既有 #116** | 现卡面为"运行期接线"，重议后须改卡面，属实质变更待拍板 |
 | 重要性打分 | **既有 #94**（前置 #93 反思通道解冻） | 依赖链已排，非"未排期" |
 | 端到端闭环验收判据、身体／设备来源维度 | 待立卡（后者与 #106 E 块 HLC 合并评估） | 号段按 11.2 取号，下一空号 #125 |
@@ -2297,9 +2297,35 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 
 **三、红线口径（主控 2026-11-21 显式拍板）**
 
-1. **记忆门在 node 身体固定 on、不暴露 off/shadow 模式开关，也不做环境自检式自动翻转**；dsh 参考适配器的三态契约与其代码原样保留，本节不改动另一个身体。取消的是"模式开关"，不是 on 内部安全机制：布尔门裁决、通道硬隔离、DTO 逐键白名单、20 条/5 万字防爆闸、真源对工具不可写等全部继续有效。§7.4 的灰度样本/时长门槛由唯一用户显式豁免，其风险回收兜底是投影/索引可从 append-only 真源重建。本刀零工具，固定 on 实际自**第二刀**（node 内存工具宿主＋记忆投影 worker 接线）起生效。
+1. **记忆门在 node 身体固定 on、不暴露 off/shadow 模式开关，也不做环境自检式自动翻转**；dsh 参考适配器的三态契约与其代码原样保留，本节不改动另一个身体。取消的是"模式开关"，不是 on 内部安全机制：布尔门裁决、通道硬隔离、DTO 逐键白名单、20 条/5 万字防爆闸、真源对工具不可写等全部继续有效。§7.4 的灰度样本/时长门槛由唯一用户显式豁免，其风险回收兜底是投影/索引可从 append-only 真源重建。本刀零工具，固定 on 实际自**第二刀**（node 内存工具宿主＋记忆投影 worker 接线）起生效——**第二刀已于同日落地，见 11.13.10**。
 2. 三不动全程未触碰：真源 append-only／投影可重建不变；复盘、做梦、判断权归她，模型在聊天里无权做任何记忆判断；不注入人设，system prompt 中性最短且不可被外部配置覆盖。
 3. 已知边界（显式挂账，不偷做）：① 网络重试不幂等——重复 `POST /chat` 会重复调一次模型（`/channels/:id/turns` 老路径仍保持 event_id 幂等）；② 无流式输出；③ 通道级单会话，`session_id` 仅透传落盘、不做历史隔离。六工具的 node 化（function-calling 回路或 HTTP 只读路由）、跨源 CORS/PNA、外网监听/TLS、跨进程写者锁继续按 11.13.8 三冻结。
+
+### 11.13.10 对话第二刀：node 内存工具宿主＋记忆投影 worker＋function-calling agent 回路（2026-11-21，#72 部分履约，不关闭整卡）
+
+本节登记 11.13.9 挂账的"第二刀"：dsh 拿掉后，**agent 回路在 node 身体内自跑**——模型决定调工具 → node 进程内执行六记忆工具 → 信封经 `role:tool` 回灌 → 再问模型直到纯正文收口。六工具业务逻辑零重写：node 直接复用宿主中立装配厂 `openAssembledMemoryTools`，dsh 桥（全仓唯一 import `@deepseek-ai/dsh-tools` 的翻译壳）一字节未动；node 路径全程不出现任何宿主包。
+
+**一、已落地内容（代码待显式授权提交，本节回写随文档提交）**
+
+1. headless 新增 function-calling 客户端 `openai-agent.ts`（`createOpenAIAgentClient`）：请求体恒为 `{model, messages, tools}` 三键，不发 `tool_choice`（缺省 auto）与任何采样参数，无 key 不发 `Authorization`；循环把模型回的 assistant 工具调用原样回灌、逐条补 `role:tool` 结果消息后再请求，直到模型回纯正文；工具轮次硬顶 **`MAX_AGENT_TOOL_ROUNDS = 5`**（导出常量，第 6 个工具回包即抛 `UnavailableError`，上层映射 HTTP 502，用户话已留真源、不写假助手行；一轮可并行多工具）；缺 id 的坏 call 补合成 id `rejected-<round>-<index>` 但判 invalid 不触达执行器；未知工具名、执行器抛错、空信封、HTTP 失败、超时全部归一为稳定信封或 `UnavailableError`。传输纪律复用 `openai-wire.ts`。第一刀的零工具客户端 `openai-chat.ts` 在本刀失去全部调用方，**已下架**（文件与桶导出移除，wire/agent 注释同步改口），线协议积木收敛为 llm＋agent 两个客户端共享一份 wire。
+2. node 新增记忆工具宿主 `memory-session.ts`（`openNodeMemoryRuntime({fasti, channel, now?, onWarning?})`）：**入参无 mode，装配调用字面写死 `mode: 'on'`**，node 身体不存在 off/shadow 旋钮；索引目录固定 `path.join(fasti.paths.projection, 'memory-index')`、数据根 `fasti.paths.root`，源查找经 `createSourceLookupPort` 盖章通道。对外暴露 `indexReady`／六个 OpenAI function 描述符（`additionalProperties:false`、schema 全无 channel 键）／`memoryProjection`／`createSession()`／`dispose()`。请求级会话自持 `serialMap` 与 `countedAnchors`，**每 `/chat` 请求新建、请求结束即弃，不跨请求**；六工具名与 dsh 桥逐字相同（`fasti_memory_search`／`fasti_memory_cards_by_anchor`／`fasti_memory_resolve_pointer`／`fasti_memory_add_alias`／`fasti_memory_experience_summary`／`fasti_memory_raw_text`），成功信封 `{ok:true,data}`、失败信封 `{ok:false,error:{code,message}}` 与 dsh 同名同义；坏 JSON 与 TypeError 在执行边界归 `schema`（内核 `SchemaError` 仍走 `classifyHostMemoryError`）；rawText 复刻白名单挑键、charOffset/seq 形状闸、第③跳采用记账隔离，20 条/5 万字防爆闸常量只准出在 assembly 层、node 薄壳不得出现字面。dsh 同源的第七个稳定码 `serial-context-missing`（无检索情节时）不属于 §7.3 六码枚举，`envelopeFail` 形参放宽为结构类型 `{code:string;message:string}` 以原样容纳，不篡改码表。
+3. node 新增投影节拍 `projection-loop.ts`（`startProjectionLoop`）：默认 5 秒间隔、预算常量 **`DEFAULT_PROJECTION_BUDGET_MS = 60_000`**、定时器 `unref`、不重入、失败经 `onError` 隔离不阻断闭合节拍、stop 幂等。`serve.ts` 组合根增量：`openNodeMemoryRuntime` 后以第七法 `fasti.bindMemoryProjection(memoryRuntime.memoryProjection)` 做 DI 绑定（窄柄不可用时门面自带 not-wired 短路）；启动日志新增记忆门两行——索引就绪报"六工具进程内可用"，未建则报 unavailable 降级并**逐字打印首装建库命令** `node scripts/build-memory-index.ts --data-root <根> --apply --yes`；优雅关闭次序固定为 停闭合节拍 → 停投影节拍 → 关 server → `memoryRuntime.dispose()` → `fasti.close()`。
+4. `chat.ts` 整体重写为 agent 编排：机制层只依赖结构化面 `ChatAgentClient`／`ChatToolHost`，具体 OpenAI 客户端仍由组合根注入；system prompt 为硬编码中性版（只约束诚实、同语种简洁与工具纪律，明确"工具信封是唯一记忆依据、严禁编造工具未返回的卡片序号原文"，无 env 覆盖口子）；每请求 `createSession()`；**工具中间轮（assistant tool_calls／role:tool 消息）只活在本次模型回路，绝不落 append-only 真源，真源每轮仍只留 user/assistant 两条原文**。D5 口径落地：不开放任何 `/tools/*` HTTP 面，六工具仅进程内 agent 回路可见，外部 HTTP 面仍只有 `POST /chat`。
+5. 架构边界门新增**规则5「记忆门固定 on」**：码面（剔除注释后）必须出现字面 `mode: 'on'`，且全 node 目录不得出现 `gateMode`、可选 `mode?` 旋钮、`'off'`／`'shadow'` 档位字面，`serve.ts` 不得传任何 mode 入参；带合成投毒自证与反误伤断言。
+6. 测试与反证：净新增 17 例（agent 客户端 7＋记忆会话 6＋投影节拍 2＋HTTP 级工具回路 e2e 2），旧 `chat.test.ts` 5 例改造为三键/6 tools 新线协议断言，架构门增至 6 条；全量 `npm run verify` **1568/1568 全绿**（1550＋17 新测试＋1 新架构门），双 tsc 零错误。三发实弹变异均如期标红、`cmp` 逐字节还原后复绿：① 给记忆宿主偷接 `FASTI_GATE_MODE` 环境旋钮 → 规则5 红；② 让工具中间轮也写一条真源行 → e2e 两行断言红；③ 轮次硬顶 5 改 4 → agent 硬顶测试红。
+
+**二、可验架构事实（真机实跑：假 OpenAI 兼容端点＋`npm start`＋curl＋真实 SQLite）**
+
+- 未建索引场景（全新临时数据根）：启动日志逐字打印"记忆门：固定 on，但记忆索引未建（门工具回 unavailable）"与建库命令；`POST /chat` 仍 200 收口，抓线确认首次请求顶层仅 `messages/model/tools` 三键、tools 长度 6 且全 `type:function`、无 `tool_choice` 与采样参数，第二次请求含 `role:tool` 信封 `{ok:false,error:{code:"unavailable"}}`；数据根 raw 分片恰两行 user/assistant，无任何工具轮行。
+- 建库与就绪场景：离线脚本先试运行（真实根零写入、影子 diff 全 0）再 `--apply --yes` 真写，生成 `projection/memory-index/` 与 revision 1 账本（聊天 raw 未闭合不成卡，符合构建器"零正文"纪律）；经公开写柄种演示卡时实测账本 operator 白名单（非 `offline-cli` 即 `IntegrityError`，事务回滚零污染）；重启后日志翻为"记忆索引已就绪，六工具进程内可用"，同一 `/chat` 链路抓到 `role:tool` 信封 `ok:true/status:hit/cardId=mc_demo`，模型据信封收口、真源仍只双向两行。
+- 投影节拍跨多个 5 秒 tick 无失败日志、进程稳定；SIGTERM 走完全部五段关闭后进程退出码 0。
+
+**三、红线口径（承接主控 2026-11-21 D1–D5 拍板）**
+
+1. 运行期窄柄**只开不建**：服务进程绝不自行建库，首装由人手动跑离线建库脚本，此后投影 worker 只做增量维护；未建时门工具统一 unavailable 信封、纯聊天不受影响。
+2. 请求级状态（序号表、采用去重集）不跨请求；agent 工具轮次硬顶 5、超限 502 且不留假助手行；六工具不 HTTP 化、仅进程内可见。
+3. 三不动继续未触碰：真源 append-only／投影可从真源重建（本刀唯一风险兜底）；复盘、做梦、判断权归她，模型只能经窄 DTO 信封碰记忆、碰不到真源写；中性 prompt 不注人设且不可外部配置。固定 on 仅适用 node 身体，dsh 适配器三态（off/shadow/on）与其灰度门槛原样保留。
+4. 继续冻结（本刀零实现）：跨源 CORS/PNA、外网监听/TLS、公网网页、多通道管理 API、全局 bin/打包、跨进程写者锁、embedding/storage/clock 端口、流式 SSE、重试幂等、多会话隔离、静默窗 env 开关；"on 门六工具的 HTTP 化"仍冻结——本刀是**进程内化**，不是开新 HTTP 面。
 
 ---
 
