@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { Fasti } from '../../src/api/index.ts';
+import { dshChannelDescriptor } from '../../src/adapters/dsh/channel-descriptor.ts';
 import { RawLog } from '../../src/source/raw-log.ts';
 import { cleanupTempRoot, makeTempRoot, makeExperience } from '../helpers.ts';
 
@@ -265,8 +266,8 @@ test('registerChannel：写入 channels.json，重复注册同内容幂等', asy
       channels: Array<{ id: string }>;
     };
     assert.equal(parsed.version, 1);
-    assert.equal(parsed.channels.length, 2);
-    assert.deepEqual(parsed.channels.map((c) => c.id).sort(), ['camera', 'dsh']);
+    assert.equal(parsed.channels.length, 1);
+    assert.deepEqual(parsed.channels.map((c) => c.id), ['camera']);
   } finally {
     await fasti.close();
     cleanupTempRoot(root);
@@ -277,6 +278,7 @@ test('verifyIntegrity：校验原文行 content_hash', async () => {
   const root = makeTempRoot();
   const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
+    await fasti.registerChannel(dshChannelDescriptor('dsh'));
     const rawLog = new RawLog('dsh', path.join(root, 'raw-turns'));
     rawLog.append({ event_id: 'raw-1', speaker: 'user', raw_text: '正常内容' });
 
@@ -305,6 +307,7 @@ test('verifyChannel：报告注册状态与计数', async () => {
   const root = makeTempRoot();
   const fasti = await Fasti.open({ dataRoot: root });
   try {
+    await fasti.registerChannel(dshChannelDescriptor('dsh'));
     await fasti.appendExperience(makeExperience({ id: ID_A }));
 
     const all = await fasti.verifyChannel();

@@ -9,10 +9,26 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { Experience } from '../src/contract/experience.ts';
+import { dshChannelDescriptor } from '../src/adapters/dsh/channel-descriptor.ts';
 
 /** 建一个临时数据根；测试结束由调用方清理。 */
 export function makeTempRoot(prefix = 'fasti-test-'): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+/**
+ * 在临时数据根预置一份「已登记 dsh 通道」的 channels.json（测试夹具）。
+ *
+ * 平台化步骤2 起内核空白启动不再自动预置任何通道；凡经门面以 dsh 通道写入或做
+ * 通道对账的用例，在首次 Fasti.open 前调用本函数，等价该环境已显式挂载登记过 dsh。
+ * 登记结果随 channels.json 持久化，后续 reopen 同一数据根自动可见，无需重复调用。
+ */
+export function seedDshChannel(root: string, channel = 'dsh'): void {
+  fs.writeFileSync(
+    path.join(root, 'channels.json'),
+    `${JSON.stringify({ version: 1, channels: [dshChannelDescriptor(channel)] }, null, 2)}\n`,
+    'utf8',
+  );
 }
 
 /**

@@ -16,6 +16,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { Fasti } from '../../src/api/index.ts';
+import { dshChannelDescriptor } from '../../src/adapters/dsh/channel-descriptor.ts';
 import { initiationOf } from '../../src/adapters/dsh/initiation.ts';
 import type { EventRecord } from '../../src/contract/event.ts';
 import { appendJsonl } from '../../src/core/jsonl.ts';
@@ -88,6 +89,8 @@ async function ingestWorld(plan: WorldPlan, outRoot: string): Promise<Map<string
   // 计划事件 id → 摄入产出的经历 id（保序）。
   const anchorsByEvent = new Map<string, string[]>();
   try {
+    // 平台化步骤2：内核不再自动预置通道；本脚本构建的是 dsh 世界，摄入前显式登记 dsh。
+    await fasti.registerChannel(dshChannelDescriptor('dsh'));
     for (const event of plan.events) {
       const anchorIds: string[] = [];
       for (let j = 0; j < event.turns.length; j += 1) {

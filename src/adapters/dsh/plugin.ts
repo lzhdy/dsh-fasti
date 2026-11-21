@@ -6,8 +6,8 @@
  *  - cordis 只作 peerDependency（宿主提供）+ devDependency（类型与测试）。
  *
  * 职责：
- *  1. 装载时打开 Fasti 实例（数据根走三级解析，config 可显式覆盖）；
- *  2. 核对 dsh 通道已注册（channels.json 已预置描述符）；
+ *  1. 装载时打开 Fasti 实例（数据根走四级解析，config 可显式覆盖）；
+ *  2. 挂载时登记 dsh 通道（内核空白启动不再预置；登记冲突则 fail-closed 停写）；
  *  3. 监听 `session/event`，把真实对话事件实时翻写为「原文 + 经历」写进 Fasti；
  *  4. 用 `ctx.effect` 管理生命周期：装载时 open，卸载时 close。
  *
@@ -33,6 +33,7 @@ import type { MemoryGateMode } from '../../assembly/memory-tools.ts';
 import { createSourceLookupPort } from '../../assembly/source-lookup.ts';
 import { startRecurringWorker } from '../../assembly/recurring-worker.ts';
 import type { LoggerPort } from '../../ports/logger-port.ts';
+import { dshChannelDescriptor } from './channel-descriptor.ts';
 import { convertSessionEvent } from './convert-event.ts';
 import { createDshEventBus, type DshEventSink } from './event-bus.ts';
 import { initiationOf } from './initiation.ts';
@@ -62,7 +63,7 @@ declare module '@deepseek-ai/cordis' {
 export interface DshAdapterConfig {
   /**
    * 数据根 —— 显式指定即最高优先级。
-   * 缺省走 Fasti 的三级解析：显式配置 > `$DSH_HOME/fasti` > `~/.dsh/fasti`。
+   * 缺省走 Fasti 的四级解析：显式配置 > `$FASTI_HOME` > 旧 `$DSH_HOME/fasti`（只读兼容）> `~/.fasti`。
    */
   dataRoot?: string | undefined;
   /** 通道 id；缺省 'dsh'。 */
@@ -362,16 +363,20 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
       return () => undefined;
     }
 
-    // 通道核对：channels.json 首次初始化已预置 dsh 描述符。
+    // 通道登记：内核空白启动不再预置任何宿主通道，dsh 通道由本插件**显式挂载时**登记。
     //
-    // 纪律：只核对、**不自动注册** —— 注册表是「可增长的登记表」，
-    // 既有条目永不被改写（定案稿 §10.2）。缺失则告警并停写，
-    // 避免覆盖用户可能已调整的注册表内容。
-    if (!fasti.channels.has(channel)) {
-      logger.warn(
-        '%s 通道「%s」未注册（channels.json 中无此 id）—— 本次会话不写入原文与经历；请先注册通道。',
+    // 纪律（定案稿 §10.2，注册表是「可增长的登记表」，既有条目永不被改写）：
+    //  - 同 id 描述等价 → registerChannel 幂等沿用既有；
+    //  - 同 id 描述不等价（用户手动改过注册表）→ 抛 ConflictError，绝不覆盖，
+    //    本插件 fail-closed：告警、关闭实例、标记未就绪，本次会话不写入。
+    try {
+      await fasti.registerChannel(dshChannelDescriptor(channel));
+    } catch (error) {
+      logger.error(
+        '%s 通道「%s」登记失败（可能与 channels.json 既有描述冲突）—— 本次会话不写入原文与经历：%s',
         LOG_PREFIX,
         channel,
+        String(error),
       );
       await fasti.close();
       markReady(null);

@@ -20,7 +20,7 @@ import { PRIMITIVE_NAMES } from '../../src/contract/primitives.ts';
 import type { LLMPort } from '../../src/event/llm-port.ts';
 import { EventLog } from '../../src/source/event-log.ts';
 import { layoutOf } from '../../src/source/paths.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeTempRoot, seedDshChannel } from '../helpers.ts';
 
 const BASE_TIME = '2026-11-08T10:00:00.000Z';
 
@@ -443,6 +443,7 @@ test('drainClosure：单轮总时长到限即返回（条数没到上限也返�
 
 test('门面 · 无 LLM 端口时，时钟静默照常闭合事件，摘要保持 pending', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   try {
     // **不传 llmPort** —— 端口为 null 的场景（宿主没配模型）。
     const fasti = await Fasti.open({ dataRoot: root });

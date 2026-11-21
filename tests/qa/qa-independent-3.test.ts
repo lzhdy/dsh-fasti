@@ -19,7 +19,7 @@ import path from 'node:path';
 
 import { layoutOf } from '../../src/source/paths.ts';
 import type { LLMPort, LLMSummarizeRequest, LLMSummarizeResponse } from '../../src/event/llm-port.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeTempRoot, seedDshChannel } from '../helpers.ts';
 
 const TIMES = [
   '2026-11-08T10:00:00.000Z',
@@ -62,6 +62,7 @@ class FakePort implements LLMPort {
 
 test('Q-B16 · 端到端：闭合事件进队列并被摘 → summary_quality 变 ready、来源为 llm', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
   const port = new FakePort();
   const fasti = await Fasti.open({ dataRoot: root, llmPort: port });
@@ -104,6 +105,7 @@ test('Q-B16 · 端到端：闭合事件进队列并被摘 → summary_quality �
 
 test('Q-B17 · 降级：未配置模型时闭合事件停在 pending、summary 为 null，且不入队空转', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
   const fasti = await Fasti.open({ dataRoot: root });
   try {
@@ -137,6 +139,7 @@ test('Q-B17 · 降级：未配置模型时闭合事件停在 pending、summary �
 
 test('Q-B18 · G07 清道夫：重启（无模型时开机扫描）落 pending_events，重开（有模型）重扫补齐', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
 
   // 第一次开机：没有模型 → 产出闭合事件，但摘要出不来。
@@ -183,6 +186,7 @@ test('Q-B18 · G07 清道夫：重启（无模型时开机扫描）落 pending_e
 
 test('Q-B19 · G04 启动对账：last_projected_tick 随写入推进，落后时开机补折尾差', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
 
   const first = await Fasti.open({ dataRoot: root });
@@ -225,6 +229,7 @@ test('Q-B19 · G04 启动对账：last_projected_tick 随写入推进，落后�
 
 test('Q-B20 · 派生标注：queryEventViews 读得出「待归并」与「摘要待更新」', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
 
   const port = new FakePort();

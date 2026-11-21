@@ -18,7 +18,7 @@ import { UnavailableError } from '../../src/core/errors.ts';
 import { IngestStageRegistry } from '../../src/event/ingest-stage.ts';
 import type { IngestStage, IngestStageContext } from '../../src/event/ingest-stage.ts';
 import { layoutOf } from '../../src/source/paths.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeTempRoot, seedDshChannel } from '../helpers.ts';
 
 /** 固定的世界轴时刻（不依赖真实当前时间 → 结果确定）。 */
 const T0 = '2026-11-08T10:00:00.000Z';
@@ -235,6 +235,7 @@ test('stage 契约 · 失败明细是环形缓冲（只留最近 100 条）', as
 
 test('接线 · ingestRawTurn 经 stage 驱动切分器（事件真源出现事件）', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   const fasti = await Fasti.open({ dataRoot: root });
   try {
     await fasti.ingestRawTurn('dsh', turnInput('evt-1', T0));
@@ -252,6 +253,7 @@ test('接线 · ingestRawTurn 经 stage 驱动切分器（事件真源出现事�
 
 test('接线 · stage 失败不阻断摄入（真源仍落盘、失败可观测、检查点计数）', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   const fasti = await Fasti.open({ dataRoot: root });
   try {
     fasti.registerIngestStage({
@@ -287,6 +289,7 @@ test('接线 · stage 失败不阻断摄入（真源仍落盘、失败可观测�
 
 test('接线 · 幂等早退不重复切（重放同一 raw turn 不再切一刀）', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   const fasti = await Fasti.open({ dataRoot: root });
   try {
     const first = await fasti.ingestRawTurn('dsh', turnInput('evt-1', T0));
@@ -308,6 +311,7 @@ test('接线 · 幂等早退不重复切（重放同一 raw turn 不再切一刀
 
 test('接线 · 重启后从事件真源恢复 open 状态（不重建已切好的事件）', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   const first = await Fasti.open({ dataRoot: root });
   try {
     await first.ingestRawTurn('dsh', turnInput('evt-1', T0));
@@ -335,6 +339,7 @@ test('接线 · 重启后从事件真源恢复 open 状态（不重建已切好�
 
 test('降级 · 事件真源损坏 → 门面照常打开、事件层明确不可用，记录本不受影响', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   // 先在 events/ 里放一个**已登记**的坏分片（模拟真源损坏）。
   const eventsDir = layoutOf(root).events;
   fs.mkdirSync(eventsDir, { recursive: true });
@@ -374,6 +379,7 @@ test('降级 · 事件真源损坏 → 门面照常打开、事件层明确不�
 
 test('诊断 · 待补摘要数读取失败 → 首次告警、之后不刷屏，且不毁一级真源（m5）', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   const warnings: string[] = [];
 
   const fasti = await Fasti.open({

@@ -366,14 +366,55 @@ test('插件：卸载后不再写入新事件', async () => {
 
 // ── 通道核对 ──────────────────────────────────────────────────────────────
 
-test('插件：通道未注册时不写入（只核对、不自动注册）', async () => {
+test('插件：空白注册表挂载时显式登记 dsh 通道（内核不预置，装插件才认识）', async () => {
   const root = makeTempRoot();
 
-  // 造一个 channels.json 里**没有** dsh 的数据根。
+  const ctx = new Context();
+  const fiber = ctx.plugin({ apply }, { dataRoot: root });
+  await fiber;
+
+  // effect 体内 open→登记属于异步挂载，await fiber 不保证其落盘；先发事件并排空，等就绪后再核对。
+  emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
+  await settle();
+
+  // 挂载即登记：空白注册表应被写入恰好一个 dsh 描述符。
+  const registry = JSON.parse(fs.readFileSync(path.join(root, 'channels.json'), 'utf8')) as {
+    channels: Array<{ id: string }>;
+  };
+  assert.equal(registry.channels.length, 1);
+  assert.equal(registry.channels[0]?.id, 'dsh');
+
+  // 登记成功后事件链路正常写入。
+  assert.equal(experienceCount(root), 1, '登记成功后应能正常写入原文与经历');
+
+  await fiber.dispose();
+  cleanupTempRoot(root);
+});
+
+test('插件：channels.json 含冲突的 dsh 描述符时 fail-closed，不覆盖、不写入', async () => {
+  const root = makeTempRoot();
+
+  // 造一个 id=dsh 但内容与适配器模板不等价（label 被人手动改过）的注册表。
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(
     path.join(root, 'channels.json'),
-    JSON.stringify({ version: 1, channels: [] }, null, 2),
+    JSON.stringify(
+      {
+        version: 1,
+        channels: [
+          {
+            id: 'dsh',
+            label: '被手动改过的名字',
+            modalities: ['text'],
+            capture: 'full',
+            counterpart: 'user',
+            adapter_version: '0.1.0',
+          },
+        ],
+      },
+      null,
+      2,
+    ),
     'utf8',
   );
 
@@ -384,13 +425,15 @@ test('插件：通道未注册时不写入（只核对、不自动注册）', as
   emitSessionEvent(ctx, SESSION, userEvent('evt-1', '在吗'));
   await settle();
 
-  assert.equal(experienceCount(root), 0, '通道未注册时不得写入');
+  assert.equal(experienceCount(root), 0, '登记冲突时必须停写，不得产生原文与经历');
 
-  // 注册表不得被适配器擅自改动。
-  const registry = JSON.parse(fs.readFileSync(path.join(root, 'channels.json'), 'utf8')) as {
-    channels: unknown[];
+  // 用户既有描述符原样保留，适配器绝不用模板覆盖。
+  const after = JSON.parse(fs.readFileSync(path.join(root, 'channels.json'), 'utf8')) as {
+    channels: Array<{ id: string; label: string }>;
   };
-  assert.equal(registry.channels.length, 0, '适配器不得自动注册通道');
+  assert.equal(after.channels.length, 1);
+  assert.equal(after.channels[0]?.id, 'dsh');
+  assert.equal(after.channels[0]?.label, '被手动改过的名字', '用户改过的描述符不得被覆盖');
 
   await fiber.dispose();
   cleanupTempRoot(root);

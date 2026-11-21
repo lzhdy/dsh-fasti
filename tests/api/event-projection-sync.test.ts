@@ -18,7 +18,7 @@ import path from 'node:path';
 
 import { Fasti } from '../../src/api/index.ts';
 import type { LLMPort } from '../../src/event/llm-port.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeTempRoot, seedDshChannel } from '../helpers.ts';
 
 const BASE_TIME = '2026-11-08T10:00:00.000Z';
 
@@ -78,6 +78,7 @@ async function seedOpenEvent(fasti: Fasti): Promise<void> {
 
 test('checkSilenceClock 闭合后，投影的版本与状态立即追平真源', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   try {
     // 不传端口：闭合照常，摘要保持 pending（A6b）。
     const fasti = await Fasti.open({ dataRoot: root });
@@ -115,6 +116,7 @@ test('checkSilenceClock 闭合后，投影的版本与状态立即追平真源',
 
 test('drainClosure 产出摘要后，投影的摘要列立即追平真源', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   const port: LLMPort = {
     summarize: async () => ({
       summary: '她把论文摊在桌上，随后沉默地读完了引言。',

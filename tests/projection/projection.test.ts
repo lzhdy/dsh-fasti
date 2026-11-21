@@ -16,6 +16,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { Fasti } from '../../src/api/index.ts';
+import { dshChannelDescriptor } from '../../src/adapters/dsh/channel-descriptor.ts';
 import { RawLog } from '../../src/source/raw-log.ts';
 import {
   EXPECTED_EDGE_COLUMNS,
@@ -278,6 +279,7 @@ test('全量重建后对账：RawTurn 数 = dialogue 经历数、通道 count �
   const root = makeTempRoot();
   const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
+    await fasti.registerChannel(dshChannelDescriptor('dsh'));
     const rawLog = new RawLog('dsh', path.join(root, 'raw-turns'));
     rawLog.append({
       event_id: 'raw-1',

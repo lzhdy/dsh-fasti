@@ -2,7 +2,8 @@
  * 通道注册表 —— channels.json。
  *
  * 口径：
- *  - 首次初始化预置 dsh 描述符（审计口径 8）；
+ *  - 首次初始化落一个**空注册表**（内核不预置任何具体宿主通道；通道由对应适配器
+ *    在显式挂载时经 registerChannel 登记，平台化步骤2）；
  *  - registerChannel 追加不破坏既有条目；
  *  - 同 id 重复注册：内容等价 → 幂等返回；不等价 → ConflictError（决策 D-7）。
  *
@@ -15,7 +16,7 @@ import { ConflictError, NotFoundError } from '../core/errors.ts';
 import { exists, writeFileAtomic } from '../core/fsx.ts';
 import { parseJsonStrict } from '../core/fsx.ts';
 import fs from 'node:fs';
-import { DEFAULT_DSH_DESCRIPTOR, parseChannelDescriptor } from '../contract/channel.ts';
+import { parseChannelDescriptor } from '../contract/channel.ts';
 import type { ChannelDescriptor } from '../contract/channel.ts';
 
 /** 注册表文件结构。 */
@@ -39,11 +40,14 @@ export class ChannelRegistry {
   }
 
   /**
-   * 载入注册表；文件不存在则初始化并预置 dsh 描述符。
+   * 载入注册表；文件不存在则初始化一个空注册表并落盘。
+   *
+   * 内核宿主中立：不在此预置任何具体通道。具体通道（如 dsh）由其适配器在显式
+   * 挂载时调用门面 registerChannel 登记。
    */
   load(): void {
     if (!exists(this.file)) {
-      this.channels = [{ ...DEFAULT_DSH_DESCRIPTOR }];
+      this.channels = [];
       this.persist();
       return;
     }

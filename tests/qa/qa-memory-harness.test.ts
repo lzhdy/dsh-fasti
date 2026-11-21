@@ -62,7 +62,7 @@ import type {
   RevisionRecord,
   DecisionRecord,
 } from '../../src/memory/types.ts';
-import { cleanupTempRoot, makeExperience, makeTempRoot, withTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeExperience, makeTempRoot, seedDshChannel, withTempRoot } from '../helpers.ts';
 
 const DB_FILE = 'memory-index.sqlite';
 
@@ -888,6 +888,7 @@ function readyEventRecord(id: string, anchors: string[], startMs: number, keyPoi
 /** 可解析数据根：ingestRawTurn 造真实经历/原文/通道 → 事件追加 closed+ready 版本（锚点指向可解析经历）。 */
 async function makeAuditableRoot(n: number): Promise<{ root: string; eventIds: string[]; expIds: string[] }> {
   const root = makeTempRoot('audit-qa-');
+  seedDshChannel(root);
   const fasti = await Fasti.open({ dataRoot: root });
   const expIds: string[] = [];
   for (let i = 0; i < n; i += 1) {

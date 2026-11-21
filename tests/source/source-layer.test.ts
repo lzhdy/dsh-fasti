@@ -11,7 +11,6 @@ import { ExperienceLog } from '../../src/source/experience-log.ts';
 import { TickAllocator } from '../../src/source/tick.ts';
 import { ChannelRegistry } from '../../src/source/channels.ts';
 import { WriterQueue } from '../../src/source/writer-queue.ts';
-import { DEFAULT_DSH_DESCRIPTOR } from '../../src/contract/channel.ts';
 import { ConflictError, NotFoundError } from '../../src/core/errors.ts';
 import { cleanupTempRoot, makeTempRoot, makeExperience } from '../helpers.ts';
 
@@ -104,18 +103,16 @@ test('tick：乱序到达时 tick 与 occurred_at 允许不一致（§5 语义�
   }
 });
 
-test('channels.json：首次初始化预置 dsh 描述符', () => {
+test('channels.json：首次初始化为空注册表（内核不预置任何宿主通道）', () => {
   const root = makeTempRoot();
   try {
     const file = path.join(root, 'channels.json');
     const registry = new ChannelRegistry(file);
     registry.load();
 
-    assert.ok(fs.existsSync(file));
-    const dsh = registry.get('dsh');
-    assert.equal(dsh.id, 'dsh');
-    assert.equal(dsh.capture, 'full');
-    assert.deepEqual(dsh.modalities, DEFAULT_DSH_DESCRIPTOR.modalities);
+    assert.ok(fs.existsSync(file), '空白启动也落盘一个空注册表文件');
+    assert.deepEqual(registry.list(), []);
+    assert.throws(() => registry.get('dsh'), NotFoundError);
   } finally {
     cleanupTempRoot(root);
   }
@@ -128,7 +125,13 @@ test('channels.json：注册新通道不破坏既有条目', () => {
     const registry = new ChannelRegistry(file);
     registry.load();
 
-    const before = registry.get('dsh');
+    const before = registry.register({
+      id: 'anchor',
+      label: '锚点通道',
+      modalities: ['text'],
+      capture: 'full',
+      adapter_version: '0.1.0',
+    });
     registry.register({
       id: 'qq',
       label: 'QQ',
@@ -138,8 +141,8 @@ test('channels.json：注册新通道不破坏既有条目', () => {
       adapter_version: '0.1.0',
     });
 
-    const after = registry.get('dsh');
-    assert.deepEqual(after, before, 'dsh 条目必须逐字不变');
+    const after = registry.get('anchor');
+    assert.deepEqual(after, before, '既有条目必须逐字不变');
     assert.equal(registry.list().length, 2);
     assert.ok(registry.has('qq'));
   } finally {
@@ -154,7 +157,14 @@ test('channels.json：同 id 重复注册 —— 等价幂等、不等价抛 Con
     const registry = new ChannelRegistry(file);
     registry.load();
 
-    const same = registry.get('dsh');
+    const same = registry.register({
+      id: 'dsh',
+      label: 'DSH 对话',
+      modalities: ['text', 'image', 'file', 'event'],
+      capture: 'full',
+      counterpart: 'user',
+      adapter_version: '0.1.0',
+    });
     assert.deepEqual(registry.register(same), same, '等价重复注册应幂等返回');
 
     assert.throws(

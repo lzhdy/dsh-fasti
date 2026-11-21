@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 
 import { Fasti } from '../../src/api/index.ts';
 import { EventOpenConflictError } from '../../src/contract/event.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeTempRoot, seedDshChannel } from '../helpers.ts';
 
 const BASE_TIME = '2026-11-08T10:00:00.000Z';
 
@@ -48,6 +48,7 @@ async function feedTurn(
 
 test('P1-A：reopen 后同通道再摄入并入被重开事件，不造第二个 open；重启 restore 通过', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   try {
     const fasti = await Fasti.open({ dataRoot: root });
     try {
@@ -99,6 +100,7 @@ test('P1-A：reopen 后同通道再摄入并入被重开事件，不造第二个
 
 test('P1-B：split 正在 open 的事件后再摄入，另起新事件而非在退役版本链复活', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   try {
     const fasti = await Fasti.open({ dataRoot: root });
     try {
@@ -168,6 +170,7 @@ test('P1-B：split 正在 open 的事件后再摄入，另起新事件而非在�
 
 test('#36：同通道有进行中事件时 reopen 被带选项拒绝；显式 closeAndReopen 后唯一 open 转到 B、重启 restore 通过', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   let bId = '';
   let aId = '';
   try {

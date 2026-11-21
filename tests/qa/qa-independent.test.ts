@@ -30,7 +30,7 @@ import { InMemoryBacklog } from '../../src/event/backlog.ts';
 import { ClosurePipeline } from '../../src/event/closure.ts';
 import type { ClosureFailure } from '../../src/event/closure.ts';
 import type { LLMPort, LLMSummarizeRequest, LLMSummarizeResponse } from '../../src/event/llm-port.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeTempRoot, seedDshChannel } from '../helpers.ts';
 
 const BASE_MS = Date.parse('2026-11-08T10:00:00.000Z');
 const MINUTE_MS = 60_000;
@@ -489,6 +489,7 @@ test('Q-B05 · 并发追加不同 version → 版本号连续、无洞', async (
 
 test('Q-B06 · 重放同一批摄入（走生产门面）→ 事件数不增、指针不重复', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   // 生产路径：门面在幂等命中时早退，stage 不会二次切。
   const { Fasti } = await import('../../src/api/index.ts');
   const fasti = await Fasti.open({ dataRoot: root });
@@ -523,6 +524,7 @@ test('Q-B06 · 重放同一批摄入（走生产门面）→ 事件数不增、�
 
 test('Q-B06 · 重启后重放同一批摄入 → 事件数不增（索引从真源恢复）', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
   const turn = (eventId: string, at: string) => ({
     event_id: eventId,

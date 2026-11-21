@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { layoutOf } from '../../src/source/paths.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeTempRoot, seedDshChannel } from '../helpers.ts';
 
 const TIMES = [
   '2026-11-08T10:00:00.000Z',
@@ -44,6 +44,7 @@ function turn(eventId: string, at: string) {
 
 test('Q-B12 · 事件投影三档同语义：L1 / L2 / L3 对同一事件集合逐字一致', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
 
   const seeder = await Fasti.open({ dataRoot: root });
@@ -77,6 +78,7 @@ test('Q-B12 · 事件投影三档同语义：L1 / L2 / L3 对同一事件集合�
 
 test('Q-B13 · 重建后事件仍在（重建不清掉事件），且事件数与真源一致', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
 
   const first = await Fasti.open({ dataRoot: root });
@@ -148,6 +150,7 @@ test('Q-B13 · 重建白名单：events/ 真源为空时，重建不得从 exper
 
 test('Q-B14 · 一次 rebuildProjections() 不会清掉她修正过的事件边界', async () => {
   const root = makeTempRoot('qa-fasti-');
+  seedDshChannel(root);
   const { Fasti } = await import('../../src/api/index.ts');
 
   const fasti = await Fasti.open({ dataRoot: root });

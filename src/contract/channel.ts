@@ -34,16 +34,6 @@ export interface ChannelDescriptor {
   adapter_version: string;
 }
 
-/** 首次初始化时预置的 dsh 描述符（审计口径 8）。 */
-export const DEFAULT_DSH_DESCRIPTOR: ChannelDescriptor = {
-  id: 'dsh',
-  label: 'DSH 对话',
-  modalities: ['text', 'image', 'file', 'event'],
-  capture: 'full',
-  counterpart: 'user',
-  adapter_version: '0.1.0',
-};
-
 /** 校验通道描述符。 */
 export function parseChannelDescriptor(raw: unknown, at = 'channel'): ChannelDescriptor {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {

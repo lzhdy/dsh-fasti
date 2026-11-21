@@ -13,7 +13,7 @@ import {
 } from '../../src/contract/primitives.ts';
 import { Fasti } from '../../src/api/index.ts';
 import { NotImplementedError } from '../../src/core/errors.ts';
-import { cleanupTempRoot, makeTempRoot } from '../helpers.ts';
+import { cleanupTempRoot, makeTempRoot, seedDshChannel } from '../helpers.ts';
 
 test('§9 全部原语都在契约里（15 项，无遗漏）', () => {
   const expected = [
@@ -83,6 +83,7 @@ test('阶段 0–2 之外的原语抛 NotImplementedError（不静默返回空�
 
 test('错误约定明确：缺指针 / 越界 / 坏哈希一律抛错，不返回空', async () => {
   const root = makeTempRoot();
+  seedDshChannel(root);
   const fasti = await Fasti.open({ dataRoot: root });
   try {
     // 缺指针定位信息。
