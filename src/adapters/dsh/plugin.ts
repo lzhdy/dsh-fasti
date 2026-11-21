@@ -38,9 +38,10 @@ import { createDshEventBus, type DshEventSink } from './event-bus.ts';
 import { createDshLifecycle } from './lifecycle.ts';
 import { createDshLogger } from './logger.ts';
 import { createDshScheduler } from './scheduler.ts';
+import { createDshToolHost, type DshInjectSink } from './tool-host.ts';
 import { DEFAULT_MEMORY_PROJECTION_BUDGET_MS, createDshLLMPort } from './llm.ts';
 import type { DshModelRoute } from './llm.ts';
-import { wireMemoryTools, type DshToolRegistry, type MemoryWiring } from './memory-tool-bridge.ts';
+import { wireMemoryTools, type MemoryWiring } from './memory-tool-bridge.ts';
 
 /**
  * dsh-session 广播的事件：会话日志追加（含 user/message / assistant/message）。
@@ -219,26 +220,6 @@ function isMemoryGateMode(value: string): value is MemoryGateMode {
 }
 
 /**
- * 在**已获 tools 注入授权**的上下文上做结构化探测，取出工具注册服务。
- *
- * 调用前提：cordis 4.0.5 对服务访问强制授权，未先 `ctx.inject(['tools'], …)` 就读取
- * `ctx.tools` 会抛 "cannot get property tools without inject"。因此本函数只允许在该
- * inject 回调拿到的子上下文上调用；这里仍保留「具备 register 函数才认」的结构化校验，
- * 防范形态异常/被裁掉 tools 服务的弱宿主，缺失时返回 null 由接线层安全跳过。
- */
-function resolveToolRegistry(ctx: Context): DshToolRegistry | null {
-  const candidate = (ctx as unknown as { tools?: unknown }).tools;
-  if (
-    candidate !== null &&
-    typeof candidate === 'object' &&
-    typeof (candidate as DshToolRegistry).register === 'function'
-  ) {
-    return candidate as DshToolRegistry;
-  }
-  return null;
-}
-
-/**
  * 插件入口 —— cordis 对象插件的 `apply`。
  */
 export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
@@ -249,8 +230,9 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   const lifecycle = createDshLifecycle(ctx);
   const scheduler = createDshScheduler();
   // cordis 的 on 泛型把事件名约束为 keyof Events，中立端口则按普通字符串订阅事件名；
-  // 这是适配器边界的类型桥接（运行时仍是同一个 ctx.on），与 resolveToolRegistry 同范式。
+  // 这是适配器边界的类型桥接（运行时仍是同一个 ctx.on）；下文工具口的 inject 桥接同范式。
   const eventBus = createDshEventBus(ctx as unknown as DshEventSink);
+  const toolHost = createDshToolHost(ctx as unknown as DshInjectSink);
 
   /**
    * Fasti 就绪信号 —— resolve(fasti) 表示可写入，resolve(null) 表示不可写入。
@@ -413,10 +395,12 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
     let memoryWiring: MemoryWiring | null = null;
     let wiringClosed = false;
     if (gateMode !== 'off') {
-      ctx.inject(['tools'], (toolCtx) => {
+      // 经工具宿主端口申请授权接入（dsh 插头内部即 inject(['tools'])）：弱宿主无 tools
+      // 时回调不触发、tools 形状残损时 registry 为 null，二者都由 wireMemoryTools 安全跳过。
+      toolHost.withTools(({ registry, onDispose }) => {
         if (wiringClosed) return;
         const wiring = wireMemoryTools({
-          registry: resolveToolRegistry(toolCtx),
+          registry,
           mode: gateMode,
           indexDir: path.join(fasti.paths.projection, 'memory-index'),
           // #122：第七法 drain 只读折叠真源所需的数据根；取门面已解析的布局根（比可选 config.dataRoot 可靠），
@@ -441,8 +425,8 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
         if (wiring.registered) {
           logger.info('%s 记忆工具已注册：门模式=%s', LOG_PREFIX, gateMode);
         }
-        // 子 fiber 卸载兜底；主 cleanup 已显式 dispose，wireMemoryTools 幂等故重复调用安全。
-        toolCtx.effect(() => () => {
+        // 工具接入作用域卸载兜底；主 cleanup 已显式 dispose，wireMemoryTools 幂等故重复调用安全。
+        onDispose(() => {
           void memoryWiring?.dispose();
         });
       });
