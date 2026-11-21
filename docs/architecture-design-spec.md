@@ -2319,6 +2319,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 - 未建索引场景（全新临时数据根）：启动日志逐字打印"记忆门：固定 on，但记忆索引未建（门工具回 unavailable）"与建库命令；`POST /chat` 仍 200 收口，抓线确认首次请求顶层仅 `messages/model/tools` 三键、tools 长度 6 且全 `type:function`、无 `tool_choice` 与采样参数，第二次请求含 `role:tool` 信封 `{ok:false,error:{code:"unavailable"}}`；数据根 raw 分片恰两行 user/assistant，无任何工具轮行。
 - 建库与就绪场景：离线脚本先试运行（真实根零写入、影子 diff 全 0）再 `--apply --yes` 真写，生成 `projection/memory-index/` 与 revision 1 账本（聊天 raw 未闭合不成卡，符合构建器"零正文"纪律）；经公开写柄种演示卡时实测账本 operator 白名单（非 `offline-cli` 即 `IntegrityError`，事务回滚零污染）；重启后日志翻为"记忆索引已就绪，六工具进程内可用"，同一 `/chat` 链路抓到 `role:tool` 信封 `ok:true/status:hit/cardId=mc_demo`，模型据信封收口、真源仍只双向两行。
 - 投影节拍跨多个 5 秒 tick 无失败日志、进程稳定；SIGTERM 走完全部五段关闭后进程退出码 0。
+- **真实网关兼容性实跑（2026-11-21，SCNet-Max，零代码改动）**：端点 `https://api.scnet.cn/api/llm/v1` 返回标准 OpenAI Chat Completions 形状（多出的 `reasoning_content` 字段客户端不取、无害）。三层探针全过：① 最简对话 200；② 带 tools 的请求回 `finish_reason:"tool_calls"`，`tool_calls[].id/type/function.{name,arguments}` 与 OpenAI 同构（assistant 消息 `content` 为空串而非 null，agent 客户端按 tool_calls 有无决定续跑、空串原样回灌网关亦接受）；③ 回灌 assistant 工具消息＋`role:tool` 结果后网关回纯正文 `finish_reason:"stop"`。全栈实跑：未建索引时模型自主调 `fasti_memory_search`、收 unavailable 信封后诚实答"查不到"；就绪后实测多轮查询改写（含并行工具调用，轮次硬顶内收口）、`hit` 信封（`exact-alias-pass` 窄 DTO）＋`resolve_pointer` 正常；合成夹具因无真源经历支撑，深跳工具回 internal/not-found 稳定信封（真实 builder 产物有真源背书，非缺陷），模型据中性 prompt 明确拒绝编造细节；`npm start` 真实进程 `POST /chat` 200 收口。密钥仅经临时环境变量使用，未入库未落盘，临时件用后即清。
 
 **三、红线口径（承接主控 2026-11-21 D1–D5 拍板）**
 
