@@ -27,24 +27,16 @@ import type {
 } from '../../event/llm-port.ts';
 import { parseSummaryPayload } from '../../event/llm-wire-parse.ts';
 import { DEFAULT_CLOSURE_CALL_TIMEOUT_MS } from '../../event/params.ts';
-
-/** 本端口只用到的最小 HTTP 响应面（全局 Response 与测试桩都满足，不绑定 undici 具体类型）。 */
-export interface MinimalHttpResponse {
-  readonly ok: boolean;
-  readonly status: number;
-  text(): Promise<string>;
-}
-
-/** 本端口发出的请求形状。 */
-export interface HttpRequestInit {
-  method: 'POST';
-  headers: Record<string, string>;
-  body: string;
-  signal?: AbortSignal;
-}
-
-/** 最小 fetch 面：全局 fetch 结构兼容，测试可注入纯函数桩，绝不起真实 socket。 */
-export type FetchLike = (url: string, init: HttpRequestInit) => Promise<MinimalHttpResponse>;
+import {
+  buildCommonHeaders,
+  endpointOf,
+  extractAssistantContent,
+  resolveGlobalFetch,
+  toUnavailable,
+  type FetchLike,
+  type HttpRequestInit,
+  type MinimalHttpResponse,
+} from './openai-wire.ts';
 
 /** 直连端口构造选项；全部为显式配置，不读宿主、不碰全局凭据库。 */
 export interface OpenAICompatLLMPortOptions {
@@ -85,14 +77,11 @@ export function createOpenAICompatLLMPort(options: OpenAICompatLLMPortOptions): 
     throw new TypeError('createOpenAICompatLLMPort：model 不能为空');
   }
 
-  const endpoint = `${baseURL.replace(/\/+$/, '')}/chat/completions`;
+  const endpoint = endpointOf(baseURL);
   const timeoutMs = options.timeoutMs ?? DEFAULT_CLOSURE_CALL_TIMEOUT_MS;
   const fetchImpl = options.fetchImpl ?? resolveGlobalFetch();
 
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (options.apiKey !== undefined && options.apiKey.length > 0) {
-    headers['authorization'] = `Bearer ${options.apiKey}`;
-  }
+  const headers = buildCommonHeaders(options.apiKey);
 
   return {
     async summarize(
@@ -123,13 +112,10 @@ export function createOpenAICompatLLMPort(options: OpenAICompatLLMPortOptions): 
               })
             : await call(external);
       } catch (error) {
-        if (error instanceof UnavailableError) {
-          throw error;
-        }
-        if (isAbort(error) || external?.aborted === true) {
+        if (external?.aborted === true) {
           throw new UnavailableError('直连模型请求被中止（未返回结果）', { cause: error });
         }
-        throw new UnavailableError(`直连模型请求失败：${(error as Error).message}`, { cause: error });
+        throw toUnavailable(error, '直连模型请求');
       }
 
       if (!response.ok) {
@@ -168,48 +154,4 @@ export function createOpenAICompatLLMPort(options: OpenAICompatLLMPortOptions): 
       return { ...parsed, model: actualModel };
     },
   };
-}
-
-/** 从 Chat Completions 响应信封里安全取出首个候选的字符串正文与回报模型名。 */
-function extractAssistantContent(envelope: unknown): {
-  content?: string;
-  reportedModel?: string;
-} {
-  if (typeof envelope !== 'object' || envelope === null) {
-    return {};
-  }
-  const root = envelope as Record<string, unknown>;
-  const reportedModel = typeof root['model'] === 'string' ? (root['model'] as string) : undefined;
-  const choices = root['choices'];
-  if (!Array.isArray(choices) || choices.length === 0) {
-    return { reportedModel };
-  }
-  const first = choices[0];
-  if (typeof first !== 'object' || first === null) {
-    return { reportedModel };
-  }
-  const message = (first as Record<string, unknown>)['message'];
-  if (typeof message !== 'object' || message === null) {
-    return { reportedModel };
-  }
-  const content = (message as Record<string, unknown>)['content'];
-  return typeof content === 'string' ? { content, reportedModel } : { reportedModel };
-}
-
-/** 判断错误是否是 abort（DOMException 名 / 带 name 的普通错误都要认）。 */
-function isAbort(error: unknown): boolean {
-  return (
-    typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'AbortError'
-  );
-}
-
-/** 取全局 fetch；运行时若无内置 fetch（且未注入），给出可操作的明确报错而非神秘 TypeError。 */
-function resolveGlobalFetch(): FetchLike {
-  const global = globalThis as { fetch?: FetchLike };
-  if (typeof global.fetch !== 'function') {
-    throw new TypeError(
-      '当前运行时没有可用的全局 fetch，请通过 options.fetchImpl 注入兼容的 HTTP 客户端',
-    );
-  }
-  return global.fetch;
 }

@@ -21,6 +21,7 @@ import { timingSafeEqual } from 'node:crypto';
 
 import type { Fasti } from '../../api/index.ts';
 import type { LoggerPort } from '../../ports/logger-port.ts';
+import type { ChatHandler } from './chat.ts';
 
 /** 请求体上限：1 MiB（本地单人使用足够，超大即拒，防内存滥用）。 */
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -36,6 +37,11 @@ export interface HttpServerOptions {
   readonly token: string;
   /** 默认通道 id：`GET /` 页面与 `POST /channels/:id/turns` 之外的便捷通道。 */
   readonly channel: string;
+  /**
+   * 对话处理器（对话第一刀）。缺省 `null` = 未配模型端点，`POST /chat` 显式回 503，
+   * 不影响页面、写入与读回；具体模型客户端由组合根 serve.ts 注入，机制层不认识 headless。
+   */
+  readonly chat?: ChatHandler | null | undefined;
   /** 诊断日志。缺省 no-op（内核零依赖，日志是调用方的事）。 */
   readonly logger?: LoggerPort;
 }
@@ -206,19 +212,71 @@ export async function startHttpServer(fasti: Fasti, options: HttpServerOptions):
       // 路由已识别（用于错方法时区分 405 与 404）。
       const turnsMatch = /^\/channels\/([^/]+)\/turns$/u.exec(pathname);
       const isExperiences = pathname === '/experiences';
+      const isChat = pathname === '/chat';
 
-      if (turnsMatch === null && !isExperiences) {
+      if (turnsMatch === null && !isExperiences && !isChat) {
         send(errorReply(404, 'not-found', '路径不存在'));
         return;
       }
-      if ((turnsMatch !== null && method !== 'POST') || (isExperiences && method !== 'GET')) {
-        send(errorReply(405, 'method-not-allowed', isExperiences ? '仅支持 GET' : '仅支持 POST'));
+      const allowedMethod = isExperiences ? 'GET' : 'POST';
+      if (method !== allowedMethod) {
+        send(errorReply(405, 'method-not-allowed', `仅支持 ${allowedMethod}`));
         return;
       }
 
-      // ── 第二道：token 鉴权（写入与读回都要）──
+      // ── 第二道：token 鉴权（写入、读回与聊天都要）──
       if (!tokenMatches(req.headers.authorization, token)) {
         send(errorReply(401, 'unauthorized', '缺少或错误的访问凭证'));
+        return;
+      }
+
+      // ── 对话：POST /chat（未配模型显式 503，不伪装成可用）──
+      if (isChat) {
+        if (options.chat == null) {
+          send(errorReply(503, 'chat-unavailable', '未配置模型端点，对话能力不可用'));
+          return;
+        }
+        const chatBody = await readBody(req);
+        if (chatBody.tooLarge) {
+          send(errorReply(413, 'payload-too-large', '请求体超过 1 MiB 上限'));
+          return;
+        }
+        let chatParsed: unknown;
+        try {
+          chatParsed = JSON.parse(chatBody.text);
+        } catch {
+          send(errorReply(400, 'bad-json', '请求体不是合法 JSON'));
+          return;
+        }
+        const chatInput = chatParsed as Record<string, unknown> | null;
+        if (typeof chatInput !== 'object' || chatInput === null) {
+          send(errorReply(400, 'bad-request', '请求体必须是 JSON 对象'));
+          return;
+        }
+        const text = chatInput['text'];
+        if (typeof text !== 'string' || text.trim() === '') {
+          send(errorReply(400, 'bad-request', '字段 text 必填且为非空字符串'));
+          return;
+        }
+        const sessionId = typeof chatInput['session_id'] === 'string' ? chatInput['session_id'] : undefined;
+        try {
+          const result = await options.chat({ text, ...(sessionId === undefined ? {} : { sessionId }) });
+          send(jsonReply(200, { ok: true, reply: result.reply, model: result.model }));
+        } catch (error) {
+          const name = error instanceof Error ? error.name : '';
+          const message = error instanceof Error ? error.message : String(error);
+          if (name === 'NotFoundError' || message.includes('通道未注册')) {
+            send(errorReply(404, 'channel-not-found', '目标通道未注册，拒绝对话'));
+            return;
+          }
+          if (name === 'UnavailableError') {
+            // 不回显上游细节/鉴权信息，只给稳定错误码。
+            send(errorReply(502, 'model-unavailable', '模型端暂时不可用，你的消息已留存'));
+            return;
+          }
+          logger?.error('对话处理失败：%s', message);
+          send(errorReply(500, 'internal', '对话处理失败'));
+        }
         return;
       }
 
@@ -357,15 +415,28 @@ function renderPage(token: string, channel: string): string {
 <title>FasTI 本地演示</title>
 <style>
   body { font: 14px/1.6 system-ui, sans-serif; margin: 2rem; max-width: 42rem; }
-  textarea { width: 100%; height: 5rem; font: inherit; }
+  textarea, input[type=text] { width: 100%; font: inherit; box-sizing: border-box; }
+  textarea { height: 5rem; }
   button { font: inherit; padding: .3rem .9rem; }
   pre { background: #f4f4f4; padding: .8rem; overflow: auto; }
+  .chat { margin-top: 2rem; border-top: 1px solid #ccc; padding-top: 1rem; }
+  #chat-log { min-height: 3rem; margin-bottom: .8rem; }
+  .msg { margin: .4rem 0; }
+  .msg .who { color: #666; margin-right: .4rem; }
+  .msg.assistant .bubble { background: #eef3ff; }
+  .bubble { display: inline-block; padding: .4rem .7rem; border-radius: .5rem; background: #f4f4f4; white-space: pre-wrap; }
 </style>
 <h1>FasTI 本地演示</h1>
 <p>通道：<code>${safeChannel}</code>　此页面与接口同源，token 由服务端注入。</p>
 <textarea id="text" placeholder="写一句话，下面点写入"></textarea>
 <p><button id="write">写入</button> <button id="read">读回</button></p>
 <pre id="out">（等待操作）</pre>
+<div class="chat">
+  <h2>和本机模型对话</h2>
+  <div id="chat-log"></div>
+  <input type="text" id="chat-input" placeholder="输入一句话，回车发送">
+  <p><button id="chat-send">发送</button></p>
+</div>
 <script>
   const token = ${JSON.stringify(safeToken)};
   const channel = ${JSON.stringify(safeChannel)};
@@ -389,6 +460,41 @@ function renderPage(token: string, channel: string): string {
     const res = await fetch('/experiences?channel=' + channel, { headers: auth });
     show(await res.json());
   };
+  const chatLog = document.getElementById('chat-log');
+  const chatInput = document.getElementById('chat-input');
+  const addMsg = (who, text) => {
+    const row = document.createElement('div');
+    row.className = 'msg ' + who;
+    const label = document.createElement('span');
+    label.className = 'who';
+    label.textContent = who === 'user' ? '我' : '助手';
+    const bubble = document.createElement('span');
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+    row.append(label, bubble);
+    chatLog.append(row);
+  };
+  const sendChat = async () => {
+    const text = chatInput.value.trim();
+    if (!text) return;
+    addMsg('user', text);
+    chatInput.value = '';
+    try {
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const payload = await res.json();
+      addMsg(res.ok ? 'assistant' : 'user', res.ok ? payload.reply : ('（错误 ' + payload.error.code + '）'));
+    } catch (error) {
+      addMsg('user', '（网络错误：' + String(error) + '）');
+    }
+  };
+  document.getElementById('chat-send').onclick = sendChat;
+  chatInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') sendChat();
+  });
 </script>
 </html>
 `;

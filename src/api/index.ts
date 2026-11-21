@@ -116,6 +116,15 @@ export interface MemoryProjectionDrainPort {
   drainProjection(budgetMs: number): Promise<MemoryProjectionDrainReport>;
 }
 
+/** 近期原文窄 DTO（node 身体聊天回路从真源重建上下文用，只含说话者与正文）。 */
+export interface RecentRawTurnView {
+  readonly speaker: string;
+  readonly raw_text: string;
+}
+
+/** readRecentRawTurns 的硬上限：适配器可传更小的窗口，不得越过此值一次拖全库。 */
+const MAX_RECENT_RAW_TURNS = 100;
+
 /** 打开 Fasti 的选项。 */
 export interface FastiOptions {
   /** 显式数据根（最高优先级）。 */
@@ -1273,6 +1282,26 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
   async readExperienceById(id: string): Promise<ExperienceSummaryView | null> {
     if (!this.experienceLog.has(id)) return null;
     return projectExperienceSummary(this.experienceLog.get(id));
+  }
+
+  /**
+   * 读某通道近期原文（对话第一刀：从 append-only 真源重建聊天上下文）。
+   *
+   * 纯读窄面：`RawLog.readAll` 跨分片按时间序取尾部 `limit` 条，只投影 speaker/raw_text，
+   * 不回 event_id/content_hash 等内部字段。通道未注册 → NotFoundError（fail-closed）；
+   * limit 必须是 1..MAX_RECENT_RAW_TURNS 的整数，形状非法在任何 IO 前抛 SchemaError。
+   */
+  async readRecentRawTurns(channel: string, limit: number): Promise<RecentRawTurnView[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RECENT_RAW_TURNS) {
+      throw new SchemaError(
+        `readRecentRawTurns 的 limit 必须是 1–${MAX_RECENT_RAW_TURNS} 的整数，实际收到：${String(limit)}`,
+      );
+    }
+    const log = this.rawLog(channel);
+    if (log === undefined) {
+      throw new NotFoundError(`通道未注册，无法读取原文：${channel}`);
+    }
+    return log.readAll().slice(-limit).map((row) => ({ speaker: row.speaker, raw_text: row.raw_text }));
   }
 
   async resolvePointer(pointer: Pointer): Promise<ResolvedPointer> {

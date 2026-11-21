@@ -14,3 +14,13 @@ export {
   type ClosureLoopOptions,
   type ClosureLoopHandle,
 } from './loop.ts';
+export {
+  createChatHandler,
+  CHAT_SYSTEM_PROMPT,
+  CHAT_HISTORY_TURNS,
+  type ChatHandler,
+  type ChatModelClient,
+  type ChatMessage,
+  type ChatRequest,
+  type ChatResponse,
+} from './chat.ts';

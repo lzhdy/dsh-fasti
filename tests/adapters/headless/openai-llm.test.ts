@@ -13,10 +13,12 @@ import { UnavailableError } from '../../../src/core/errors.ts';
 import { AnchorSerialWireError, type LLMSummarizeRequest } from '../../../src/event/llm-port.ts';
 import {
   createOpenAICompatLLMPort,
-  type FetchLike,
-  type HttpRequestInit,
-  type MinimalHttpResponse,
 } from '../../../src/adapters/headless/openai-llm.ts';
+import type {
+  FetchLike,
+  HttpRequestInit,
+  MinimalHttpResponse,
+} from '../../../src/adapters/headless/openai-wire.ts';
 
 const REQ: LLMSummarizeRequest = { system: '你是摘要器', user: '1. 原文', maxChars: 500 };
 

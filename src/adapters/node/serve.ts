@@ -15,8 +15,9 @@ import { pathToFileURL } from 'node:url';
 import { Fasti } from '../../api/index.ts';
 import type { ChannelDescriptor } from '../../contract/channel.ts';
 import type { LoggerPort } from '../../ports/logger-port.ts';
-import { createOpenAICompatLLMPort } from '../headless/index.ts';
+import { createOpenAIChatClient, createOpenAICompatLLMPort } from '../headless/index.ts';
 import { readServeConfig, type ServeConfig } from './config.ts';
+import { createChatHandler, type ChatHandler } from './chat.ts';
 import { startHttpServer } from './http-server.ts';
 import { startClosureLoop } from './loop.ts';
 
@@ -58,6 +59,16 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
         })
       : null;
 
+  // 对话回路与摘要端口同一份端点配置；未配端点时显式 null，/chat 路由回 503。
+  const chatClient =
+    config.openaiBaseURL !== undefined && config.openaiModel !== undefined
+      ? createOpenAIChatClient({
+          baseURL: config.openaiBaseURL,
+          model: config.openaiModel,
+          apiKey: config.openaiApiKey,
+        })
+      : null;
+
   const fasti = await Fasti.open({
     ...(config.dataRoot === undefined ? {} : { dataRoot: config.dataRoot }),
     llmPort,
@@ -66,10 +77,14 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
 
   await fasti.registerChannel(descriptorOf(config.channel));
 
+  // 组合根唯一装配点：聊天处理器在此接线（机制层只拿结构化函数，不引 headless）。
+  const chat: ChatHandler | null =
+    chatClient === null ? null : createChatHandler({ fasti, channel: config.channel, client: chatClient });
+
   // 一次性 token：每次启动新生成、不落盘；进程重启即失效。
   const token = randomBytes(32).toString('base64url');
 
-  const server = await startHttpServer(fasti, { port: config.port, token, channel: config.channel, logger });
+  const server = await startHttpServer(fasti, { port: config.port, token, channel: config.channel, chat, logger });
 
   // 闭合节拍：dsh 里由宿主 scheduler 周期调 checkSilenceClock + drainClosure，
   // 这里由启动器自己驱动——否则「模型接上了却永远不会被叫到」，摘要永远 pending。
@@ -79,7 +94,7 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
 
   console.log(`[fasti-http] 已启动：${server.url}`);
   console.log(`[fasti-http] 数据根：${fasti.paths.root}`);
-  console.log(`[fasti-http] 通道：${config.channel}　模型：${llmPort === null ? '未配置（摘要保持 pending）' : config.openaiModel}`);
+  console.log(`[fasti-http] 通道：${config.channel}　模型：${llmPort === null ? '未配置（摘要 pending、/chat 回 503）' : config.openaiModel}`);
   console.log('[fasti-http] 闭合节拍：每 5 秒一次（先闭合安静够久的事件，再补摘要）。');
   console.log('[fasti-http] 浏览器打开上面的地址即可（页面已内联本次 token）。');
   console.log(`[fasti-http] 命令行验证：curl -H "Authorization: Bearer ${token}" '${server.url}/experiences?channel=${config.channel}'`);
