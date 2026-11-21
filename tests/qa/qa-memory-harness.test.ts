@@ -895,6 +895,7 @@ async function makeAuditableRoot(n: number): Promise<{ root: string; eventIds: s
       event_id: `evt-${i}`,
       session_id: 's1',
       speaker: 'user',
+      initiation: 'user',
       raw_text: `内容${i}`,
       asserted_at: iso(T0 + i * DAY),
       occurred_at: iso(T0 + i * DAY),

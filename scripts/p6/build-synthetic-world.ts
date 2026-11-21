@@ -16,6 +16,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { Fasti } from '../../src/api/index.ts';
+import { initiationOf } from '../../src/adapters/dsh/initiation.ts';
 import type { EventRecord } from '../../src/contract/event.ts';
 import { appendJsonl } from '../../src/core/jsonl.ts';
 import { shardKeyOf } from '../../src/core/time.ts';
@@ -96,6 +97,7 @@ async function ingestWorld(plan: WorldPlan, outRoot: string): Promise<Map<string
           event_id: `${event.eventId}:t${String(j + 1).padStart(2, '0')}`,
           session_id: event.eventId,
           speaker: turn.speaker,
+          initiation: initiationOf(turn.speaker),
           raw_text: turn.rawText,
           asserted_at: iso(atMs),
           occurred_at: iso(atMs),

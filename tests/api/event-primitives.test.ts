@@ -452,6 +452,7 @@ test('门面 · 无 LLM 端口时，时钟静默照常闭合事件，摘要保�
         event_id: 'evt-raw-1',
         session_id: 's-1',
         speaker: 'user',
+        initiation: 'user',
         raw_text: '她打开了一篇论文',
         asserted_at: BASE_TIME,
         ingested_at: BASE_TIME,

@@ -16,6 +16,7 @@ import {
   NotFoundError,
   NotImplementedError,
   OutOfRangeError,
+  SchemaError,
   UnavailableError,
 } from '../core/errors.ts';
 import { ensureDir, exists } from '../core/fsx.ts';
@@ -487,6 +488,12 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
         return existing;
       }
 
+      // 经历身份由适配器映射后显式传入；内核不识别宿主 speaker，这里只做非空字符串兜底
+      // 校验（宁空勿错：非法入参在写任何字节前直接拒，不静默、不伪造身份）。
+      if (typeof input.initiation !== 'string' || input.initiation === '') {
+        throw new SchemaError('ingestRawTurn 入参 initiation 必须是非空字符串（应由适配器映射提供）');
+      }
+
       // 落盘时刻**只计算一次**：原文的 ingested_at 与经历的 recorded_at 必须严格相等，
       // 否则跨毫秒边界时两者会漂移（同一次摄入却有两个落盘时刻）。
       const ingestedAt = input.ingested_at ?? nowIso();
@@ -512,7 +519,7 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
           channel,
           ref: input.session_id ?? '',
         },
-        initiation: initiationOf(input.speaker),
+        initiation: input.initiation,
         observation: {
           text: {
             id: input.event_id,
@@ -1665,28 +1672,6 @@ const EMPTY_MARKS: EventDerivedMarks = {
  */
 export function eventKeyOf(channel: string, eventId: string): string {
   return `${channel}\u0000${eventId}`;
-}
-
-/**
- * speaker → initiation 映射（开放枚举）。
- *
- * 与阶段 3 迁移脚本 `INITIATION_BY_SPEAKER` 同口径：
- * `user`→`user`、`assistant`→`her`、`system`→`system`、`tool`→`environment`。
- * 未知值**原样保留**（开放枚举：不报错、不丢事件）。
- */
-export function initiationOf(speaker: string): string {
-  switch (speaker) {
-    case 'user':
-      return 'user';
-    case 'assistant':
-      return 'her';
-    case 'system':
-      return 'system';
-    case 'tool':
-      return 'environment';
-    default:
-      return speaker;
-  }
 }
 
 /**

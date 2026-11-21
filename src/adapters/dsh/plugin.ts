@@ -35,6 +35,7 @@ import { startRecurringWorker } from '../../assembly/recurring-worker.ts';
 import type { LoggerPort } from '../../ports/logger-port.ts';
 import { convertSessionEvent } from './convert-event.ts';
 import { createDshEventBus, type DshEventSink } from './event-bus.ts';
+import { initiationOf } from './initiation.ts';
 import { createDshLifecycle } from './lifecycle.ts';
 import { createDshLogger } from './logger.ts';
 import { createDshScheduler } from './scheduler.ts';
@@ -485,7 +486,11 @@ async function handleSessionEvent(
       return;
     }
 
-    await fasti.ingestRawTurn(channel, input);
+    // 经历身份由 dsh 适配器映射（speaker→initiation）；input 其余字段作原文行原样落盘。
+    await fasti.ingestRawTurn(channel, {
+      ...input,
+      initiation: initiationOf(input.speaker),
+    });
   } catch (error) {
     // 旁路捕获：吞掉异常以免阻断 dsh 主链路，但必须留下可观测的记录。
     logger.error('%s 摄入失败：%s', LOG_PREFIX, String(error));

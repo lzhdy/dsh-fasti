@@ -34,9 +34,12 @@ export type AppendExperienceInput = Omit<Experience, 'recorded_at' | 'tick' | 'c
 };
 
 /**
- * ingestRawTurn 的入参 —— 原文层的一行 + 若干可选的口径覆盖。
+ * ingestRawTurn 的入参 —— 原文层的一行 + 经历身份 + 若干可选的口径覆盖。
  *
- * 底层即 `RawTurnInput`（原文层 8 字段），另加两个**可选**覆盖项：
+ * 底层即 `RawTurnInput`（原文层 8 字段，含 speaker），另加：
+ *  - `initiation`（**必填**）：经历契约的内核身份，由**适配器**从宿主说话者映射而来。
+ *    内核不认识宿主 speaker、不再自行做 speaker→initiation 翻译；speaker 仍随
+ *    RawTurnInput 原样落原文层（真源八字段不动），initiation 仅用于构造经历。
  *  - `occurred_at`：世界轴（事情发生的时刻）。缺省取 `asserted_at`。
  *  - `ingested_at`：系统轴（进入真源的时刻）。缺省由 A 分配**本次摄入的唯一落盘时刻**。
  *
@@ -44,6 +47,8 @@ export type AppendExperienceInput = Omit<Experience, 'recorded_at' | 'tick' | 'c
  * 与经历条目的 `recorded_at` 严格相等（世界轴与系统轴分离，但同一操作的两处落盘不漂移）。
  */
 export interface IngestRawTurnInput extends RawTurnInput {
+  /** 经历身份（开放枚举）：适配器负责把宿主说话者翻成它；内核只做非空字符串校验。 */
+  initiation: string;
   /** 世界轴：事情发生/被感知的时刻；缺省取 asserted_at。 */
   occurred_at?: string | undefined;
 }

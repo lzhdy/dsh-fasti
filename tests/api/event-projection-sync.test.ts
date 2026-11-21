@@ -69,6 +69,7 @@ async function seedOpenEvent(fasti: Fasti): Promise<void> {
     event_id: 'evt-raw-sync-1',
     session_id: 's-sync',
     speaker: 'user',
+    initiation: 'user',
     raw_text: '她把论文摊在桌上',
     asserted_at: BASE_TIME,
     ingested_at: BASE_TIME,

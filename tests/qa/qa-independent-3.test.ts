@@ -32,6 +32,7 @@ function turn(eventId: string, at: string) {
     event_id: eventId,
     session_id: 'session-1',
     speaker: 'user' as const,
+    initiation: 'user',
     raw_text: `内容 ${eventId}`,
     asserted_at: at,
     occurred_at: at,

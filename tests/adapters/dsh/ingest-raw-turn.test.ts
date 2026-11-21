@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { Fasti } from '../../../src/api/index.ts';
+import { initiationOf } from '../../../src/adapters/dsh/initiation.ts';
 import { isUlid } from '../../../src/core/ulid.ts';
 import { cleanupTempRoot, makeTempRoot } from '../../helpers.ts';
 
@@ -31,6 +32,7 @@ function turnInput(overrides: Partial<{
     session_id: overrides.session_id ?? 'session-1',
     turn_id: overrides.turn_id ?? '',
     speaker: overrides.speaker ?? 'user',
+    initiation: initiationOf(overrides.speaker ?? 'user'),
     raw_text: overrides.raw_text ?? '在吗',
     asserted_at: overrides.asserted_at ?? '2026-11-08T10:00:00.000Z',
     ...(overrides.ingested_at === undefined ? {} : { ingested_at: overrides.ingested_at }),

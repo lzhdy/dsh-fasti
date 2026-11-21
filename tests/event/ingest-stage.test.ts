@@ -31,6 +31,7 @@ function turnInput(eventId: string, occurredAt: string) {
     event_id: eventId,
     session_id: 'session-1',
     speaker: 'user',
+    initiation: 'user',
     raw_text: `内容 ${eventId}`,
     asserted_at: occurredAt,
     occurred_at: occurredAt,
@@ -53,6 +54,7 @@ function longTurnInput(eventId: string, occurredAt: string) {
     event_id: eventId,
     session_id: 'session-1',
     speaker: 'user',
+    initiation: 'user',
     // 固定 350 码点：'字'.repeat(350)。
     raw_text: '字'.repeat(350),
     asserted_at: occurredAt,
