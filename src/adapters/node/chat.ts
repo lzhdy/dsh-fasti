@@ -1,26 +1,34 @@
 /**
- * node 身体的对话编排（对话第一刀：拿掉 dsh 后，由 FasTI 自己直连模型与用户对话）。
+ * node 身体的对话编排（对话第二刀：agent 回路＋固定 on 记忆工具）。
  *
  * 本模块是 node 适配器内的装配策略，**不是机制层**：
  *  - 只依赖 node 内置 + 内核门面的结构化面，不 import headless 或任何兄弟适配器
- *    （具体 OpenAI 客户端由 serve.ts 组合根注入 ChatModelClient）；
- *  - 一轮对话的固定次序：用户话先落真源 → 从真源重建近期上下文 → 调模型 →
- *    助手回话落真源。模型失败时用户话仍保留，且绝不写入伪造的助手行。
+ *    （具体 OpenAI 客户端由 serve.ts 组合根注入）；
+ *  - 一轮对话的固定次序：用户话先落真源 → 从真源重建近期上下文 → 开请求级工具会话、
+ *    跑 function-calling 回路 → 最终助手回话落真源。模型失败时用户话仍保留，绝不写伪造行。
  *
  * 红线口径：
  *  - system prompt 固定中性、不注人设（CHAT_SYSTEM_PROMPT），不提供 env 覆盖口子；
  *  - 历史只从真源 readRecentRawTurns 重建，不信任客户端投递的任何"上下文"；
- *  - 第一刀没有工具回路，发给模型的消息只有 system/user/assistant 三种角色。
+ *  - 工具中间轮（assistant tool_calls/role:tool 消息）只存在于本次模型回路，
+ *    **不进真源**：append-only 真源只留用户原话与助手最终正文两条；
+ *  - 工具会话每请求新建，私有序号表不跨请求；模型只能经白名单信封碰记忆，碰不到真源写。
  */
 
 import { randomBytes } from 'node:crypto';
 
 import type { Fasti } from '../../api/index.ts';
 
-/** 固定中性 system prompt：只约束诚实与表达，不编人格、不赋予未接线的能力。 */
+/**
+ * 固定中性 system prompt（第二刀版）：只约束诚实、表达与工具纪律，
+ * 不编人格、不赋予未接线能力；工具是本次请求真实声明的，故显式承认其存在并封死编造面。
+ */
 export const CHAT_SYSTEM_PROMPT =
-  '你是运行在用户本机的记忆助手。只根据当前对话如实回答：没有依据的内容直接说明不知道，' +
-  '不编造事实，不声称拥有对话中未提供的工具或能力；回答简洁，使用与用户相同的语言。';
+  '你是运行在用户本机的记忆助手。回答规则：'
+  + '1. 需要查阅长期记忆时，只可调用本次提供的记忆工具；工具返回的信封是唯一记忆依据，'
+  + '严禁编造工具未返回的卡片、序号或原文，工具返回不可用或无结果时直接说明没有相关记忆。'
+  + '2. 对话中没有依据的内容直接说明不知道，不编造事实。'
+  + '3. 回答简洁，使用与用户相同的语言。';
 
 /**
  * 聊天历史窗口（条）：每次请求从真源取最近 N 条原文加在 system 之后。
@@ -28,19 +36,40 @@ export const CHAT_SYSTEM_PROMPT =
  */
 export const CHAT_HISTORY_TURNS = 20;
 
-/** 结构化模型面：headless 的 OpenAIChatClient 天然满足，机制层无需认识具体实现。 */
-export interface ChatModelClient {
-  readonly modelName: string;
-  complete(
-    messages: readonly ChatMessage[],
-    options?: { signal?: AbortSignal },
-  ): Promise<{ content: string; model: string }>;
+/** 工具描述符（与 headless OpenAIAgentTool 结构同构，此处本地定义不跨适配器引用）。 */
+export interface ChatToolDescriptor {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
 }
 
-/** 发给模型的一条消息（第一刀三角色封闭集）。 */
+/** 一次工具调用（模型给的原始 arguments JSON 字符串原样下发）。 */
+export interface ChatToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly argumentsText: string;
+}
+
+/** 结构化 agent 模型面：headless 的 OpenAIAgentClient 天然满足，机制层无需认识具体实现。 */
+export interface ChatAgentClient {
+  readonly modelName: string;
+  run(input: {
+    readonly messages: readonly ChatMessage[];
+    readonly tools: readonly ChatToolDescriptor[];
+    readonly execute: (call: ChatToolCall) => Promise<string>;
+  }): Promise<{ content: string; model: string }>;
+}
+
+/** 发给模型的入口消息（工具轮由 agent 客户端内部产生，不经此类型）。 */
 export interface ChatMessage {
   readonly role: 'system' | 'user' | 'assistant';
   readonly content: string;
+}
+
+/** 工具宿主：进程内共享的六工具描述符 + 请求级会话工厂。 */
+export interface ChatToolHost {
+  readonly tools: readonly ChatToolDescriptor[];
+  createSession(): { execute: (call: ChatToolCall) => Promise<string> };
 }
 
 /** /chat 路由解析后的入参（文本已过非空校验）。 */
@@ -79,12 +108,13 @@ function newEventId(prefix: string): string {
 export interface CreateChatHandlerDeps {
   readonly fasti: Fasti;
   readonly channel: string;
-  readonly client: ChatModelClient;
+  readonly client: ChatAgentClient;
+  readonly toolHost: ChatToolHost;
 }
 
 /** 构造聊天处理器；纯函数装配，不持会话状态（状态的权威在真源）。 */
 export function createChatHandler(deps: CreateChatHandlerDeps): ChatHandler {
-  const { fasti, channel, client } = deps;
+  const { fasti, channel, client, toolHost } = deps;
 
   return async (request: ChatRequest): Promise<ChatResponse> => {
     const sessionId = request.sessionId ?? '';
@@ -110,10 +140,16 @@ export function createChatHandler(deps: CreateChatHandlerDeps): ChatHandler {
     }
     const messages: ChatMessage[] = [{ role: 'system', content: CHAT_SYSTEM_PROMPT }, ...history];
 
-    // 3) 调模型；传输/信封失败原样上抛 UnavailableError，由路由归一错误信封。
-    const { content, model } = await client.complete(messages);
+    // 3) 请求级工具会话：序号表/采用去重集只活在这一次模型回路里。
+    const session = toolHost.createSession();
+    const { content, model } = await client.run({
+      messages,
+      tools: toolHost.tools,
+      execute: (call) => session.execute(call),
+    });
 
-    // 4) 助手回话落真源：speaker=assistant，initiation 映射为 her（与 dsh 口径一致）。
+    // 4) 助手最终回话落真源：speaker=assistant，initiation 映射为 her（与 dsh 口径一致）。
+    //    工具中间轮不落盘——真源只记双向对话原文，不记模型的内部检索动作。
     await fasti.ingestRawTurn(channel, {
       event_id: `${userEventId}-reply`,
       ...(sessionId === '' ? {} : { session_id: sessionId }),

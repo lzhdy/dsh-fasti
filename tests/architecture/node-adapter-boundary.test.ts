@@ -1,7 +1,7 @@
 /**
- * node 本地启动器适配器的架构边界门（平台化 #72 第一刀）。
+ * node 本地启动器适配器的架构边界门（平台化 #72）。
  *
- * 四条红线，任何一条被后人改动都会当场红：
+ * 五条红线，任何一条被后人改动都会当场红：
  *  规则1「机制层白名单」 http-server.ts 只许 node: 内置 + 内核相对路径；
  *                      禁宿主作用域包、禁兄弟适配器、禁第三方包。
  *  规则2「组合根唯一」   只有 serve.ts 可以 import 兄弟适配器，且只许 headless（
@@ -9,6 +9,8 @@
  *                      这与 dsh 的 plugin.ts 是同一套纪律：装配只发生在一个点。
  *  规则3「只听回环」     机制层必须显式绑 '127.0.0.1'，全目录不得出现 0.0.0.0 / :: 外网字面。
  *  规则4「两道防线顺序」 Host 白名单校验必须先于 token 校验（DNS-rebinding 不能靠凭证兜）。
+ *  规则5「记忆门固定 on」 node 身体不提供 off/shadow 模式开关：装配调用字面写死 mode:'on'，
+ *                      运行时入参无 mode/gateMode 旋钮，dsh 三态不得回流到 node。
  *
  * 每条都带合成投毒自证与反误伤断言，避免"目录写错/图为空"的假绿。
  */
@@ -202,4 +204,42 @@ test('规则4：两道防线顺序——Host 白名单校验必须先于 token �
     hostIndex < tokenIndex,
     `Host 校验（偏移 ${hostIndex}）必须先于 token 校验（偏移 ${tokenIndex}）：DNS-rebinding 请求不带有效凭证，靠 token 兜不住`,
   );
+});
+
+/** 剔除注释后的码面（注释里出现 off/shadow 字样不算违规）。 */
+function stripComments(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/u, ''))
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//gu, '');
+}
+
+test('规则5：记忆门固定 on——node 身体无 off/shadow 开关，装配字面写死且入参无 mode 旋钮', () => {
+  const files = readNodeTsFiles();
+  const session = files.find((file) => file.relPath === NODE_PREFIX + 'memory-session.ts');
+  assert.ok(session !== undefined, '缺少 memory-session.ts（记忆工具宿主）');
+  const code = stripComments(session.text);
+
+  // 正向：装配装配厂时门档位必须字面写死 'on'。
+  assert.ok(/mode:\s*['"]on['"]/u.test(code), "node 身体必须以字面量 mode: 'on' 装配记忆工具");
+
+  // 反向：码面不得出现任何模式开关旋钮或另外两态字面。
+  assert.ok(!/gateMode/u.test(code), 'node 身体不得出现 dsh 的 gateMode 旋钮');
+  assert.ok(!/\bmode\s*[?]/u.test(code), '运行时入参/选项类型不得暴露可选 mode 旋钮');
+  assert.ok(!/['"]off['"]/u.test(code), "node 身体不得出现 'off' 档位字面");
+  assert.ok(!/['"]shadow['"]/u.test(code), "node 身体不得出现 'shadow' 档位字面");
+
+  // 组合根也不得传任何 mode 入参（旋钮无处可接）。
+  const composer = files.find((file) => file.relPath === NODE_PREFIX + COMPOSER);
+  assert.ok(composer !== undefined, '组合根缺失');
+  assert.ok(!/gateMode|\bmode\s*:/u.test(stripComments(composer.text)), 'serve.ts 不得传入记忆门 mode/gateMode');
+
+  // 投毒自证：三态旋钮形态必须被同一组判式命中。
+  const poisonToggle = "const options = { gateMode: process.env.FASTI_GATE_MODE ?? 'off' };";
+  const poisonLiteral = "mode: 'shadow'";
+  assert.ok(/gateMode/u.test(poisonToggle), 'gateMode 投毒未标红');
+  assert.ok(/['"]off['"]|['"]shadow['"]/u.test(poisonToggle + poisonLiteral), 'off/shadow 投毒未标红');
+  // 反误伤：固定 on 的正确写法不被旋钮判式误伤。
+  assert.equal(/\bmode\s*[?]/u.test("mode: 'on'"), false, '写死 on 被误判为旋钮');
 });

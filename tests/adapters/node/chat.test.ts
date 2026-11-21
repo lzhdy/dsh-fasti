@@ -21,8 +21,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { Fasti } from '../../../src/api/index.ts';
-import { createOpenAIChatClient } from '../../../src/adapters/headless/index.ts';
+import { createOpenAIAgentClient } from '../../../src/adapters/headless/index.ts';
 import { startHttpServer } from '../../../src/adapters/node/http-server.ts';
+import { openNodeMemoryRuntime } from '../../../src/adapters/node/memory-session.ts';
 import {
   CHAT_HISTORY_TURNS,
   CHAT_SYSTEM_PROMPT,
@@ -135,14 +136,16 @@ async function openStack(mockPort: number, root: string): Promise<{
 }> {
   const fasti = await Fasti.open({ dataRoot: root, llmPort: null });
   await fasti.registerChannel(descriptor);
-  const client = createOpenAIChatClient({ baseURL: `http://127.0.0.1:${mockPort}/v1`, model: MODEL });
-  const chat = createChatHandler({ fasti, channel: CHANNEL, client });
+  const client = createOpenAIAgentClient({ baseURL: `http://127.0.0.1:${mockPort}/v1`, model: MODEL });
+  const memoryRuntime = openNodeMemoryRuntime({ fasti, channel: CHANNEL });
+  const chat = createChatHandler({ fasti, channel: CHANNEL, client, toolHost: memoryRuntime });
   const handle = await startHttpServer(fasti, { port: 0, token: TOKEN, channel: CHANNEL, chat });
   return {
     fasti,
     port: handle.port,
     stop: async () => {
       await handle.close();
+      await memoryRuntime.dispose();
       await fasti.close();
     },
   };
@@ -170,9 +173,12 @@ test('POST /chat happy path：线协议形状正确，user/assistant 双向落�
     assert.equal(mock.seen.length, 1);
     const wire = mock.seen[0]!;
     assert.equal(wire.authorization, undefined, '未配 key 不得发 Authorization');
-    assert.deepEqual(Object.keys(wire.body).sort(), ['messages', 'model'], '第一刀请求体只许有 model+messages');
+    assert.deepEqual(Object.keys(wire.body).sort(), ['messages', 'model', 'tools'], '第二刀请求体三键：model+messages+tools');
     assert.equal(wire.body['model'], MODEL);
-    assert.ok(!('tools' in wire.body), '纯聊天第一刀严禁带 tools 字段');
+    const wireTools = wire.body['tools'] as Array<{ type: string; function: { name: string } }>;
+    assert.equal(wireTools.length, 6, '固定 on：六工具每次请求都随包声明');
+    assert.ok(wireTools.every((tool) => tool.type === 'function'));
+    assert.ok(!('tool_choice' in wire.body), '不硬编码 tool_choice，也不发采样参数');
     const messages = wire.body['messages'] as Array<{ role: string; content: string }>;
     assert.equal(messages[0]?.role, 'system');
     assert.equal(messages[0]?.content, CHAT_SYSTEM_PROMPT, 'system 必须是固定中性提示，不注人设');

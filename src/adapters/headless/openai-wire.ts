@@ -1,7 +1,7 @@
 /**
  * OpenAI 兼容线的公共传输积木（headless 适配器内部共享）。
  *
- * 摘要端口（openai-llm）与通用聊天客户端（openai-chat）走同一个 Chat Completions
+ * 摘要端口（openai-llm）与对话 agent 客户端（openai-agent）走同一个 Chat Completions
  * HTTP 形状，传输纪律也必须逐字一致：无 key 不发 Authorization、失败归一
  * UnavailableError、错误消息不带鉴权头。共享件放这里，规则只写一份，不允许两个
  * 适配器各抄一份后漂移。本文件零运行时依赖、不认识任何业务契约。

@@ -15,11 +15,28 @@ export {
   type ClosureLoopHandle,
 } from './loop.ts';
 export {
+  startProjectionLoop,
+  DEFAULT_PROJECTION_BUDGET_MS,
+  type ProjectionLoopTarget,
+  type ProjectionLoopOptions,
+  type ProjectionLoopHandle,
+} from './projection-loop.ts';
+export {
+  openNodeMemoryRuntime,
+  type NodeMemoryRuntime,
+  type NodeMemoryTool,
+  type NodeMemoryToolSession,
+  type NodeToolCall,
+} from './memory-session.ts';
+export {
   createChatHandler,
   CHAT_SYSTEM_PROMPT,
   CHAT_HISTORY_TURNS,
   type ChatHandler,
-  type ChatModelClient,
+  type ChatAgentClient,
+  type ChatToolHost,
+  type ChatToolDescriptor,
+  type ChatToolCall,
   type ChatMessage,
   type ChatRequest,
   type ChatResponse,
