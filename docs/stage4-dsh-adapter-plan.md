@@ -241,6 +241,8 @@ async function handleSessionEvent(session, event) {
 
 ### 4.5 通道注册纪律
 
+> 【2026-11-21 时效注记】本节为阶段 4 施工前的计划快照；下文“首次初始化自动预置 dsh 描述符、适配器只核对不自动注册”的纪律已被平台化插件化步骤 2 取代——现行口径为内核空白启动不内置任何通道、由适配器挂载时显式 `registerChannel` 登记、未注册通道写入 fail-closed，以正本 `architecture-design-spec.md` 11.13.7 为准。本注记仅加时效指针，不回改下列历史计划正文。
+
 `channels.json` 首次初始化已自动预置 dsh 描述符（`DEFAULT_DSH_DESCRIPTOR`）。适配器**只核对、不自动注册** —— 若描述符缺失则告警并停写，避免覆盖用户已改的注册表内容（开放面纪律：既有条目永不被改写）。
 
 ---
