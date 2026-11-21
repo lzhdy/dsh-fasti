@@ -149,7 +149,7 @@ test('query：多维过滤（kind / channel / scene / initiation / time）', asy
 
 test('search：全文命中并返回原文片段（非摘要）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const rawLog = new RawLog('dsh', path.join(root, 'raw-turns'));
     rawLog.append({
@@ -178,7 +178,7 @@ test('search：全文命中并返回原文片段（非摘要）', async () => {
 
 test('resolvePointer：按 id 与按 (shard, seq) 都能定位原文行', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const rawLog = new RawLog('dsh', path.join(root, 'raw-turns'));
     rawLog.append({
@@ -275,7 +275,7 @@ test('registerChannel：写入 channels.json，重复注册同内容幂等', asy
 
 test('verifyIntegrity：校验原文行 content_hash', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const rawLog = new RawLog('dsh', path.join(root, 'raw-turns'));
     rawLog.append({ event_id: 'raw-1', speaker: 'user', raw_text: '正常内容' });

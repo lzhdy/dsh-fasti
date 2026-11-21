@@ -78,7 +78,7 @@ function experienceCount(root: string): number {
 
 test('ingestRawTurn：原文 + 经历一并写入', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.ingestRawTurn('dsh', turnInput());
 
@@ -97,7 +97,7 @@ test('ingestRawTurn：原文 + 经历一并写入', async () => {
 
 test('ingestRawTurn：指针可解析，取回的正文逐字一致', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const text = '在吗在吗\n这是第二行，带标点！';
     const experience = await fasti.ingestRawTurn('dsh', turnInput({ raw_text: text }));
@@ -114,7 +114,7 @@ test('ingestRawTurn：指针可解析，取回的正文逐字一致', async () =
 
 test('ingestRawTurn：指针的落点与原文层实际位置相符', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const first = await fasti.ingestRawTurn('dsh', turnInput({ event_id: 'evt-a' }));
     const second = await fasti.ingestRawTurn('dsh', turnInput({ event_id: 'evt-b' }));
@@ -133,7 +133,7 @@ test('ingestRawTurn：指针的落点与原文层实际位置相符', async () =
 
 test('ingestRawTurn：时间三轴各归其位（occurred/recorded/tick）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.ingestRawTurn('dsh', turnInput({
       asserted_at: '2026-11-08T10:00:00.000Z',
@@ -155,7 +155,7 @@ test('ingestRawTurn：时间三轴各归其位（occurred/recorded/tick）', asy
 
 test('ingestRawTurn：occurred_at 缺省时取 asserted_at', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.ingestRawTurn('dsh', turnInput({
       asserted_at: '2026-11-08T10:00:00.000Z',
@@ -169,7 +169,7 @@ test('ingestRawTurn：occurred_at 缺省时取 asserted_at', async () => {
 
 test('ingestRawTurn：原文 ingested_at 与经历 recorded_at 严格相等（落盘时刻只算一次）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.ingestRawTurn('dsh', turnInput());
 
@@ -187,7 +187,7 @@ test('ingestRawTurn：原文 ingested_at 与经历 recorded_at 严格相等（�
 
 test('ingestRawTurn：显式传入 ingested_at 时原文与经历都用它', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.ingestRawTurn('dsh', turnInput({
       ingested_at: '2026-11-08T12:00:00.000Z',
@@ -201,7 +201,7 @@ test('ingestRawTurn：显式传入 ingested_at 时原文与经历都用它', asy
 
 test('ingestRawTurn：speaker → initiation 映射（assistant → her）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.ingestRawTurn('dsh', turnInput({
       event_id: 'evt-a',
@@ -218,7 +218,7 @@ test('ingestRawTurn：speaker → initiation 映射（assistant → her）', asy
 
 test('ingestRawTurn：同一 event_id 重跑零新增（幂等）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const first = await fasti.ingestRawTurn('dsh', turnInput());
     const tickAfterFirst = await fasti.tick();
@@ -237,7 +237,7 @@ test('ingestRawTurn：同一 event_id 重跑零新增（幂等）', async () => 
 
 test('ingestRawTurn：幂等命中不报错', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     await fasti.ingestRawTurn('dsh', turnInput());
     await assert.doesNotReject(() => fasti.ingestRawTurn('dsh', turnInput()));
@@ -250,7 +250,7 @@ test('ingestRawTurn：幂等命中不报错', async () => {
 test('ingestRawTurn：进程重启后幂等仍生效（索引从真源恢复）', async () => {
   const root = makeTempRoot();
 
-  const first = await Fasti.open({ dataRoot: root });
+  const first = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   let originalId: string;
   try {
     const experience = await first.ingestRawTurn('dsh', turnInput());
@@ -260,7 +260,7 @@ test('ingestRawTurn：进程重启后幂等仍生效（索引从真源恢复）'
   }
 
   // 重开同一个数据根 —— 索引必须从真源重建。
-  const second = await Fasti.open({ dataRoot: root });
+  const second = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const again = await second.ingestRawTurn('dsh', turnInput());
     assert.equal(again.id, originalId);
@@ -274,7 +274,7 @@ test('ingestRawTurn：进程重启后幂等仍生效（索引从真源恢复）'
 
 test('ingestRawTurn：跨通道同 event_id 各自独立成条（键必须带 channel）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     await fasti.registerChannel({
       id: 'qq',
@@ -301,7 +301,7 @@ test('ingestRawTurn：跨通道同 event_id 各自独立成条（键必须带 ch
 
 test('ingestRawTurn：并发摄入同一 event_id 只落一条', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     await Promise.all(
       Array.from({ length: 50 }, () => fasti.ingestRawTurn('dsh', turnInput())),
@@ -317,7 +317,7 @@ test('ingestRawTurn：并发摄入同一 event_id 只落一条', async () => {
 
 test('ingestRawTurn：并发摄入不同 event_id 全部落盘、seq 连续无洞', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const total = 20;
     await Promise.all(
@@ -347,7 +347,7 @@ test('ingestRawTurn：并发摄入不同 event_id 全部落盘、seq 连续无�
 
 test('ingestRawTurn：不自锁（单写者队列内不再二次排队）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     // 若实现里在队列内又调 appendExperience（会再排一次队），这里必然永久挂起。
     const result = await Promise.race([
@@ -365,7 +365,7 @@ test('ingestRawTurn：不自锁（单写者队列内不再二次排队）', asyn
 
 test('ingestRawTurn：产出的经历满足冻结面（三段槽位 / 三轴 / 双定位 / 无重要性字段）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.ingestRawTurn('dsh', turnInput());
 
@@ -394,7 +394,7 @@ test('ingestRawTurn：产出的经历满足冻结面（三段槽位 / 三轴 / �
 
 test('ingestRawTurn：投影可查到该经历，且重建后仍在（冻结面第 5 条）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.ingestRawTurn('dsh', turnInput());
 
@@ -416,7 +416,7 @@ test('ingestRawTurn：投影可查到该经历，且重建后仍在（冻结面�
 
 test('ingestRawTurn：写入后完整性校验全绿（content_hash = sha256(raw_text)）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     await fasti.ingestRawTurn('dsh', turnInput({ raw_text: '内容哈希校验' }));
 
@@ -431,7 +431,7 @@ test('ingestRawTurn：写入后完整性校验全绿（content_hash = sha256(raw
 
 test('ingestRawTurn：通道未注册时抛错（不静默写进未登记的命名空间）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     await assert.rejects(
       () => fasti.ingestRawTurn('not-registered', turnInput()),
@@ -445,7 +445,7 @@ test('ingestRawTurn：通道未注册时抛错（不静默写进未登记的命�
 
 test('ingestRawTurn：公开 appendExperience 行为不变（回归）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const experience = await fasti.appendExperience({
       id: '01J0000000000000000000000A',

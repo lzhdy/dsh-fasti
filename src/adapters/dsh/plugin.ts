@@ -322,6 +322,9 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
     try {
       fasti = await Fasti.open({
         ...(config.dataRoot === undefined ? {} : { dataRoot: config.dataRoot }),
+        // 平台化 H2-b：内核不再写死通道→物理目录，dsh 适配器挂载时显式声明本通道
+        // 的原文落扁平目录 raw-turns/（存量物理布局）；不声明则内核默认走 raw/<channel>/。
+        flatRawChannels: [channel],
         // 端口注入门面：闭合后摘要由门面内部那条管线在后台做。
         llmPort: port,
         // 单次调用硬超时（与端口兜底同一个数，避免两处各调一套）。

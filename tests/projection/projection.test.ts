@@ -38,7 +38,7 @@ async function seedWithRaw(root: string, options: { rawText: string; cue: string
     ingested_at: '2026-11-15T12:00:00.000Z',
   });
 
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   await fasti.appendExperience(
     makeExperience({
       id: OPEN_ULID,
@@ -276,7 +276,7 @@ test('投影失败不丢真源：真源写入仍成立，并标记需重建', as
 
 test('全量重建后对账：RawTurn 数 = dialogue 经历数、通道 count 与 channels.json 一致', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     const rawLog = new RawLog('dsh', path.join(root, 'raw-turns'));
     rawLog.append({
@@ -357,7 +357,7 @@ test('L1→L2→L3 降级可手动触发，且每级功能不丢（结果集一�
     const resultsPerLevel: Array<Map<string, string[]>> = [];
 
     for (const level of ['L1', 'L2', 'L3'] as const) {
-      const fasti = await Fasti.open({ dataRoot: root, projectionLevel: level });
+      const fasti = await Fasti.open({ dataRoot: root, projectionLevel: level, flatRawChannels: ['dsh'] });
       try {
         assert.equal(fasti.level, level, `手动指定档位应生效（${level}）`);
         assert.equal(fasti.isDegraded, level !== 'L1', '降级状态应被标注');

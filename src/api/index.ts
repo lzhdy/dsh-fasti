@@ -120,6 +120,14 @@ export interface MemoryProjectionDrainPort {
 export interface FastiOptions {
   /** 显式数据根（最高优先级）。 */
   dataRoot?: string | undefined;
+  /**
+   * 遗留扁平原文通道集合（平台化 H2-b 去宿主化）。
+   *
+   * 列名其中的通道，原文落数据根下的遗留扁平目录 `raw-turns/`；其余通道一律走
+   * `raw/<channel>/` 分区。内核默认空集合、不认识任何具体通道，由适配器挂载时显式
+   * 声明自己的通道名（dsh 适配器会传 `[channel]`），门面不内置宿主通道判断。
+   */
+  flatRawChannels?: readonly string[] | undefined;
   /** 环境变量（便于测试注入）。 */
   env?: NodeJS.ProcessEnv;
   /** 手动指定投影引擎档位（用于降级验证）。 */
@@ -177,6 +185,8 @@ export interface FastiOptions {
  */
 export class Fasti implements FastiPrimitives, EventPrimitives {
   private readonly layout: DataLayout;
+  /** 遗留扁平原文通道集合；默认空（内核不认识具体通道），由适配器挂载时显式声明。 */
+  private readonly flatRawChannels: readonly string[];
   private readonly registry: ChannelRegistry;
   private readonly experienceLog: ExperienceLog;
   private readonly rawLogs = new Map<string, RawLog>();
@@ -213,6 +223,7 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
     this.onDiagnostic = options.onDiagnostic ?? (() => undefined);
     this.memoryProjection = options.memoryProjection ?? null;
     this.layout = layoutOf(resolveDataRoot(options));
+    this.flatRawChannels = options.flatRawChannels ?? [];
 
     ensureDir(this.layout.experiences);
     ensureDir(this.layout.projection);
@@ -1588,7 +1599,7 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
     if (cached !== undefined) {
       return cached;
     }
-    const dir = rawDirOf(this.layout, channel);
+    const dir = rawDirOf(this.layout, channel, this.flatRawChannels);
     if (!exists(dir) && !this.registry.has(channel)) {
       return undefined;
     }

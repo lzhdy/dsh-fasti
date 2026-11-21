@@ -145,7 +145,7 @@ test('G02：区间指针命中行里含 id → 快路径返回整个区间（既
 
 test('G02：门面对陈旧冗余坐标也以 id 为准（resolvePointer）', async () => {
   const root = makeTempRoot();
-  const fasti = await Fasti.open({ dataRoot: root });
+  const fasti = await Fasti.open({ dataRoot: root, flatRawChannels: ['dsh'] });
   try {
     seedLog(root);
     const resolved = await fasti.resolvePointer({
