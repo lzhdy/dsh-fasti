@@ -2249,7 +2249,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 2. 服务端自托管极简同源页面：`GET /` 直开即得，页面与 API 同源（免 CORS/PNA 预检），一次性 token 在服务端渲染时注入页面；路由另含 `GET /health`（免凭证存活检查）、`GET /experiences?channel=`（带 token 读回**经历**，走门面 `query` 的经历口径而非 `queryEvents` 的事件段口径，避免"多轮归并成一段、计数不随轮次增长"的口径误导）、`POST /channels/:ch/turns`（带 token 写入一条原文）；错误分类码 400（坏 JSON／缺必填）、401（凭证缺失或错误）、403（Host 不被允许）、404（未知路径／未注册通道，fail-closed）、405（方法不符）、413（请求体超 1 MiB）、500（统一信封不泄堆栈）。
 3. loopback 三层防护（外部安全资料核实后定稿，非拍脑袋）：①**只绑 `127.0.0.1` 且 host 不开放配置**，外网不可达；②**Host 头硬白名单**（去端口后必须 ∈ `localhost`／`127.0.0.1`／`[::1]`，绝不通配），且该校验在代码顺序上先于 token 校验——这是防 DNS-rebinding 的核心：rebinding 请求必带攻击者域名 Host，且带不上有效凭证；③**每次启动随机 token**（`crypto.randomBytes(32)`，`timingSafeEqual` 常量时间比较，不落盘、进程重启即换），写入与读回均须 `Authorization: Bearer`。同源之外的任何跨源 OPTIONS 一律不开放。
 4. 同进程零网络冒烟脚本 `scripts/smoke-standalone-kernel.ts`（`da1e2e2`）：`Fasti.open({llmPort:null})`→登记中性通道→写入→经历口径读回→同 event_id 幂等重放→`close`；沿用 scripts/ 离线脚本惯例，不进 tsconfig 编译图与 verify；三连实跑（干净根 0→1、同句重放 1→1、新句 1→2，均 EXIT=0、进程自愈无悬挂句柄）。
-5. 测试与反证：行为测试 11 例（临时根＋系统分配端口，含伪 Host=403、无／错 token=401、超限 413、未注册=404、错方法=405、close 后 ECONNREFUSED、import 面自证）；新增架构门 `tests/architecture/node-adapter-boundary.test.ts` 5 例（机制层导入白名单、组合根唯一且只许引 headless、只听回环无 `0.0.0.0`／`::` 字面、两道防线顺序、前置自证）。四发实弹变异（拔 Host 校验／拔 token 校验／机制层横向引 dsh／改绑 `0.0.0.0`）均如期标红后逐字节还原（`cmp` 一致）；其中改绑外网一发行为测试全绿、仅静态门标红，证明该红线无法由行为测试替代。全量 `npm run verify` **1541/1541 全绿**（1522＋11＋5＋3 真源护栏），双 tsc 零错误。
+5. 测试与反证：行为测试 11 例（临时根＋系统分配端口，含伪 Host=403、无／错 token=401、超限 413、未注册=404、错方法=405、close 后 ECONNREFUSED、import 面自证）；新增架构门 `tests/architecture/node-adapter-boundary.test.ts` 5 例（机制层导入白名单、组合根唯一且只许引 headless、只听回环无 `0.0.0.0`／`::` 字面、两道防线顺序、前置自证）。四发实弹变异（拔 Host 校验／拔 token 校验／机制层横向引 dsh／改绑 `0.0.0.0`）均如期标红后逐字节还原（`cmp` 一致）；其中改绑外网一发行为测试全绿、仅静态门标红，证明该红线无法由行为测试替代。全量 `npm run verify` 至此 **1541/1541 全绿**（1522＋11＋5＋3 真源护栏；闭合节拍器补入后为 1543/1543，见本节五），双 tsc 零错误。
 
 **二、可验架构事实**
 
@@ -2266,7 +2266,17 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 
 **四、附加安全护栏：真源永不入库（commit `be423d4`）**
 
-本仓库为公开仓库，而真源装的是她本人的对话与生活信息；一旦误提交，删除后仍留在 Git 历史与远端引用里，不可撤回。故增设可执行红门 `tests/architecture/truth-source-not-committed.test.ts`：① `.gitignore` 必须显式覆盖 `.fasti/`（默认兜底根 `~/.fasti` 的仓库内形态，并保留 `fasti/` 旧形态）、`raw-data/`；② 以 `git ls-files` 为准，已跟踪文件不得落在 `raw/`、`experiences/`、`events/`、`projection/`、`state/`、`trash/` 与根级 `channels.json` 等数据布局下；③ 前置自证（扫描规模与锚定文件）＋投毒自证（真实数据路径必判红）＋反误伤（`examples/*.jsonl` 等合法语料不得误判）。本门只查已跟踪文件，不限制本地未跟踪的运行目录，避免正常本地演示把 verify 弄红。全量 verify 随之 **1541/1541 全绿**。
+本仓库为公开仓库，而真源装的是她本人的对话与生活信息；一旦误提交，删除后仍留在 Git 历史与远端引用里，不可撤回。故增设可执行红门 `tests/architecture/truth-source-not-committed.test.ts`：① `.gitignore` 必须显式覆盖 `.fasti/`（默认兜底根 `~/.fasti` 的仓库内形态，并保留 `fasti/` 旧形态）、`raw-data/`；② 以 `git ls-files` 为准，已跟踪文件不得落在 `raw/`、`experiences/`、`events/`、`projection/`、`state/`、`trash/` 与根级 `channels.json` 等数据布局下；③ 前置自证（扫描规模与锚定文件）＋投毒自证（真实数据路径必判红）＋反误伤（`examples/*.jsonl` 等合法语料不得误判）。本门只查已跟踪文件，不限制本地未跟踪的运行目录，避免正常本地演示把 verify 弄红。
+
+**五、闭合节拍器：让"裸连模型"真的被调用（commit `c0bc950`）**
+
+内核把「事件闭合 + 摘要 drain」的**驱动权**交给装配方：`checkSilenceClock()` 只负责把安静够久的事件闭合并入队，`drainClosure()` 只负责取任务调模型；按周期触发它们是适配方的责任，dsh 由宿主 scheduler 起常驻 worker（`src/adapters/dsh/mount.ts:151`）承担。第一刀只装配了端口而未驱动节拍，后果是**模型接上了却永远不被叫到、摘要永久 pending**——属静默失效：真源状态自洽、查询照常，只有摘要出不来。
+
+故补 `src/adapters/node/loop.ts`：`startClosureLoop(target, options)`，以最小结构化目标面 `ClosureLoopTarget`（只含上述两个方法）为参数，不绑 `Fasti` 具体类型；同序执行（先闭合、后摘要）、同一拨不重入、`setInterval` 且 `unref`（不单独钉住进程）、`stop()` 幂等。`serve.ts` 在起服务后接入、在 `close()` 时先停节拍。
+
+验证：① 节拍契约测试（按期触发／闭合先于摘要／stop 后静默）；② 端到端裸连测试——真起一个本机 OpenAI 兼容假端点，内核经真实 HTTP 调它，断言请求带配置的模型名与原文、未配密钥时**不发** `Authorization` 头、事件 `summary_quality` 落成 `ready` 且正文来自模型；③ 真机复核同一数据根：服务写入的真源 → 闭合 → 内核经本机 HTTP 调模型 → 摘要 ready 落盘；④ 变异反证：拔掉闭合调用，节拍契约测试必红，逐字节还原。全量 verify **1543/1543 全绿**。
+
+**口径必须说清**：静默判定用的是**系统写入时刻（`recorded_at` 墙钟）**而非内容声称的 `asserted_at`（`src/event/segmenter.ts:380` 以 `lastRecordedAtMs` 比较），默认静默窗 30 分钟（`src/event/params.ts:89`）。故实时会话写完话要**真的安静约 30 分钟**才闭合、才出摘要；这属机制既有口径，不是启动器缺陷。该参数当前**不经 `FastiOptions` 暴露**（门面只可注入 `closureCallTimeoutMs`），本刀**没有**为演示去改内核阈值，也未加环境变量开关。
 
 ---
 
