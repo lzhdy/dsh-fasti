@@ -2243,7 +2243,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 
 本节登记 11.13.5 挂账子项「宿主无关启动器／服务面」的**第一刀**。需求正当性来自主控已确认的产品形态：**本机 node 后台＋本机浏览器打开 localhost 页面**。同进程零网络的内核底座先由冒烟脚本固定，HTTP 只是包在它外面的一层 loopback 通信；本节**不是**常驻服务、远程服务或多实例方案，不宣告该挂账子项整体完工。凡本节未列能力，继续按 11.13.5 冻结。
 
-**一、已落地内容（commit `bc960fa`、`da1e2e2`；截至本节落笔为本地提交，push 另待主控显式授权）**
+**一、已落地内容（代码提交 `bc960fa`、`da1e2e2`，本节回写随后续文档提交；均已经主控 2026-11-21 显式授权 push 至 origin/main）**
 
 1. node 适配器目录 `src/adapters/node/` 四源文件：`http-server.ts`（机制层，仅用 node 内置 `http`／`crypto`，零宿主作用域包、零兄弟适配器引用）、`serve.ts`（组合根，目录内唯一允许 import headless 造 LLMPort，地位等同 dsh 的 plugin.ts）、`config.ts`（零依赖读 env）、`index.ts`（导出面）；`package.json` 新增 `npm start`，**暂不立 bin**，生产 `dependencies` 仍为 `{}`。
 2. 服务端自托管极简同源页面：`GET /` 直开即得，页面与 API 同源（免 CORS/PNA 预检），一次性 token 在服务端渲染时注入页面；路由另含 `GET /health`（免凭证存活检查）、`GET /experiences?channel=`（带 token 读回**经历**，走门面 `query` 的经历口径而非 `queryEvents` 的事件段口径，避免"多轮归并成一段、计数不随轮次增长"的口径误导）、`POST /channels/:ch/turns`（带 token 写入一条原文）；错误分类码 400（坏 JSON／缺必填）、401（凭证缺失或错误）、403（Host 不被允许）、404（未知路径／未注册通道，fail-closed）、405（方法不符）、413（请求体超 1 MiB）、500（统一信封不泄堆栈）。
