@@ -16,10 +16,10 @@
  *  - 但失败**必须可观测**（logger 告警/报错），绝不静默吞事件。
  *
  * 时序要点（实测 cordis 4.1 的行为）：
- *  - `ctx.on(...)` **必须同步注册**。若放进异步的 `ctx.effect` 体内，
- *    监听器要等 Fasti 打开后才挂上，装载与首个事件之间会丢事件。
- *    故此处：**同步挂监听器**（cordis 自动把它挂到当前 fiber，卸载时移除），
- *    **effect 只管 Fasti 实例的生命周期**。
+ *  - 事件订阅（经 EventBusPort，dsh 插头底层即 `ctx.on(...)`）**必须同步注册**。
+ *    若放进异步的 `ctx.effect` 体内，监听器要等 Fasti 打开后才挂上，装载与首个
+ *    事件之间会丢事件。故此处：**同步挂监听器**（cordis 自动把它挂到当前 fiber，
+ *    卸载时移除），**effect 只管 Fasti 实例的生命周期**。
  *  - 监听器内部 `await ready`（Fasti 就绪信号）——事件先到也不丢，
  *    只是等实例就绪后再写入。
  */
@@ -34,6 +34,7 @@ import { createSourceLookupPort } from '../../assembly/source-lookup.ts';
 import { startRecurringWorker } from '../../assembly/recurring-worker.ts';
 import type { LoggerPort } from '../../ports/logger-port.ts';
 import { convertSessionEvent } from './convert-event.ts';
+import { createDshEventBus, type DshEventSink } from './event-bus.ts';
 import { createDshLifecycle } from './lifecycle.ts';
 import { createDshLogger } from './logger.ts';
 import { createDshScheduler } from './scheduler.ts';
@@ -243,10 +244,13 @@ function resolveToolRegistry(ctx: Context): DshToolRegistry | null {
 export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   const config = parseAdapterConfig(rawConfig);
   const channel = config.channel ?? 'dsh';
-  // 三个中立端口在入口处薄插宿主设施；内核与装配层往下只认端口，不直接摸 ctx。
+  // 中立端口在入口处薄插宿主设施；内核与装配层往下只认端口，不直接摸 ctx。
   const logger = createDshLogger(ctx.logger);
   const lifecycle = createDshLifecycle(ctx);
   const scheduler = createDshScheduler();
+  // cordis 的 on 泛型把事件名约束为 keyof Events，中立端口则按普通字符串订阅事件名；
+  // 这是适配器边界的类型桥接（运行时仍是同一个 ctx.on），与 resolveToolRegistry 同范式。
+  const eventBus = createDshEventBus(ctx as unknown as DshEventSink);
 
   /**
    * Fasti 就绪信号 —— resolve(fasti) 表示可写入，resolve(null) 表示不可写入。
@@ -274,8 +278,9 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           ...(config.closureTimeoutMs === undefined ? {} : { timeoutMs: config.closureTimeoutMs }),
         });
 
-  // 监听器**同步注册**（不放在异步 effect 体内 —— 见文件头时序要点）。
-  ctx.on('session/event', (session: unknown, event: unknown) => {
+  // 监听器**同步注册**（不放在异步 effect 体内 —— 见文件头时序要点）；
+  // eventBus.on 是同步薄转发，这一行仍在 apply 同步调用栈内，装载与首事件之间不留异步间隙。
+  eventBus.on('session/event', (session: unknown, event: unknown) => {
     // 不 await —— 旁路捕获，不阻断 dsh 主链路。
     void handleSessionEvent(logger, state, drops, ready, channel, session, event);
   });
