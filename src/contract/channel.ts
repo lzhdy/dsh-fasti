@@ -19,7 +19,7 @@ export type Counterpart = (typeof KNOWN_COUNTERPARTS)[number];
 
 /** 通道描述符。 */
 export interface ChannelDescriptor {
-  /** 'dsh' | 'qq' | 'browser' | 'camera' | …（开放）。 */
+  /** 通道 id：任意非空字符串，由适配器挂载时登记决定（开放集合，内核不内置具体通道名）。 */
   id: string;
   /** 人读名。 */
   label: string;

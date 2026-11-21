@@ -89,7 +89,7 @@ export interface Mark {
 
 /** 场景 —— 通道内标识；会话只是 scene.ref 的一种取值。 */
 export interface Scene {
-  /** 通道注册表 id：'dsh' | 'qq' | 'browser' | 'camera' | …（开放）。 */
+  /** 通道注册表 id：任意非空字符串（开放集合，内核不内置具体通道名）。 */
   channel: string;
   /** 通道内场景标识：会话 id / 聊天 id / 页面 url+visit / 流 id / 复盘批 id。 */
   ref: string;
