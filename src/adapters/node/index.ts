@@ -8,3 +8,9 @@
 export { startHttpServer, type HttpServerOptions, type HttpServerHandle } from './http-server.ts';
 export { serve } from './serve.ts';
 export { readServeConfig, type ServeConfig } from './config.ts';
+export {
+  startClosureLoop,
+  type ClosureLoopTarget,
+  type ClosureLoopOptions,
+  type ClosureLoopHandle,
+} from './loop.ts';

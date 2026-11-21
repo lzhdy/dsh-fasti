@@ -18,6 +18,7 @@ import type { LoggerPort } from '../../ports/logger-port.ts';
 import { createOpenAICompatLLMPort } from '../headless/index.ts';
 import { readServeConfig, type ServeConfig } from './config.ts';
 import { startHttpServer } from './http-server.ts';
+import { startClosureLoop } from './loop.ts';
 
 /** 最小 console 日志端口：前缀 + printf 占位。 */
 function consoleLogger(): LoggerPort {
@@ -70,15 +71,23 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
 
   const server = await startHttpServer(fasti, { port: config.port, token, channel: config.channel, logger });
 
+  // 闭合节拍：dsh 里由宿主 scheduler 周期调 checkSilenceClock + drainClosure，
+  // 这里由启动器自己驱动——否则「模型接上了却永远不会被叫到」，摘要永远 pending。
+  const loop = startClosureLoop(fasti, {
+    onError: (error, phase) => logger.warn(`闭合节拍 ${phase} 阶段失败：${error instanceof Error ? error.message : String(error)}`),
+  });
+
   console.log(`[fasti-http] 已启动：${server.url}`);
   console.log(`[fasti-http] 数据根：${fasti.paths.root}`);
   console.log(`[fasti-http] 通道：${config.channel}　模型：${llmPort === null ? '未配置（摘要保持 pending）' : config.openaiModel}`);
+  console.log('[fasti-http] 闭合节拍：每 5 秒一次（先闭合安静够久的事件，再补摘要）。');
   console.log('[fasti-http] 浏览器打开上面的地址即可（页面已内联本次 token）。');
   console.log(`[fasti-http] 命令行验证：curl -H "Authorization: Bearer ${token}" '${server.url}/experiences?channel=${config.channel}'`);
 
   return {
     url: server.url,
     async close() {
+      loop.stop();
       await server.close();
       await fasti.close();
     },
