@@ -35,7 +35,6 @@ export type { ContentBlock, DshEvent, DshSession, MessageEventData } from './eve
 
 export {
   createDshLLMPort,
-  startClosureWorker,
   type DshModelRoute,
 } from './llm.ts';
 

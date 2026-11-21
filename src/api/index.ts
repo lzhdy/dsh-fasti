@@ -688,7 +688,7 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
   /**
    * 处理一批到期的摘要任务（一轮最多 `maxPerRound` 条，且不超过 `maxDurationMs`）。
    *
-   * 由宿主的后台 worker 周期调用（dsh 侧：`startClosureWorker`）。
+   * 由后台循环 worker 周期调用（dsh 侧经 `startRecurringWorker` 驱动）。
    *
    * **两道上限**（设计稿 v1.1 §6.3.1 纪律②）：
    *  - 条数：`maxPerRound`；

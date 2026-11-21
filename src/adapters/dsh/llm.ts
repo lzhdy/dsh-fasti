@@ -1,22 +1,21 @@
 /**
- * dsh 宿主的 LLM 端口实现 + 自管理后台 worker（技术基线 §6.6）。
+ * dsh 宿主的 LLM 端口实现（技术基线 §6.6）。
  *
  * 这是**唯一**调模型的地方 —— 内核（event / contract / source / core）只认
- * `src/event/llm-port.ts` 的接口，不认识宿主。
+ * `src/event/llm-port.ts` 的接口，不认识宿主；本文件也不再 import 任何宿主包。
  *
- * 两条宿主纪律：
- *  1. **不硬编码 API key**：凭据来自宿主（OAuth 账号路由）。本文件只依赖
- *     `DshModelRoute` 这层最小形状 —— 宿主怎么路由由宿主决定。
- *  2. **cordis 没有 `ctx.setInterval`**：worker 用「一次性 setTimeout → 执行 →
- *     再排下一次」的自管理链，卸载时由 `ctx.effect` 的 disposer 清掉定时器。
+ * 宿主纪律：**不硬编码 API key**，凭据来自宿主（OAuth 账号路由）。本文件只依赖
+ * `DshModelRoute` 这层最小形状 —— 宿主怎么路由由宿主决定。
+ *
+ * 后台自管理循环（闭合 / 记忆投影两个 worker）已抽到宿主无关的
+ * `src/assembly/recurring-worker.ts`，经 LifecyclePort / SchedulerPort / LoggerPort
+ * 驱动；本文件只保留投影 drain 的轮询预算常量与模型端口本身。
  *
  * 已知宿主约束（阶段 4 文档 §13.3）：headless profile 的 bundle patch 显式
  * 禁用了凭据，`MISSING_CREDENTIAL` / `ACCOUNT_SIGN_IN_REQUIRED` 是必然结果 ——
  * **跑真实 LLM 必须走 web profile**。这是真机验收的事，不影响单元测试
  * （本文件对路由是注入的，测试用假路由）。
  */
-
-import type { Context } from '@deepseek-ai/cordis';
 
 import { withDeadline } from '../../core/deadline.ts';
 import { UnavailableError } from '../../core/errors.ts';
@@ -124,101 +123,8 @@ function isAbort(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'AbortError';
 }
 
-/**
- * 启动后台 worker（自管理 setTimeout + ctx.effect）。
- *
- * @param drain 处理一轮（返回本轮处理条数）；返回 0 表示队列已空。
- */
-export function startClosureWorker(
-  ctx: Context,
-  drain: () => Promise<number>,
-  opts?: { intervalMs?: number },
-): void {
-  const intervalMs = opts?.intervalMs ?? 5_000;
-
-  ctx.effect(async () => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let stopped = false;
-
-    // 一轮跑完再排下一轮 —— 不用 setInterval（cordis 没有，且固定间隔会堆积）。
-    const runOnce = async (): Promise<void> => {
-      try {
-        await drain();
-      } catch (error) {
-        // worker 自身出错不能拖死宿主：记日志后照常排下一轮。
-        ctx.logger.error('[dsh-fasti] 闭合 worker 本轮失败：%s', String(error));
-      }
-      // 卸载可能发生在 drain 执行期间 —— 此时不再续排，否则留下悬挂定时器。
-      if (stopped) {
-        return;
-      }
-      timer = setTimeout(() => {
-        void runOnce();
-      }, intervalMs);
-    };
-
-    timer = setTimeout(() => {
-      void runOnce();
-    }, intervalMs);
-
-    // 卸载时清掉待执行的定时器 —— 不留悬挂的回调。
-    return () => {
-      stopped = true;
-      if (timer !== undefined) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-    };
-  }, 'dsh-fasti-closure-worker');
-}
-
 /** 记忆投影 drain 轮询预算（毫秒）：与闭合管线预算各自独立，互不复用。 */
 export const DEFAULT_MEMORY_PROJECTION_BUDGET_MS = 60_000;
-
-/**
- * 记忆投影后台 worker（独立于闭合 worker）：
- *  - 与 closure 不同轮次、不同预算；本轮失败只记日志，不阻断闭合管线；
- *  - 同样用「一次性 setTimeout → 执行 → 再排下一次」的自管理链，卸载清定时器。
- */
-export function startMemoryProjectionWorker(
-  ctx: Context,
-  drain: () => Promise<unknown>,
-  opts?: { intervalMs?: number },
-): void {
-  const intervalMs = opts?.intervalMs ?? 5_000;
-
-  ctx.effect(async () => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let stopped = false;
-
-    const runOnce = async (): Promise<void> => {
-      try {
-        await drain();
-      } catch (error) {
-        // 记忆 drain 自身出错不能拖死宿主或闭合管线：记日志后照常排下一轮。
-        ctx.logger.error('[dsh-fasti] 记忆投影 worker 本轮失败：%s', String(error));
-      }
-      if (stopped) {
-        return;
-      }
-      timer = setTimeout(() => {
-        void runOnce();
-      }, intervalMs);
-    };
-
-    timer = setTimeout(() => {
-      void runOnce();
-    }, intervalMs);
-
-    return () => {
-      stopped = true;
-      if (timer !== undefined) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-    };
-  }, 'dsh-fasti-memory-projection-worker');
-}
 
 /**
  * 解析模型正文为摘要结果。

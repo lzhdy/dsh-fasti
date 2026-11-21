@@ -31,15 +31,13 @@ import type { Context } from '@deepseek-ai/cordis';
 import { Fasti } from '../../api/index.ts';
 import type { MemoryGateMode } from '../../assembly/memory-tools.ts';
 import { createSourceLookupPort } from '../../assembly/source-lookup.ts';
+import { startRecurringWorker } from '../../assembly/recurring-worker.ts';
 import type { LoggerPort } from '../../ports/logger-port.ts';
 import { convertSessionEvent } from './convert-event.ts';
+import { createDshLifecycle } from './lifecycle.ts';
 import { createDshLogger } from './logger.ts';
-import {
-  DEFAULT_MEMORY_PROJECTION_BUDGET_MS,
-  createDshLLMPort,
-  startClosureWorker,
-  startMemoryProjectionWorker,
-} from './llm.ts';
+import { createDshScheduler } from './scheduler.ts';
+import { DEFAULT_MEMORY_PROJECTION_BUDGET_MS, createDshLLMPort } from './llm.ts';
 import type { DshModelRoute } from './llm.ts';
 import { wireMemoryTools, type DshToolRegistry, type MemoryWiring } from './memory-tool-bridge.ts';
 
@@ -245,8 +243,10 @@ function resolveToolRegistry(ctx: Context): DshToolRegistry | null {
 export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   const config = parseAdapterConfig(rawConfig);
   const channel = config.channel ?? 'dsh';
-  // 日志口：内核与装配层只拿中立 LoggerPort，宿主日志设施在这一处薄插进来。
+  // 三个中立端口在入口处薄插宿主设施；内核与装配层往下只认端口，不直接摸 ctx。
   const logger = createDshLogger(ctx.logger);
+  const lifecycle = createDshLifecycle(ctx);
+  const scheduler = createDshScheduler();
 
   /**
    * Fasti 就绪信号 —— resolve(fasti) 表示可写入，resolve(null) 表示不可写入。
@@ -289,8 +289,8 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   // 独立于 LLM 端口 —— 没有模型端口时，安静够久的 open 事件照样该闭合，
   // 只是摘要保持 pending。若把 worker 挂在 port 条件下，A6b 直接不成立：
   // 无端口 → 无 worker → 永不闭合。
-  startClosureWorker(
-    ctx,
+  startRecurringWorker(
+    { lifecycle, scheduler, logger },
     async () => {
       const fasti = await ready;
       if (fasti === null || state.closed) {
@@ -303,19 +303,30 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
       // ② 摘要 drain：端口为 null 时管线自己会记 permanent 失败并保持 pending。
       return fasti.drainClosure();
     },
-    config.closureIntervalMs === undefined ? {} : { intervalMs: config.closureIntervalMs },
+    {
+      label: 'dsh-fasti-closure-worker',
+      failureLogFormat: '[dsh-fasti] 闭合 worker 本轮失败：%s',
+      ...(config.closureIntervalMs === undefined ? {} : { intervalMs: config.closureIntervalMs }),
+    },
   );
 
   // ── 记忆投影 worker（第七法）──
   // 调度点排在闭合 worker 之后：closure 先行，记忆 drain 本轮在后；两者轮次与预算独立，
   // 记忆 drain 失败在门面/worker 两层隔离，不阻断闭合管线。
-  startMemoryProjectionWorker(ctx, async () => {
-    const fasti = await ready;
-    if (fasti === null || state.closed) {
-      return;
-    }
-    await fasti.drainMemoryProjection(DEFAULT_MEMORY_PROJECTION_BUDGET_MS);
-  });
+  startRecurringWorker(
+    { lifecycle, scheduler, logger },
+    async () => {
+      const fasti = await ready;
+      if (fasti === null || state.closed) {
+        return;
+      }
+      await fasti.drainMemoryProjection(DEFAULT_MEMORY_PROJECTION_BUDGET_MS);
+    },
+    {
+      label: 'dsh-fasti-memory-projection-worker',
+      failureLogFormat: '[dsh-fasti] 记忆投影 worker 本轮失败：%s',
+    },
+  );
 
   // 生命周期：装载时 open，卸载时 close（释放 SQLite 句柄）。
   ctx.effect(async () => {

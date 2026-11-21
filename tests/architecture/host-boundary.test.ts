@@ -102,11 +102,13 @@ test('H0 边界：src/adapters 之外的任何内核模块都不得 import @deep
   const adapterFilesWithHost = files.filter(
     (file) => isAdapterPath(file.relPath) && findHostSpecifiers(extractImportSpecifiers(file.text)).length > 0,
   );
-  assert.ok(adapterFilesWithHost.length >= 4, `前置失效：适配器目录应至少有 4 个含宿主包的文件，实际 ${adapterFilesWithHost.length}`);
+  // H1 切片 2 后 llm.ts 已剥离 cordis（worker 下沉到 assembly 改吃端口），仍真实
+  // import 宿主包的适配器文件收敛为 3 个；这是边界主动收紧，不是扫描漂移。
+  assert.ok(adapterFilesWithHost.length >= 3, `前置失效：适配器目录应至少有 3 个含宿主包的文件，实际 ${adapterFilesWithHost.length}`);
   const byRel = new Map(files.map((file) => [file.relPath, file]));
+  // 正向锚点：这些文件当前仍真实承担宿主耦合，必须继续被扫到，防口径漂移。
   for (const anchor of [
     'src/adapters/dsh/plugin.ts',
-    'src/adapters/dsh/llm.ts',
     'src/adapters/dsh/memory-tool-bridge.ts',
     'src/adapters/dsh/host-model-route.ts',
   ]) {
@@ -117,6 +119,16 @@ test('H0 边界：src/adapters 之外的任何内核模块都不得 import @deep
       `前置失效：${anchor} 应含宿主 import，否则扫描口径可能已漂移`,
     );
   }
+
+  // 反向防回潮锚点：llm.ts 在 H1 切片 2 已彻底剥离宿主包，谁再给它引回
+  // @deepseek-ai/* 即判失败，把已取得的解耦成果钉死。
+  const decoupled = byRel.get('src/adapters/dsh/llm.ts');
+  assert.ok(decoupled !== undefined, '前置失效：已解耦文件 src/adapters/dsh/llm.ts 缺失');
+  assert.deepEqual(
+    findHostSpecifiers(extractImportSpecifiers(decoupled.text)),
+    [],
+    '防回潮：src/adapters/dsh/llm.ts 已在 H1 切片 2 剥离宿主包，不得重新 import @deepseek-ai/*',
+  );
 
   // 主断言：逐个非适配器内核文件，宿主引用必须为空。
   const violations: Array<{ relPath: string; hosts: string[] }> = [];
