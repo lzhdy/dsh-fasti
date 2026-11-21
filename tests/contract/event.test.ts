@@ -71,8 +71,10 @@ const PRODUCERS = [
  */
 const WIRE_CONSUMERS = [
   'src/event/llm-port.ts', // 端口契约：anchor_serials / WireBoundaryCandidate / AnchorSerialWireError / LLMSummarizeResponse 类型声明
+  'src/event/llm-wire-parse.ts', // 宿主无关线协议解析：dsh/headless 共用的 strict/fail-soft 规则（H3 自 dsh/llm 抽出）
   'src/event/closure.ts', // 内核编排：resolveResponse 解析序号、候选 fail-soft、观测回调接线
   'src/adapters/dsh/llm.ts', // 适配层：parseAnchorSerialsField / parseBoundaryCandidateSerials 结构解析
+  'src/adapters/headless/openai-llm.ts', // headless 直连适配：OpenAI 兼容 HTTP，复用 llm-wire-parse 的 strict 解析与 LLMSummarizeResponse 契约（H3，零宿主包）
   'src/event/serial-table.ts', // 纯函数：resolveAnchorSerials / resolveCandidateSerials / 表映射
   'src/api/index.ts', // 门面：onClosureObservation 透传 + observations() 读口
   'src/adapters/dsh/plugin.ts', // 宿主：onClosureObservation 回调接线

@@ -178,7 +178,9 @@ function stripComments(text: string): string {
 }
 
 test('静态门：anchors 路径不再调用 stringArray；key_points 路径保留 stringArray', () => {
-  const file = path.join(REPO_ROOT, 'src', 'adapters', 'dsh', 'llm.ts');
+  // H3 起线协议解析收敛到宿主无关的 event/llm-wire-parse.ts（dsh/llm.ts 仅 re-export），
+  // 静态门随被守实现迁移到新文件，断言强度（anchors 禁洗、key_points 保留 filter）不变。
+  const file = path.join(REPO_ROOT, 'src', 'event', 'llm-wire-parse.ts');
   const code = stripComments(fs.readFileSync(file, 'utf8'));
 
   // 逐行区分两个路径：stringArray 的调用点只允许出现在 key_points 侧。

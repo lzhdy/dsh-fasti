@@ -13,8 +13,9 @@
  *    防跨测试文件连带重复注册对方的 test()。
  *  - 只静态读源码文本做判定，不运行时加载任何模块、不写入真实 src/。
  *  - 豁免范围是整个 `src/adapters/` 目录：dsh 为当前真机适配器，允许宿主包；
- *    未来 headless 适配器虽也在该目录，但 H3 会另立"headless 不得含宿主包"的反向子规则，
- *    本测试只负责非适配器内核面，不提前对尚不存在的目录立法。
+ *    headless 直连适配器虽同在该目录、被本测试的内核面豁免，但 H3 已在本文件另立
+ *    "headless 不得含任何 @deepseek-ai/* 宿主包"的反向子规则（见末尾独立用例），
+ *    保证直连管道真正宿主中立、可独立接入云端/本地模型。
  *  - 前置自证防假绿：必须先确认扫描器真的读到了大量内核文件、且 dsh 适配器内确实存在
  *    宿主 import，再执行主断言，杜绝目录根写错/图为空导致的"零违规"假合规。
  */
@@ -29,6 +30,8 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const SRC_DIR = path.posix.join('src');
 /** 豁免前缀：该目录下的平台适配器允许 import 宿主包。 */
 const ADAPTERS_PREFIX = path.posix.join('src', 'adapters') + '/';
+/** headless 直连适配器前缀：H3 反向子规则要求其下任何文件都不得含宿主包。 */
+const HEADLESS_PREFIX = path.posix.join('src', 'adapters', 'headless') + '/';
 /** 宿主包作用域：任何以此开头的 specifier 都算宿主耦合。 */
 const HOST_SCOPE = '@deepseek-ai/';
 
@@ -167,10 +170,46 @@ test('H0 投毒自证：内核路径上四种宿主 import 形态必标红；合
     assert.deepEqual(hosts, [], `合规导入被误报：${text}`);
   }
 
-  // 豁免判定：dsh 与未来 headless 都在适配器目录（isAdapterPath=true），不属本测试管辖；
-  // 内核路径必须为 false。headless 的反向子规则留待 H3 另立。
+  // 豁免判定：dsh 与 headless 都在适配器目录（isAdapterPath=true），不属内核面本用例管辖；
+  // 内核路径必须为 false。headless 的宿主中立性由下方 H3 反向子规则单独把守。
   assert.equal(isAdapterPath('src/adapters/dsh/plugin.ts'), true);
-  assert.equal(isAdapterPath('src/adapters/headless/runtime.ts'), true);
+  assert.equal(isAdapterPath('src/adapters/headless/openai-llm.ts'), true);
   assert.equal(isAdapterPath('src/api/index.ts'), false);
   assert.equal(isAdapterPath('src/memory/store.ts'), false);
+});
+
+test('H3 反向边界：headless 直连适配器的任何文件都不得 import @deepseek-ai/*（宿主中立硬钉死）', () => {
+  const files = readSrcTsFiles();
+  const headlessFiles = files.filter((file) => file.relPath.startsWith(HEADLESS_PREFIX));
+
+  // 前置自证：headless 目录已真实落地且含预期文件，排除目录缺失/根写错造成的"零违规"假绿。
+  assert.ok(
+    headlessFiles.length >= 2,
+    `前置失效：src/adapters/headless 应至少含工厂与桶出口两个文件，实际 ${headlessFiles.length}`,
+  );
+  const byRel = new Map(headlessFiles.map((file) => [file.relPath, file]));
+  for (const expect of ['src/adapters/headless/openai-llm.ts', 'src/adapters/headless/index.ts']) {
+    assert.ok(byRel.get(expect) !== undefined, `前置失效：headless 预期文件缺失：${expect}`);
+  }
+
+  // 主断言：headless 下所有文件的宿主包引用必须为空（type-only / 动态 / 副作用形态同口径）。
+  const violations: Array<{ relPath: string; hosts: string[] }> = [];
+  for (const file of headlessFiles) {
+    const hosts = findHostSpecifiers(extractImportSpecifiers(file.text));
+    if (hosts.length > 0) violations.push({ relPath: file.relPath, hosts });
+  }
+  assert.deepEqual(violations, [], `headless 直连管道出现宿主包泄漏：${JSON.stringify(violations, null, 2)}`);
+
+  // 投毒自证：在真实 headless 文件文本上内存拼接两类宿主 import，扫描必须当场标红，
+  // 证明这条反向规则不是空转（不写盘、不改源文件）。
+  const probe = byRel.get('src/adapters/headless/openai-llm.ts');
+  assert.ok(probe !== undefined);
+  for (const poison of [
+    "import type { Context } from '@deepseek-ai/cordis';",
+    "const mod = await import('@deepseek-ai/dsh-llm');",
+  ]) {
+    const hosts = findHostSpecifiers(extractImportSpecifiers(`${probe!.text}\n${poison}`));
+    assert.equal(hosts.length, 1, `headless 投毒未标红：${poison} → ${JSON.stringify(hosts)}`);
+    assert.ok(hosts[0]!.startsWith(HOST_SCOPE));
+  }
 });
