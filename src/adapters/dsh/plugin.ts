@@ -1,49 +1,37 @@
 /**
- * cordis 插件入口 —— dsh 通道适配器（阶段 4）。
+ * cordis 插件入口（薄胶水）—— dsh 通道适配器（平台化步骤3 起）。
  *
- * 这是**唯一**与宿主包（cordis）耦合的地方：
+ * 步骤3 把"与具体宿主框架无关的装配编排"整体下沉到同目录 `mount.ts` 的
+ * `mountDshAdapter`：打开实例、登记 dsh 通道、订阅 `session/event`、起后台 worker、
+ * 接记忆工具、卸载关库都在那里，只认五个中性端口 + 注入的 LLMPort，**不 import cordis**。
+ *
+ * 本文件因此只剩 cordis 这一层**薄胶水**的两件事：
+ *  1. 解析/校验适配器配置（`parseAdapterConfig`，含宿主模型路由对象的形状校验）；
+ *  2. 把 cordis Context 的设施薄插成五个中性端口、按路由造出摘要端口，再调用
+ *     `mountDshAdapter` 拿到挂载句柄，并用 LifecyclePort 把句柄 dispose 挂到作用域。
+ *
+ * 这是 dsh 适配器里**唯一**直接 import cordis 类型的入口：
  *  - A 内核（core / source / projection / contract）零生产依赖不变；
  *  - cordis 只作 peerDependency（宿主提供）+ devDependency（类型与测试）。
  *
- * 职责：
- *  1. 装载时打开 Fasti 实例（数据根走四级解析，config 可显式覆盖）；
- *  2. 挂载时登记 dsh 通道（内核空白启动不再预置；登记冲突则 fail-closed 停写）；
- *  3. 监听 `session/event`，把真实对话事件实时翻写为「原文 + 经历」写进 Fasti；
- *  4. 用 `ctx.effect` 管理生命周期：装载时 open，卸载时 close。
- *
- * 纪律（任务书 §4.4）：
- *  - **旁路捕获**：摄入失败**不阻断 dsh 主链路**；
- *  - 但失败**必须可观测**（logger 告警/报错），绝不静默吞事件。
- *
- * 时序要点（实测 cordis 4.1 的行为）：
- *  - 事件订阅（经 EventBusPort，dsh 插头底层即 `ctx.on(...)`）**必须同步注册**。
- *    若放进异步的 `ctx.effect` 体内，监听器要等 Fasti 打开后才挂上，装载与首个
- *    事件之间会丢事件。故此处：**同步挂监听器**（cordis 自动把它挂到当前 fiber，
- *    卸载时移除），**effect 只管 Fasti 实例的生命周期**。
- *  - 监听器内部 `await ready`（Fasti 就绪信号）——事件先到也不丢，
- *    只是等实例就绪后再写入。
+ * 时序要点（实测 cordis 4.1 的行为，红线由 mount.ts 与 event-bus-port.ts 把守）：
+ *  - `mountDshAdapter` 是同步函数，`session/event` 监听器在其同步调用栈内经
+ *    EventBusPort 完成注册（dsh 插头底层即 `ctx.on(...)`），装载与首个事件之间
+ *    不留异步间隙；本函数同步调用它，等价改造前直接在 apply 内同步挂监听器。
+ *  - Fasti 实例在 mount 内部后台打开，先到的事件经 ready 信号等待、不丢。
  */
-
-import path from 'node:path';
 
 import type { Context } from '@deepseek-ai/cordis';
 
-import { Fasti } from '../../api/index.ts';
 import type { MemoryGateMode } from '../../assembly/memory-tools.ts';
-import { createSourceLookupPort } from '../../assembly/source-lookup.ts';
-import { startRecurringWorker } from '../../assembly/recurring-worker.ts';
-import type { LoggerPort } from '../../ports/logger-port.ts';
-import { dshChannelDescriptor } from './channel-descriptor.ts';
-import { convertSessionEvent } from './convert-event.ts';
 import { createDshEventBus, type DshEventSink } from './event-bus.ts';
-import { initiationOf } from './initiation.ts';
 import { createDshLifecycle } from './lifecycle.ts';
 import { createDshLogger } from './logger.ts';
 import { createDshScheduler } from './scheduler.ts';
 import { createDshToolHost, type DshInjectSink } from './tool-host.ts';
-import { DEFAULT_MEMORY_PROJECTION_BUDGET_MS, createDshLLMPort } from './llm.ts';
+import { createDshLLMPort } from './llm.ts';
 import type { DshModelRoute } from './llm.ts';
-import { wireMemoryTools, type MemoryWiring } from './memory-tool-bridge.ts';
+import { mountDshAdapter } from './mount.ts';
 
 /**
  * dsh-session 广播的事件：会话日志追加（含 user/message / assistant/message）。
@@ -99,30 +87,6 @@ export interface DshAdapterConfig {
    * 切到 'shadow'/'on' 属 Q3 显式授权动作，运行期不得自行翻转。
    */
   memoryGateMode?: MemoryGateMode | undefined;
-}
-
-/** 日志前缀 —— 便于在 dsh 日志里一眼认出。 */
-const LOG_PREFIX = '[dsh-fasti]';
-
-/**
- * 「门面不可用 → 丢弃」的告警节奏（m6）。
- *
- * 逐条 warn 会刷屏（每个会话事件一条），完全静默更糟（出事几个月没人知道）。
- * 首条必告警，之后每 100 条再说一次，并带上累计数。
- */
-const DROP_WARN_EVERY = 100;
-
-/** 丢弃计数（本插件实例内）。 */
-interface DropCounter {
-  count: number;
-}
-
-/** 记一次「门面不可用」的丢弃，按节奏告警（不刷屏、不静默）。 */
-function noteDrop(logger: LoggerPort, drops: DropCounter, reason: string): void {
-  drops.count += 1;
-  if (drops.count === 1 || drops.count % DROP_WARN_EVERY === 0) {
-    logger.warn('%s %s（累计 %d 条未写入）', LOG_PREFIX, reason, drops.count);
-  }
 }
 
 /**
@@ -222,12 +186,14 @@ function isMemoryGateMode(value: string): value is MemoryGateMode {
 }
 
 /**
- * 插件入口 —— cordis 对象插件的 `apply`。
+ * 插件入口 —— cordis 对象插件的 `apply`：只做宿主薄胶水，装配编排交给 mountDshAdapter。
  */
 export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   const config = parseAdapterConfig(rawConfig);
+  // T2 门：全链路唯一允许的缺省通道字面点；mount 只接收已解析的 channel，不内置默认值。
   const channel = config.channel ?? 'dsh';
-  // 中立端口在入口处薄插宿主设施；内核与装配层往下只认端口，不直接摸 ctx。
+
+  // 中立端口在入口处薄插宿主设施；mount 往下只认端口，不直接摸 ctx。
   const logger = createDshLogger(ctx.logger);
   const lifecycle = createDshLifecycle(ctx);
   const scheduler = createDshScheduler();
@@ -236,25 +202,9 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
   const eventBus = createDshEventBus(ctx as unknown as DshEventSink);
   const toolHost = createDshToolHost(ctx as unknown as DshInjectSink);
 
-  /**
-   * Fasti 就绪信号 —— resolve(fasti) 表示可写入，resolve(null) 表示不可写入。
-   * 事件先到时在此等待，不会丢。
-   */
-  let markReady: (instance: Fasti | null) => void = () => undefined;
-  const ready = new Promise<Fasti | null>((resolve) => {
-    markReady = resolve;
-  });
-
-  /** 适配器运行态 —— 卸载后据此明确停写。 */
-  const state = { closed: false };
-
-  /** 门面不可用导致的丢弃计数（m6：首条 warn + 每 100 条一次）。 */
-  const drops: DropCounter = { count: 0 };
-
-  /**
-   * 摘要端口 —— 宿主路由注入了才有模型；没注入就是 null（如实降级，不伪造）。
-   */
-  const port =
+  // 摘要端口在宿主侧造好：注入了路由才有模型，没注入就是 null（如实降级，不伪造）。
+  // mountDshAdapter 不认识宿主模型路由，只接收造好的 LLMPort，保持挂载面对路由无感。
+  const llmPort =
     config.modelRoute === undefined
       ? null
       : createDshLLMPort(config.modelRoute, {
@@ -262,247 +212,30 @@ export function apply(ctx: Context, rawConfig?: DshAdapterConfig): void {
           ...(config.closureTimeoutMs === undefined ? {} : { timeoutMs: config.closureTimeoutMs }),
         });
 
-  // 监听器**同步注册**（不放在异步 effect 体内 —— 见文件头时序要点）；
-  // eventBus.on 是同步薄转发，这一行仍在 apply 同步调用栈内，装载与首事件之间不留异步间隙。
-  eventBus.on('session/event', (session: unknown, event: unknown) => {
-    // 不 await —— 旁路捕获，不阻断 dsh 主链路。
-    void handleSessionEvent(logger, state, drops, ready, channel, session, event);
-  });
-
-  // ── 闭合 worker（T8/T9）──
-  // 没有它就「事件照切、摘要永远不出」——闭合管线必须有人周期性地推。
-  // 独立注册（不嵌在下面的 open effect 里）：两类生命周期互不依赖，
-  // 卸载时无论谁先释放都不会碰到未初始化/已关闭的实例。
-  //
-  // **无条件启动**（不再要求 port !== null）：时钟静默检查（定案稿 C6）必须
-  // 独立于 LLM 端口 —— 没有模型端口时，安静够久的 open 事件照样该闭合，
-  // 只是摘要保持 pending。若把 worker 挂在 port 条件下，A6b 直接不成立：
-  // 无端口 → 无 worker → 永不闭合。
-  startRecurringWorker(
-    { lifecycle, scheduler, logger },
-    async () => {
-      const fasti = await ready;
-      if (fasti === null || state.closed) {
-        // worker 是周期性的：门面没打开时不必告警（事件路径那侧已经记过账），
-        // 只需安静返回 0，别在日志里每 5 秒刷一条。
-        return 0;
-      }
-      // ① 时钟静默：与摘要无关，先跑 —— 闭合是「切」的事，摘要是「写」的事。
-      fasti.checkSilenceClock();
-      // ② 摘要 drain：端口为 null 时管线自己会记 permanent 失败并保持 pending。
-      return fasti.drainClosure();
-    },
+  // 宿主无关的装配编排全部内聚在这一同步调用里：其内部已同步完成 session/event
+  // 订阅与两个 worker 注册（不丢首事件），Fasti 实例在后台打开。
+  const handle = mountDshAdapter(
+    { logger, lifecycle, scheduler, eventBus, toolHost },
     {
-      label: 'dsh-fasti-closure-worker',
-      failureLogFormat: '[dsh-fasti] 闭合 worker 本轮失败：%s',
-      ...(config.closureIntervalMs === undefined ? {} : { intervalMs: config.closureIntervalMs }),
-    },
-  );
-
-  // ── 记忆投影 worker（第七法）──
-  // 调度点排在闭合 worker 之后：closure 先行，记忆 drain 本轮在后；两者轮次与预算独立，
-  // 记忆 drain 失败在门面/worker 两层隔离，不阻断闭合管线。
-  startRecurringWorker(
-    { lifecycle, scheduler, logger },
-    async () => {
-      const fasti = await ready;
-      if (fasti === null || state.closed) {
-        return;
-      }
-      await fasti.drainMemoryProjection(DEFAULT_MEMORY_PROJECTION_BUDGET_MS);
-    },
-    {
-      label: 'dsh-fasti-memory-projection-worker',
-      failureLogFormat: '[dsh-fasti] 记忆投影 worker 本轮失败：%s',
-    },
-  );
-
-  // 生命周期：装载时 open，卸载时 close（释放 SQLite 句柄）。
-  ctx.effect(async () => {
-    let fasti: Fasti;
-    try {
-      fasti = await Fasti.open({
-        ...(config.dataRoot === undefined ? {} : { dataRoot: config.dataRoot }),
-        // 平台化 H2-b：内核不再写死通道→物理目录，dsh 适配器挂载时显式声明本通道
-        // 的原文落扁平目录 raw-turns/（存量物理布局）；不声明则内核默认走 raw/<channel>/。
-        flatRawChannels: [channel],
-        // 端口注入门面：闭合后摘要由门面内部那条管线在后台做。
-        llmPort: port,
-        // 单次调用硬超时（与端口兜底同一个数，避免两处各调一套）。
-        ...(config.closureTimeoutMs === undefined
-          ? {}
-          : { closureCallTimeoutMs: config.closureTimeoutMs }),
-        // 摘要失败上报宿主日志（可观测性三处之一：内存明细 / 检查点 / 宿主日志）。
-        onClosureFailure: (failure) => {
-          logger.warn(
-            '%s 摘要未生成（%s，已试 %d 次）：%s',
-            LOG_PREFIX,
-            failure.state,
-            failure.attempts,
-            failure.error,
-          );
-        },
-        // L3 观测逐事件 warn（不设代码阈值；三率派生与人工阈值进 runbook，定稿 §7.2）。
-        onClosureObservation: (observation) => {
-          logger.warn(
-            '%s 摘要观测：%s',
-            LOG_PREFIX,
-            JSON.stringify(observation),
-          );
-        },
-        // 门面内部诊断（目前只有「待补摘要数读不出来」）—— 转给宿主日志。
-        onDiagnostic: (level, message) => {
-          if (level === 'warn') {
-            logger.warn('%s %s', LOG_PREFIX, message);
-          }
-        },
-      });
-    } catch (error) {
-      logger.error('%s 打开数据根失败：%s', LOG_PREFIX, String(error));
-      markReady(null);
-      return () => undefined;
-    }
-
-    // 通道登记：内核空白启动不再预置任何宿主通道，dsh 通道由本插件**显式挂载时**登记。
-    //
-    // 纪律（定案稿 §10.2，注册表是「可增长的登记表」，既有条目永不被改写）：
-    //  - 同 id 描述等价 → registerChannel 幂等沿用既有；
-    //  - 同 id 描述不等价（用户手动改过注册表）→ 抛 ConflictError，绝不覆盖，
-    //    本插件 fail-closed：告警、关闭实例、标记未就绪，本次会话不写入。
-    try {
-      await fasti.registerChannel(dshChannelDescriptor(channel));
-    } catch (error) {
-      logger.error(
-        '%s 通道「%s」登记失败（可能与 channels.json 既有描述冲突）—— 本次会话不写入原文与经历：%s',
-        LOG_PREFIX,
-        channel,
-        String(error),
-      );
-      await fasti.close();
-      markReady(null);
-      return () => undefined;
-    }
-
-    logger.info(
-      '%s 适配器已装载：通道=%s，数据根=%s，摘要模型=%s',
-      LOG_PREFIX,
       channel,
-      fasti.paths.root,
-      port === null ? '未配置（摘要保持待生成）' : (config.model ?? '宿主默认'),
-    );
-    markReady(fasti);
+      llmPort,
+      ...(config.dataRoot === undefined ? {} : { dataRoot: config.dataRoot }),
+      ...(config.model === undefined ? {} : { model: config.model }),
+      ...(config.closureIntervalMs === undefined ? {} : { closureIntervalMs: config.closureIntervalMs }),
+      ...(config.closureTimeoutMs === undefined ? {} : { closureTimeoutMs: config.closureTimeoutMs }),
+      ...(config.memoryGateMode === undefined ? {} : { memoryGateMode: config.memoryGateMode }),
+    },
+  );
 
-    // ── WP4b 记忆工具接线（默认 off：不打开桥接、不注册任何工具，线上零变化）──
-    // indexDir 固定落在本数据根 projection 下；旧路检索直接复用门面 search（字段天然对齐）。
-    const gateMode = config.memoryGateMode ?? 'off';
-
-    // 真机约束（cordis 4.0.5）：tools 是受 inject 保护的服务，未声明依赖直接读 ctx.tools
-    // 会抛 "cannot get property tools without inject"。故仅在非 off 时用**动态可选注入**取服务：
-    //  - 宿主提供 tools：授权子 fiber 回调内按门模式接线（shadow/on 才真正注册六工具：通道一四件套＋通道二两件套）；
-    //  - 宿主无 tools：该子 fiber 等待依赖、回调静默不触发，主适配器（开库/摄入/影子）照常运行，
-    //    等价既有「弱宿主安全跳过」契约；不使用静态必需注入，以免缺服务时整个插件被挡在门外。
-    let memoryWiring: MemoryWiring | null = null;
-    let wiringClosed = false;
-    if (gateMode !== 'off') {
-      // 经工具宿主端口申请授权接入（dsh 插头内部即 inject(['tools'])）：弱宿主无 tools
-      // 时回调不触发、tools 形状残损时 registry 为 null，二者都由 wireMemoryTools 安全跳过。
-      toolHost.withTools(({ registry, onDispose }) => {
-        if (wiringClosed) return;
-        const wiring = wireMemoryTools({
-          registry,
-          mode: gateMode,
-          indexDir: path.join(fasti.paths.projection, 'memory-index'),
-          // #122：第七法 drain 只读折叠真源所需的数据根；取门面已解析的布局根（比可选 config.dataRoot 可靠），
-          // 缺这一截会让运行期 worker 每轮 readSource 空集、永久空轮建不出首张卡。
-          dataRoot: fasti.paths.root,
-          // #115 E.5：落空台账通道名复用上方已做非空校验的同一 channel 变量，全链路唯一默认值在本文件。
-          channel,
-          // L6 注入只读下钻端口（#114 E.4.1／#115 通道闸）：第二参盖章本通道，
-          // 门面结构满足 SourceLookupFacade，装配层不反向 import 门面。
-          sourceLookup: createSourceLookupPort(fasti, { channel }),
-          log: (message) => logger.warn('%s %s', LOG_PREFIX, message),
-          // #117 哨兵：跨过硬顶 70% 那一刻告警一次（走同一条宿主日志通道，不新增输出面）。
-          onMissRetentionWarning: (message) => logger.warn('%s %s', LOG_PREFIX, message),
-        });
-        memoryWiring = wiring;
-        // DI 绑定：把装配运行面的第七法端口挂到门面（端口未就绪时为 null，门面短路 not-wired）。
-        void ready.then((instance) => {
-          if (instance !== null) {
-            instance.bindMemoryProjection(wiring.memoryProjection);
-          }
-        });
-        if (wiring.registered) {
-          logger.info('%s 记忆工具已注册：门模式=%s', LOG_PREFIX, gateMode);
-        }
-        // 工具接入作用域卸载兜底；主 cleanup 已显式 dispose，wireMemoryTools 幂等故重复调用安全。
-        onDispose(() => {
-          void memoryWiring?.dispose();
-        });
-      });
-    }
-
-    return async () => {
-      state.closed = true;
-      wiringClosed = true;
-      logger.info('%s 适配器卸载：注销记忆工具并关闭数据根', LOG_PREFIX);
-      if (memoryWiring !== null) {
-        await memoryWiring.dispose();
-      }
-      await fasti.close();
-    };
-  }, 'dsh-fasti-adapter');
-}
-
-/**
- * 处理一条 `session/event` —— 转换 → 摄入。
- *
- * 失败**不抛给 dsh 主链路**，但必须 logger.error（失败可观测，不静默吞事件）。
- */
-async function handleSessionEvent(
-  logger: LoggerPort,
-  state: { closed: boolean },
-  drops: DropCounter,
-  ready: Promise<Fasti | null>,
-  channel: string,
-  session: unknown,
-  event: unknown,
-): Promise<void> {
-  try {
-    const { input, skip, warnings } = convertSessionEvent(session, event);
-
-    for (const warning of warnings) {
-      logger.warn('%s %s', LOG_PREFIX, warning);
-    }
-
-    if (input === null) {
-      // 系统注入是 harness 的正常形态 → debug 级别；其余异常形态 → warn。
-      if (skip?.kind === 'system-injection' || skip?.kind === 'not-message') {
-        logger.debug('%s 跳过事件：%s', LOG_PREFIX, skip?.detail ?? '未知原因');
-      } else {
-        logger.warn('%s 跳过事件：%s', LOG_PREFIX, skip?.detail ?? '未知原因');
-      }
-      return;
-    }
-
-    const fasti = await ready;
-    if (fasti === null || state.closed) {
-      // 卸载中（state.closed）是正常收尾，静默；门面没打开（fasti === null）则
-      // 意味着**每条事件都白掉了** —— 首条 warn + 计数，不刷屏也不静默（m6）。
-      if (fasti === null && !state.closed) {
-        noteDrop(logger, drops, `门面未就绪，事件未写入（通道=${channel}）`);
-      }
-      return;
-    }
-
-    // 经历身份由 dsh 适配器映射（speaker→initiation）；input 其余字段作原文行原样落盘。
-    await fasti.ingestRawTurn(channel, {
-      ...input,
-      initiation: initiationOf(input.speaker),
-    });
-  } catch (error) {
-    // 旁路捕获：吞掉异常以免阻断 dsh 主链路，但必须留下可观测的记录。
-    logger.error('%s 摄入失败：%s', LOG_PREFIX, String(error));
-  }
+  // Fasti 实例的关闭挂到宿主作用域（替代原 ctx.effect 生命周期）。worker 的卸载清理
+  // 已在 mount 内经同一 lifecycle 先登记，作用域逆序回收时本关闭先于 worker 撤销执行。
+  // LifecyclePort 约定清理同步、不抛：dispose 内部已自吞错误记账，这里 void 触发即可。
+  lifecycle.onDispose(
+    () => {
+      void handle.dispose();
+    },
+    'dsh-fasti-adapter',
+  );
 }
 
 /** cordis 对象插件（宿主按对象插件形状加载）。 */

@@ -77,7 +77,7 @@ const WIRE_CONSUMERS = [
   'src/adapters/headless/openai-llm.ts', // headless 直连适配：OpenAI 兼容 HTTP，复用 llm-wire-parse 的 strict 解析与 LLMSummarizeResponse 契约（H3，零宿主包）
   'src/event/serial-table.ts', // 纯函数：resolveAnchorSerials / resolveCandidateSerials / 表映射
   'src/api/index.ts', // 门面：onClosureObservation 透传 + observations() 读口
-  'src/adapters/dsh/plugin.ts', // 宿主：onClosureObservation 回调接线
+  'src/adapters/dsh/mount.ts', // dsh 挂载面：onClosureObservation 回调接线（步骤3 自 plugin.ts 下沉，plugin 退化为薄胶水）
 ];
 
 const here = path.dirname(fileURLToPath(import.meta.url));

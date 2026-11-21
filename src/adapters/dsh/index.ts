@@ -23,6 +23,13 @@ export {
 } from './plugin.ts';
 
 export {
+  mountDshAdapter,
+  type DshAdapterHandle,
+  type MountDshAdapterOptions,
+  type MountDshAdapterPorts,
+} from './mount.ts';
+
+export {
   assistantTextFromBlocks,
   convertSessionEvent,
   joinTextBlocks,
