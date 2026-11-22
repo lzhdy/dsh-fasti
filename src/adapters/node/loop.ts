@@ -28,6 +28,11 @@ export interface ClosureLoopOptions {
   readonly intervalMs?: number;
   /** 失败上报；缺省静默（节拍是周期性的，不该每次失败都刷屏）。 */
   readonly onError?: (error: unknown, phase: 'silence' | 'drain') => void;
+  /**
+   * 每轮成功后的观测上报（#157 活动总线挂点）：闭合条数与摘要处理条数。
+   * 失败轮不触发；回调异常必须被吞在节拍器内，绝不反噬内核节拍。
+   */
+  readonly onReport?: (report: { closed: number; summaries: number }) => void;
 }
 
 /** 节拍器句柄。 */
@@ -63,12 +68,17 @@ export function startClosureLoop(target: ClosureLoopTarget, options: ClosureLoop
       inFlight = false;
       return;
     }
-    void closed;
     void target
       .drainClosure()
+      .then((summaries) => {
+        try {
+          options.onReport?.({ closed, summaries });
+        } catch {
+          // 观测回调故障不反噬节拍。
+        }
+      })
       .catch((error: unknown) => {
         options.onError?.(error, 'drain');
-        return 0;
       })
       .finally(() => {
         inFlight = false;

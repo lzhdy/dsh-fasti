@@ -12,7 +12,7 @@
  *  - 检索委托写死 limit:undefined（N11），入参类型 RuntimeSearchQuery 无 limit 键。
  */
 
-import { UnavailableError } from '../core/errors.ts';
+import { SchemaError, UnavailableError } from '../core/errors.ts';
 import type { ApplyMissAliasOutcome } from './alias-write.ts';
 import { buildSkippedDrainReport, classifyDrainSkip, runDrainRound } from './drain.ts';
 import type { DecisionVersionContext } from './decision.ts';
@@ -21,9 +21,18 @@ import { openShadowObservationSink } from './shadow-write.ts';
 import { MISS_RETENTION_TMP_POLICY } from './miss-retention.ts';
 import { missSentinelMessage } from './miss-sentinel.ts';
 import type { RecordShadowOutcome, ShadowObservationInput } from './shadow-write.ts';
+import {
+  toObservationCardView,
+  type MemoryObservationCounts,
+  type ObservationCardView,
+} from './observation.ts';
 import { openMemoryRuntimeBackend } from './store.ts';
 import type { RecordAnchorAdoptionHandleOutcome, StorePaths } from './store.ts';
 import type { ExplainedRankedCard, MemoryCard, MissObservationInput } from './types.ts';
+
+/** 观测分页硬上限（与 api 检视面同口径，一次不拖全库）。 */
+const OBSERVATION_PAGE_MAX = 100;
+const OBSERVATION_PAGE_DEFAULT = 50;
 
 /** 窄柄检索入参：无 limit 键，装配层无法表达预截断（N11 防线①）。 */
 export interface RuntimeSearchQuery {
@@ -65,6 +74,18 @@ export interface RuntimeMemoryHandle {
    * 正常轮经 derive→plan→apply 编排链产出 §3.2 轮报告。本方法永不进宿主工具表。
    */
   drainProjection(budgetMs: number): Promise<DrainRoundReport>;
+  /**
+   * #157 人类观测面（只读，区别于模型可见的 N14 白名单）：分页列举全状态卡视图。
+   * 缺省 50 条、硬顶 100；敏感别名原文在投影层即脱敏。
+   */
+  listCardsForObservation(options?: {
+    readonly limit?: number;
+    readonly offset?: number;
+  }): ObservationCardView[];
+  /** 单卡观测详情；未知 id 返回 null。别名取 mem_alias 权威表行。 */
+  getCardForObservation(cardId: string): ObservationCardView | null;
+  /** 卡/别名/漏召聚合计数。 */
+  getObservationCounts(): MemoryObservationCounts;
   close(): Promise<void>;
 }
 
@@ -164,6 +185,35 @@ export function openMemoryRuntime(
       });
       consecutiveFailures = report.consecutiveFailures;
       return report;
+    },
+
+    listCardsForObservation(options?: { readonly limit?: number; readonly offset?: number }) {
+      const limit = options?.limit ?? OBSERVATION_PAGE_DEFAULT;
+      const offset = options?.offset ?? 0;
+      if (!Number.isInteger(limit) || limit < 1 || limit > OBSERVATION_PAGE_MAX) {
+        throw new SchemaError(
+          `观测分页 limit 必须是 1–${OBSERVATION_PAGE_MAX} 的整数，实际收到：${String(limit)}`,
+        );
+      }
+      if (!Number.isInteger(offset) || offset < 0) {
+        throw new SchemaError(`观测分页 offset 必须是非负整数，实际收到：${String(offset)}`);
+      }
+      return backend.reader
+        .listAllCards()
+        .slice(offset, offset + limit)
+        .map((card) => toObservationCardView(card, backend.reader.listAliasesByCard(card.cardId)));
+    },
+
+    getCardForObservation(cardId: string): ObservationCardView | null {
+      const card = backend.reader.getCard(cardId);
+      if (card === null) {
+        return null;
+      }
+      return toObservationCardView(card, backend.reader.listAliasesByCard(card.cardId));
+    },
+
+    getObservationCounts(): MemoryObservationCounts {
+      return backend.reader.observationCounts();
     },
 
     async close(): Promise<void> {

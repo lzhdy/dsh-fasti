@@ -108,6 +108,15 @@ export interface CreateChatHandlerDeps {
   readonly channel: string;
   readonly client: ChatAgentClient;
   readonly toolHost: ChatToolHost;
+  /**
+   * 读出链观测回调（#157，可选）：模型每调一次六工具就上报工具名/成败/调用 id，
+   * 只含元数据不含检索词与正文；缺省时处理器行为零变化，回调异常不影响工具结果回灌。
+   */
+  readonly onToolActivity?: (activity: {
+    readonly tool: string;
+    readonly ok: boolean;
+    readonly callId: string;
+  }) => void;
 }
 
 /** 构造聊天处理器；纯函数装配，不持会话状态（状态的权威在真源）。 */
@@ -143,7 +152,23 @@ export function createChatHandler(deps: CreateChatHandlerDeps): ChatHandler {
     const { content, model } = await client.run({
       messages,
       tools: toolHost.tools,
-      execute: (call) => session.execute(call),
+      // 工具执行外层只包一层只读观测：信封成败据 error 键判定，正文原样透传给模型。
+      execute: (call) =>
+        session.execute(call).then((result) => {
+          try {
+            let ok = false;
+            try {
+              const parsed: unknown = JSON.parse(result);
+              ok = typeof parsed === 'object' && parsed !== null && !('error' in parsed);
+            } catch {
+              ok = false;
+            }
+            deps.onToolActivity?.({ tool: call.name, ok, callId: call.id });
+          } catch {
+            // 观测回调自身故障不得污染工具回路。
+          }
+          return result;
+        }),
     });
 
     // 4) 助手最终回话落真源：speaker=assistant，initiation 映射为 her（与 dsh 口径一致）。

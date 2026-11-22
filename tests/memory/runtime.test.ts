@@ -54,8 +54,9 @@ const n11NoLimitKey: AssertNoLimit = true;
 // N4/N14 类型层守门：运行期卡写入参不得出现 sensitive 键（内部固定 1，不可表达）。
 type AssertNoSensitive = 'sensitive' extends keyof RuntimeAddMissAliasInput ? false : true;
 const n4NoSensitiveParam: AssertNoSensitive = true;
-// WP4a/N16/#130 窄柄方法全集：八个窄方法都在，全量柄方法一个都不在
-// （第五→六为影子观测窄写；#130 增第七窄写 recordAnchorAdoption，drain 为整轮 pull 法）。
+// WP4a/N16/#130/#157 窄柄方法全集：窄方法都在，全量柄方法一个都不在
+// （第五→六为影子观测窄写；#130 增第七窄写 recordAnchorAdoption，drain 为整轮 pull 法；
+// #157 增三个只读人类观测面 list/get/counts，仍无任何写柄方法）。
 type RtKeys = keyof RuntimeMemoryHandle;
 type NarrowKeys =
   | 'searchExplained'
@@ -65,7 +66,10 @@ type NarrowKeys =
   | 'recordMiss'
   | 'recordShadowObservation'
   | 'recordAnchorAdoption'
-  | 'drainProjection';
+  | 'drainProjection'
+  | 'listCardsForObservation'
+  | 'getCardForObservation'
+  | 'getObservationCounts';
 type AssertAllNarrowPresent = NarrowKeys extends RtKeys ? true : false;
 type AssertNoFullHandle =
   RtKeys extends NarrowKeys
@@ -212,7 +216,7 @@ test('openMemoryRuntime：索引库不存在时抛 NotFoundError 且不创建文
   }
 });
 
-test('N13-i 委托包装对象：反射恰见八窄方法（#130 增 recordAnchorAdoption），全量柄方法名不可见', async () => {
+test('N13-i 委托包装对象：反射恰见窄方法全集（#157 增三个只读观测面），全量柄方法名不可见', async () => {
   const { root, indexDir } = await seedCorpus();
   try {
     const handle = openMemoryRuntime({ indexDir });
@@ -221,7 +225,10 @@ test('N13-i 委托包装对象：反射恰见八窄方法（#130 增 recordAncho
         'addMissAlias',
         'close',
         'drainProjection',
+        'getCardForObservation',
         'getCardsByAnchor',
+        'getObservationCounts',
+        'listCardsForObservation',
         'recordAnchorAdoption',
         'recordMiss',
         'recordShadowObservation',
@@ -232,6 +239,9 @@ test('N13-i 委托包装对象：反射恰见八窄方法（#130 增 recordAncho
         'getCard',
         'getCardByEvent',
         'listEffective',
+        'listAllCards',
+        'listAliasesByCard',
+        'observationCounts',
         'verifyStampedFingerprint',
         'stampRevision',
         'transactionApply',

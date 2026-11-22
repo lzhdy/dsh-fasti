@@ -63,3 +63,26 @@ test('投影节拍：单轮抛错被隔离，下一轮照常触发', async () =>
   assert.ok(calls >= 2, '失败后节拍必须继续');
   assert.equal(failures, 1, '错误恰好上报一次');
 });
+
+test('投影节拍：onReport 成功轮透传 drain 报告，失败轮不触发（#157 观测挂点）', async () => {
+  const reports: unknown[] = [];
+  let calls = 0;
+  const handle = startProjectionLoop(
+    {
+      async drainMemoryProjection() {
+        calls += 1;
+        if (calls === 1) {
+          throw new Error('first boom');
+        }
+        return { skipped: null, applied: calls, cardUpserts: calls };
+      },
+    },
+    { intervalMs: 20, onReport: (report) => reports.push(report) },
+  );
+  await sleep(90);
+  handle.stop();
+  assert.ok(reports.length >= 2, `成功轮至少两次上报，实际 ${reports.length}`);
+  for (const report of reports) {
+    assert.equal((report as { skipped: null }).skipped, null);
+  }
+});

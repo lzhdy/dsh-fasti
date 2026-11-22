@@ -24,8 +24,9 @@ import { isSha256Hex, sha256Hex } from '../core/hash.ts';
 import { isoToMs, nowIso } from '../core/time.ts';
 import { parseChannelDescriptor } from '../contract/channel.ts';
 import type { ChannelDescriptor } from '../contract/channel.ts';
-import { parseEvent } from '../contract/event.ts';
-import type { EventDerivedMarks, EventRecord, EventView } from '../contract/event.ts';
+import { parseEvent, EVENT_STATUSES } from '../contract/event.ts';
+import type { EventDerivedMarks, EventRecord, EventView, EventStatus } from '../contract/event.ts';
+import type { RawTurn } from '../contract/raw-turn.ts';
 import type {
   CloseAndReopenEventInput,
   CloseAndReopenEventResult,
@@ -84,6 +85,7 @@ import { toEventProjection } from '../projection/event-row.ts';
 import { rebuildProjection } from '../projection/rebuild.ts';
 import { projectExperienceSummary, type ProjectionEngine } from '../projection/types.ts';
 import { CheckpointStore } from '../runtime/checkpoint.ts';
+import type { Checkpoint } from '../runtime/checkpoint.ts';
 
 /**
  * 「待补摘要数」读取失败时，隔多少次再告警一次（m5）。
@@ -124,6 +126,76 @@ export interface RecentRawTurnView {
 
 /** readRecentRawTurns 的硬上限：适配器可传更小的窗口，不得越过此值一次拖全库。 */
 const MAX_RECENT_RAW_TURNS = 100;
+
+// ── 网页控制台只读检视面（#157；纯读、零写路径，专供本机 loopback 观测台）────────
+
+/** 单条原文检视行：完整 RawTurn 8 字段＋物理定位（月分片与分片内行号）。 */
+export interface InspectedRawTurn {
+  readonly shard: string;
+  readonly seq: number;
+  readonly turn: RawTurn;
+}
+
+/** inspectRawTurns 分页选项。 */
+export interface InspectRawTurnsOptions {
+  /** 每页条数，1–100，缺省 50。 */
+  readonly limit?: number;
+  /** 全局偏移（跨分片按摄入序拼接后的下标），非负整数，缺省 0。 */
+  readonly offset?: number;
+}
+
+/** 原文检视分页结果。 */
+export interface InspectRawTurnsResult {
+  readonly channel: string;
+  /** 该通道原文行总数（全分片）。 */
+  readonly total: number;
+  readonly turns: readonly InspectedRawTurn[];
+}
+
+/** 单页硬上限与偏移安全闸：观测台任何一页都不许一次拖全库。 */
+const MAX_INSPECT_LIMIT = 100;
+const DEFAULT_INSPECT_LIMIT = 50;
+const MAX_INSPECT_OFFSET = 10_000;
+
+/** 事件五状态计数；事件层不可用时整个 counts.events 为 null。 */
+export interface RuntimeEventCounts {
+  readonly total: number;
+  readonly open: number;
+  readonly closed: number;
+  readonly merged: number;
+  readonly split: number;
+  readonly archived: number;
+}
+
+/** 内核运行时快照：启动屏与状态顶栏的一次性数据源。 */
+export interface RuntimeInspection {
+  readonly engine: {
+    readonly level: 'L1' | 'L2' | 'L3';
+    readonly degraded: boolean;
+    readonly reason: string;
+  };
+  readonly eventLayer: {
+    readonly available: boolean;
+    readonly reason: string;
+  };
+  /** 检查点副本（加速/标注态，权威始终是真源）。 */
+  readonly checkpoint: Checkpoint;
+  /** 最近一次启动对账结果。 */
+  readonly reconciliation: {
+    readonly sourceMaxTick: number;
+    readonly lastProjectedTick: number;
+    readonly folded: number;
+  };
+  /** 真源里待补摘要的事件数。 */
+  readonly pendingSummaryCount: number;
+  /** 通道注册表核对结果。 */
+  readonly channels: ChannelVerification[];
+  readonly counts: {
+    readonly experiences: number;
+    readonly rawTurns: ReadonlyArray<{ readonly channel: string; readonly count: number }>;
+    readonly events: RuntimeEventCounts | null;
+  };
+}
 
 /** 打开 Fasti 的选项。 */
 export interface FastiOptions {
@@ -1302,6 +1374,110 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
       throw new NotFoundError(`通道未注册，无法读取原文：${channel}`);
     }
     return log.readAll().slice(-limit).map((row) => ({ speaker: row.speaker, raw_text: row.raw_text }));
+  }
+
+  /**
+   * 检视面：分页读取某通道**完整原文行**（#157 网页控制台）。
+   *
+   * 与聊天窄 DTO `readRecentRawTurns` 的分工：后者只投影 speaker/raw_text 喂模型上下文，
+   * 本方法给她本人的观测台返回完整 8 字段与 shard/seq 物理定位，纯读、不经写队列。
+   * 分页参数在任何 IO 前校验；通道未注册 fail-closed，与窄 DTO 同口径。
+   */
+  async inspectRawTurns(
+    channel: string,
+    options: InspectRawTurnsOptions = {},
+  ): Promise<InspectRawTurnsResult> {
+    const limit = options.limit ?? DEFAULT_INSPECT_LIMIT;
+    const offset = options.offset ?? 0;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_INSPECT_LIMIT) {
+      throw new SchemaError(
+        `inspectRawTurns 的 limit 必须是 1–${MAX_INSPECT_LIMIT} 的整数，实际收到：${String(limit)}`,
+      );
+    }
+    if (!Number.isInteger(offset) || offset < 0 || offset > MAX_INSPECT_OFFSET) {
+      throw new SchemaError(
+        `inspectRawTurns 的 offset 必须是 0–${MAX_INSPECT_OFFSET} 的整数，实际收到：${String(offset)}`,
+      );
+    }
+    const log = this.rawLog(channel);
+    if (log === undefined) {
+      throw new NotFoundError(`通道未注册，无法检视原文：${channel}`);
+    }
+
+    const all: InspectedRawTurn[] = [];
+    for (const shard of log.shards()) {
+      const rows = log.readShard(shard);
+      rows.forEach((turn, seq) => {
+        all.push({ shard, seq, turn });
+      });
+    }
+    return {
+      channel,
+      total: all.length,
+      turns: all.slice(offset, offset + limit),
+    };
+  }
+
+  /**
+   * 检视面：按经历 id 取**完整经历实体**（#157 网页控制台）。
+   *
+   * 与 `readExperienceById` 的白名单窄 DTO 不同，观测台需要指针、action/outcome、tick
+   * 等全部结构字段做下钻；未知 id 返回 null（不抛、不造空对象）。纯读内存索引，无 IO 写。
+   */
+  async inspectExperience(id: string): Promise<Experience | null> {
+    return this.experienceLog.has(id) ? this.experienceLog.get(id) : null;
+  }
+
+  /**
+   * 检视面：一次性内核运行时快照（#157 网页控制台启动屏/状态顶栏/脉冲兜底数据）。
+   *
+   * 纯读、不入队；事件层损坏时不把整个快照拖崩——eventLayer.available=false 且
+   * counts.events=null，其余各层照常返回（二级真源故障不毁一级真源的可观测性）。
+   */
+  async inspectRuntime(): Promise<RuntimeInspection> {
+    const eventLayer = this.eventLayerStatus();
+    let eventCounts: RuntimeEventCounts | null = null;
+    if (eventLayer.available) {
+      const counts: Record<EventStatus, number> = {
+        open: 0,
+        closed: 0,
+        merged: 0,
+        split: 0,
+        archived: 0,
+      };
+      for (const status of EVENT_STATUSES) {
+        counts[status] = this.t5EventLog.listByStatus(status).length;
+      }
+      eventCounts = {
+        total: this.t5EventLog.count(),
+        open: counts.open,
+        closed: counts.closed,
+        merged: counts.merged,
+        split: counts.split,
+        archived: counts.archived,
+      };
+    }
+
+    return {
+      engine: {
+        level: this.level,
+        degraded: this.isDegraded,
+        reason: this.degradationReason,
+      },
+      eventLayer,
+      checkpoint: this.checkpoint.get(),
+      reconciliation: this.startupReconciliation(),
+      pendingSummaryCount: await this.pendingSummaryCount(),
+      channels: await this.verifyChannel(),
+      counts: {
+        experiences: this.experienceLog.count(),
+        rawTurns: this.registry.list().map((item) => ({
+          channel: item.id,
+          count: this.rawLog(item.id)?.count() ?? 0,
+        })),
+        events: eventCounts,
+      },
+    };
   }
 
   async resolvePointer(pointer: Pointer): Promise<ResolvedPointer> {

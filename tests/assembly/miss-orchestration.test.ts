@@ -117,6 +117,23 @@ function makeHandle(opts: FakeOpts): RuntimeMemoryHandle {
     async drainProjection(): Promise<never> {
       throw new Error('drainProjection 未在该装配替身接线');
     },
+    listCardsForObservation(): never[] {
+      return [];
+    },
+    getCardForObservation(): null {
+      return null;
+    },
+    getObservationCounts() {
+      return {
+        cards: 0,
+        activeCards: 0,
+        invalidCards: 0,
+        supersededCards: 0,
+        aliases: 0,
+        sensitiveAliases: 0,
+        misses: 0,
+      };
+    },
     async close(): Promise<void> {},
   };
 }

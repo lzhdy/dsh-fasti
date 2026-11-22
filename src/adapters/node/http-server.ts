@@ -17,17 +17,40 @@
  */
 
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import type { Fasti } from '../../api/index.ts';
 import type { LoggerPort } from '../../ports/logger-port.ts';
+import type { MemoryObservationFace } from '../../assembly/host-tool-runtime.ts';
 import type { ChatHandler } from './chat.ts';
+import type { ActivityBus } from './activity-bus.ts';
 
 /** 请求体上限：1 MiB（本地单人使用足够，超大即拒，防内存滥用）。 */
 const MAX_BODY_BYTES = 1024 * 1024;
 
 /** Host 头允许值（去掉端口后精确匹配，绝不用通配）。 */
 const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/** 长轮询挂等上限：无新脉冲时最多 hold 多久再空返（生产缺省 5s）。 */
+const DEFAULT_PULSE_WAIT_MS = 5_000;
+
+/** 观测列表分页硬上限（与门面/窄柄口径一致，双重保险）。 */
+const OBSERVATION_PAGE_MAX = 100;
+
+/** 静态资产后缀白名单与 MIME：不在表内一律 404，目录没有任何执行语义。 */
+const STATIC_MIME: Readonly<Record<string, string>> = Object.freeze({
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.json': 'application/json; charset=utf-8',
+});
 
 /** 启动参数。 */
 export interface HttpServerOptions {
@@ -42,6 +65,20 @@ export interface HttpServerOptions {
    * 不影响页面、写入与读回；具体模型客户端由组合根 serve.ts 注入，机制层不认识 headless。
    */
   readonly chat?: ChatHandler | null | undefined;
+  /**
+   * 进程内活动总线（#157 控制台脉冲）。缺省时 /api/pulse 退化为只回当前快照、不挂等。
+   */
+  readonly bus?: ActivityBus;
+  /**
+   * 记忆卡人类观测面（装配层打开；索引未就绪传 null，/api/cards* 显式 503 不伪装空数据）。
+   */
+  readonly observation?: MemoryObservationFace | null;
+  /** 本次进程启动标识（启动屏用）；缺省随机生成，每次开服务变化。 */
+  readonly bootId?: string;
+  /** 前端静态资产目录（/app/* 托管根）；缺省时静态路由统一 404。 */
+  readonly webRoot?: string;
+  /** 长轮询挂等毫秒（测试注入短值用），缺省 5000。 */
+  readonly pulseWaitMs?: number;
   /** 诊断日志。缺省 no-op（内核零依赖，日志是调用方的事）。 */
   readonly logger?: LoggerPort;
 }
@@ -59,7 +96,7 @@ export interface HttpServerHandle {
 interface Reply {
   readonly status: number;
   readonly headers?: Record<string, string>;
-  readonly body?: string;
+  readonly body?: string | Buffer;
 }
 
 /** 统一的错误信封，不泄露内部细节与堆栈。 */
@@ -166,6 +203,12 @@ function readBody(req: http.IncomingMessage): Promise<{ text: string; tooLarge: 
 export async function startHttpServer(fasti: Fasti, options: HttpServerOptions): Promise<HttpServerHandle> {
   const { token, channel } = options;
   const logger = options.logger;
+  const bus = options.bus;
+  const observation = options.observation ?? null;
+  const bootId = options.bootId ?? randomBytes(8).toString('hex');
+  const startedAt = Date.now();
+  const webRoot = options.webRoot !== undefined ? path.resolve(options.webRoot) : null;
+  const pulseWaitMs = options.pulseWaitMs ?? DEFAULT_PULSE_WAIT_MS;
 
   const server = http.createServer((req, res) => {
     const send = (reply: Reply): void => {
@@ -206,6 +249,52 @@ export async function startHttpServer(fasti: Fasti, options: HttpServerOptions):
           headers: { 'Content-Type': 'text/html; charset=utf-8' },
           body: renderPage(token, channel),
         });
+        return;
+      }
+
+      // ── /app 控制台静态资产（批 B：静态代码无秘密，免 Bearer 直开；Host 白名单/后缀/穿越门仍在）──
+      // 浏览器地址栏与 <script src>/<link> 标签都无法自定义 Authorization 头，故前端公开资产不设
+      // token 墙；一次性 token 仅由入口 HTML 的 nonce 内联引导注入内存，数据全在 /api，仍逐个 Bearer。
+      // 跨源恶意页面读不到本响应体（无 CORS＋同源策略），拿不到 token，安全模型同 GET /。
+      if (pathname === '/app' || pathname.startsWith('/app/')) {
+        if (method !== 'GET') {
+          send(errorReply(405, 'method-not-allowed', '仅支持 GET'));
+          return;
+        }
+        if (webRoot === null) {
+          send(errorReply(404, 'not-found', '路径不存在'));
+          return;
+        }
+        const staticReply = await serveStaticAsset(webRoot, pathname, url, { token, bootId, channel });
+        send(staticReply);
+        return;
+      }
+
+      // ── /api 观测族（#157；全 GET 只读，先鉴权后分发；六工具不 HTTP 化）──
+      if (pathname === '/api' || pathname.startsWith('/api/')) {
+        if (method !== 'GET') {
+          send(errorReply(405, 'method-not-allowed', '观测 API 仅支持 GET'));
+          return;
+        }
+        if (!tokenMatches(req.headers.authorization, token)) {
+          send(errorReply(401, 'unauthorized', '缺少或错误的访问凭证'));
+          return;
+        }
+        const apiReply = await handleObservationApi({
+          req,
+          res,
+          url,
+          pathname,
+          fasti,
+          bus,
+          observation,
+          boot: { bootId, startedAt },
+          pulseWaitMs,
+          defaultChannel: channel,
+        });
+        if (apiReply !== null) {
+          send(apiReply);
+        }
         return;
       }
 
@@ -400,9 +489,309 @@ export async function startHttpServer(fasti: Fasti, options: HttpServerOptions):
         });
         // 断开空闲 keep-alive 连接，否则 close 要等它们超时。
         server.closeIdleConnections();
+        // 兜底：本机只读服务、关停即断。仍在途的长轮询连接不算 idle，
+        // 等一拍再强清，给上层 bus.dispose 触发的正常响应收尾留出微任务窗口；
+        // 客户端长轮询本就自带断线自愈，不在此做优雅排空。
+        setImmediate(() => {
+          server.closeAllConnections();
+        });
       });
     },
   };
+}
+
+// ── #157 观测 API 与静态托管（全只读、零第三方依赖）；批 B 追加 bootstrap nonce 引导 ──────
+
+/** 注入入口 HTML 的引导信息形状（对前端冻结，见 docs/task158-frontend-handoff-brief.md 3.2）。 */
+interface BootstrapInfo {
+  readonly token: string;
+  readonly bootId: string;
+  readonly channel: string;
+}
+
+/**
+ * 静态响应安全头：强 CSP 锁死资源来源，配合白名单后缀杜绝任意文件投放。
+ * 非 HTML 资产用严格版（script-src 仅 'self'）；入口 HTML 额外放行**本次响应专属**的单个
+ * nonce——这是全站唯一允许的内联脚本，只承载 bootstrap；style 与内联事件仍一律不放行。
+ */
+function staticSecurityHeaders(nonce?: string): Record<string, string> {
+  const scriptSrc = nonce === undefined ? "'self'" : `'self' 'nonce-${nonce}'`;
+  return {
+    'Content-Security-Policy':
+      `default-src 'none'; script-src ${scriptSrc}; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`,
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+  };
+}
+
+/**
+ * 生成唯一内联引导脚本。序列化后对 `<`、`>`、`&` 与 Unicode 行分隔符做转义，
+ * 杜绝 channel 等外部配置借 `</script>` 突破（token/bootId 自身为 base64url/hex 安全字符集）。
+ */
+function renderBootstrapScript(boot: BootstrapInfo, nonce: string): string {
+  const payload = JSON.stringify({
+    token: boot.token,
+    bootId: boot.bootId,
+    channel: boot.channel,
+  })
+    .replace(/</gu, '\\u003c')
+    .replace(/>/gu, '\\u003e')
+    .replace(/&/gu, '\\u0026')
+    .replace(/\u2028/gu, '\\u2028')
+    .replace(/\u2029/gu, '\\u2029')
+  return `<script nonce="${nonce}">window.__FASTI_BOOTSTRAP__=${payload};</script>`;
+}
+
+/** 把引导脚本插入 HTML：优先 `</head>` 前，其次 `<body>` 开标签后，都没有则整体前置。 */
+function injectBootstrap(html: string, scriptTag: string): string {
+  const headClose = /<\/head>/iu.exec(html);
+  if (headClose !== null) {
+    return html.slice(0, headClose.index) + scriptTag + html.slice(headClose.index);
+  }
+  const bodyOpen = /<body[^>]*>/iu.exec(html);
+  if (bodyOpen !== null) {
+    const insertAt = bodyOpen.index + bodyOpen[0].length;
+    return html.slice(0, insertAt) + scriptTag + html.slice(insertAt);
+  }
+  return scriptTag + html;
+}
+
+/**
+ * 托管 /app/* 静态资产。路径先解码再 normalize 并强制圈定在 webRoot 内，
+ * 任何越界（含 %2f 编码穿越）、后缀不在白名单、文件不存在一律 404，不区分存在性。
+ * HTML 入口额外注入 nonce 引导并放宽该响应的 script-src；其余资产字节原样返回、CSP 不放宽。
+ */
+async function serveStaticAsset(
+  webRoot: string,
+  pathname: string,
+  url: URL,
+  boot: BootstrapInfo,
+): Promise<Reply> {
+  // URL 已拦掉明文 ../（会被规范化出 /app 前缀）；这里主要防 %2f 等编码形态。
+  let rel = decodeURIComponent(pathname.slice('/app/'.length));
+  if (rel === '' || rel.endsWith('/')) {
+    rel = path.join(rel, 'index.html');
+  }
+  const resolved = path.normalize(path.resolve(webRoot, rel));
+  if (resolved !== webRoot && !resolved.startsWith(webRoot + path.sep)) {
+    return errorReply(404, 'not-found', '路径不存在');
+  }
+  const ext = path.extname(resolved).toLowerCase();
+  const mime = STATIC_MIME[ext];
+  if (mime === undefined) {
+    return errorReply(404, 'not-found', '路径不存在');
+  }
+  let data: Buffer;
+  try {
+    data = await readFile(resolved);
+  } catch {
+    return errorReply(404, 'not-found', '路径不存在');
+  }
+  if (ext !== '.html') {
+    return {
+      status: 200,
+      headers: { 'Content-Type': mime, 'Content-Length': String(data.byteLength), ...staticSecurityHeaders() },
+      body: data,
+    };
+  }
+  // 入口 HTML：每响应独立 nonce，注入唯一内联 bootstrap；普通内联脚本在 head 即执行，
+  // 早于默认 defer 的 ESM 模块，外部 app.js 读取时 window.__FASTI_BOOTSTRAP__ 必然就绪。
+  const nonce = randomBytes(16).toString('base64url');
+  const injected = Buffer.from(injectBootstrap(data.toString('utf8'), renderBootstrapScript(boot, nonce)), 'utf8');
+  return {
+    status: 200,
+    headers: {
+      'Content-Type': mime,
+      'Content-Length': String(injected.byteLength),
+      ...staticSecurityHeaders(nonce),
+    },
+    body: injected,
+  };
+}
+
+interface ObservationApiDeps {
+  readonly req: http.IncomingMessage;
+  readonly res: http.ServerResponse;
+  readonly url: URL;
+  readonly pathname: string;
+  readonly fasti: Fasti;
+  readonly bus: ActivityBus | undefined;
+  readonly observation: MemoryObservationFace | null;
+  readonly boot: { readonly bootId: string; readonly startedAt: number };
+  readonly pulseWaitMs: number;
+  readonly defaultChannel: string;
+}
+
+/** 解析分页参数：非法返回 null 由调用方回 400；缺省回退 fallback。 */
+function integerParam(url: URL, key: string, fallback: number, max: number): number | null {
+  const raw = url.searchParams.get(key);
+  if (raw === null) {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > max) {
+    return null;
+  }
+  return value;
+}
+
+/** 观测 API 总分发：只认 GET 只读端点，错误映射为稳定 HTTP 码，不回显内部细节。 */
+async function handleObservationApi(deps: ObservationApiDeps): Promise<Reply | null> {
+  const { url, pathname, fasti, bus, observation, boot, req, res, defaultChannel } = deps;
+  const channel = url.searchParams.get('channel') ?? defaultChannel;
+
+  try {
+    if (pathname === '/api/status') {
+      const snapshot = await fasti.inspectRuntime();
+      return jsonReply(200, {
+        ok: true,
+        bootId: boot.bootId,
+        startedAt: boot.startedAt,
+        channel,
+        ...snapshot,
+        memory: observation?.getObservationCounts() ?? null,
+      });
+    }
+
+    if (pathname === '/api/pulse') {
+      const afterRaw = url.searchParams.get('after');
+      let after: number;
+      if (afterRaw === null) {
+        after = bus?.currentSeq() ?? 0;
+      } else {
+        const parsed = Number(afterRaw);
+        if (!Number.isInteger(parsed) || parsed < 0) {
+          return errorReply(400, 'bad-request', 'after 必须是非负整数序号');
+        }
+        after = parsed;
+      }
+
+      let activities = bus?.since(after) ?? [];
+      if (activities.length === 0 && bus !== undefined) {
+        let connectionOpen = true;
+        const onClose = (): void => {
+          connectionOpen = false;
+        };
+        req.once('close', onClose);
+        await bus.waitForNext(deps.pulseWaitMs);
+        req.off('close', onClose);
+        if (!connectionOpen || res.writableEnded) {
+          return null; // 客户端已断开：不写已关闭的 socket，连接句柄由 waitForNext 定时器自清理。
+        }
+        activities = bus.since(after);
+      }
+      const snapshot = await fasti.inspectRuntime();
+      return jsonReply(200, {
+        ok: true,
+        seq: bus?.currentSeq() ?? 0,
+        activities,
+        snapshot,
+        memory: observation?.getObservationCounts() ?? null,
+      });
+    }
+
+    if (pathname === '/api/raw') {
+      const limit = integerParam(url, 'limit', 50, OBSERVATION_PAGE_MAX);
+      const offset = integerParam(url, 'offset', 0, 10_000);
+      if (limit === null || offset === null || limit < 1) {
+        return errorReply(400, 'bad-request', 'limit 须为 1–100 整数、offset 须为非负整数');
+      }
+      const page = await fasti.inspectRawTurns(channel, { limit, offset });
+      return jsonReply(200, { ok: true, ...page });
+    }
+
+    if (pathname === '/api/experiences') {
+      const limit = integerParam(url, 'limit', 50, OBSERVATION_PAGE_MAX);
+      const offset = integerParam(url, 'offset', 0, 10_000);
+      if (limit === null || offset === null || limit < 1) {
+        return errorReply(400, 'bad-request', 'limit 须为 1–100 整数、offset 须为非负整数');
+      }
+      const all = await fasti.query({ channel });
+      return jsonReply(200, {
+        ok: true,
+        total: all.length,
+        limit,
+        offset,
+        experiences: all.slice(offset, offset + limit),
+      });
+    }
+
+    const experienceMatch = /^\/api\/experiences\/([^/]+)$/u.exec(pathname);
+    if (experienceMatch !== null) {
+      const id = decodeURIComponent(experienceMatch[1] ?? '');
+      const experience = await fasti.inspectExperience(id);
+      if (experience === null) {
+        return errorReply(404, 'not-found', '经历不存在');
+      }
+      return jsonReply(200, { ok: true, experience });
+    }
+
+    if (pathname === '/api/events') {
+      const limit = integerParam(url, 'limit', 50, OBSERVATION_PAGE_MAX);
+      if (limit === null || limit < 1) {
+        return errorReply(400, 'bad-request', 'limit 须为 1–100 整数');
+      }
+      const events = await fasti.queryEventViews();
+      return jsonReply(200, { ok: true, total: events.length, events: events.slice(0, limit) });
+    }
+
+    const eventMatch = /^\/api\/events\/([^/]+)$/u.exec(pathname);
+    if (eventMatch !== null) {
+      const id = decodeURIComponent(eventMatch[1] ?? '');
+      const event = await fasti.getEventView(id);
+      const versions = await fasti.listEventVersions(id);
+      return jsonReply(200, { ok: true, event, versions });
+    }
+
+    if (pathname === '/api/cards') {
+      if (observation === null) {
+        return errorReply(503, 'memory-unavailable', '记忆索引未就绪，卡片观测暂不可用');
+      }
+      const limit = integerParam(url, 'limit', 50, OBSERVATION_PAGE_MAX);
+      const offset = integerParam(url, 'offset', 0, 10_000);
+      if (limit === null || offset === null || limit < 1) {
+        return errorReply(400, 'bad-request', 'limit 须为 1–100 整数、offset 须为非负整数');
+      }
+      const cards = observation.listCardsForObservation({ limit, offset });
+      return jsonReply(200, { ok: true, cards });
+    }
+
+    const cardMatch = /^\/api\/cards\/([^/]+)$/u.exec(pathname);
+    if (cardMatch !== null) {
+      if (observation === null) {
+        return errorReply(503, 'memory-unavailable', '记忆索引未就绪，卡片观测暂不可用');
+      }
+      const id = decodeURIComponent(cardMatch[1] ?? '');
+      const card = observation.getCardForObservation(id);
+      if (card === null) {
+        return errorReply(404, 'not-found', '卡片不存在');
+      }
+      return jsonReply(200, { ok: true, card });
+    }
+
+    if (pathname === '/api/projection') {
+      const snapshot = await fasti.inspectRuntime();
+      const edges = await fasti.queryEdges({});
+      return jsonReply(200, {
+        ok: true,
+        engine: snapshot.engine,
+        eventLayer: snapshot.eventLayer,
+        checkpoint: snapshot.checkpoint,
+        reconciliation: snapshot.reconciliation,
+        edges: edges.slice(0, OBSERVATION_PAGE_MAX),
+      });
+    }
+
+    return errorReply(404, 'not-found', '观测端点不存在');
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NotFoundError') {
+      return errorReply(404, 'not-found', '目标不存在');
+    }
+    if (error instanceof Error && error.name === 'SchemaError') {
+      return errorReply(400, 'bad-request', '查询参数形状非法');
+    }
+    throw error; // 交外层兜底 500，不向浏览器泄露内部类名/堆栈。
+  }
 }
 
 /** 极简同源页面：token 由服务端注入，页面用相对路径调 API（同源，无预检）。 */

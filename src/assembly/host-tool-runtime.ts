@@ -14,6 +14,7 @@
  */
 
 import { ChannelBoundaryError, NotFoundError, SchemaError, UnavailableError } from '../core/errors.ts';
+import type { MemoryObservationCounts, ObservationCardView } from '../memory/observation.ts';
 import { openMemoryRuntime } from '../memory/runtime.ts';
 import type { RuntimeMemoryHandle } from '../memory/runtime.ts';
 import { isSerialRefusable } from '../memory/serial.ts';
@@ -55,11 +56,26 @@ export interface OpenAssembledMemoryToolsInput {
   readonly onMissRetentionWarning?: (message: string) => void;
 }
 
+/**
+ * 人类观测窄面（#157 网页控制台）：与 `tools`（模型 function-calling 面）平行，
+ * 只读、不进任何模型工具信封；窄柄未就绪时整个面为 null。
+ */
+export interface MemoryObservationFace {
+  listCardsForObservation(options?: {
+    readonly limit?: number;
+    readonly offset?: number;
+  }): ObservationCardView[];
+  getCardForObservation(cardId: string): ObservationCardView | null;
+  getObservationCounts(): MemoryObservationCounts;
+}
+
 /** 装配产物：四方法工具集 + 窄柄就绪标志 + 幂等关闭。 */
 export interface AssembledMemoryRuntime {
   readonly tools: MemoryTools;
   /** 窄柄是否成功打开（false 表示门工具显式报不可用，shadow 仍回 observing 空信封）。 */
   readonly indexReady: boolean;
+  /** #157 人类观测面（本机网页控制台只读）；窄柄未就绪为 null。 */
+  readonly observation: MemoryObservationFace | null;
   /** L6 只读下钻端口；未注入时为 null。本批只完成绑定，工具消费随通道二接线卡切换。 */
   readonly sourceLookup: SourceLookupPort | null;
   /** 绑到 runtime 窄柄的记忆投影第七法端口；窄柄不可用时为 null（DI 只绑定，不编排业务）。 */
@@ -229,6 +245,16 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
       ? null
       : { drainProjection: (budgetMs: number) => handleRef.drainProjection(budgetMs) };
 
+  // #157 观测面同样只做 DI 绑定：三个只读方法原样委托窄柄，不新增编排/连接/写路径。
+  const observation: AssembledMemoryRuntime['observation'] =
+    handleRef === null
+      ? null
+      : {
+          listCardsForObservation: (options) => handleRef.listCardsForObservation(options),
+          getCardForObservation: (cardId) => handleRef.getCardForObservation(cardId),
+          getObservationCounts: () => handleRef.getObservationCounts(),
+        };
+
   // 影子回放端口由装配面（handle/sink 的实际持有者）直接暴露；调用方只给文本与回放时间，
   // 无需也无法接触内部窄柄。observeShadowOnce 内部已处理 handle=null 与失败隔离。
   const observeShadow: AssembledMemoryRuntime['observeShadow'] = (observeInput) =>
@@ -237,6 +263,7 @@ export function openAssembledMemoryTools(input: OpenAssembledMemoryToolsInput): 
   return {
     tools,
     indexReady,
+    observation,
     sourceLookup: input.sourceLookup ?? null,
     memoryProjection,
     observeShadow,

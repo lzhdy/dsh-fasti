@@ -66,6 +66,8 @@ export interface NodeMemoryRuntime {
   readonly tools: readonly NodeMemoryTool[];
   /** 第七法投影端口；窄柄不可用时为 null，供组合根 bindMemoryProjection。 */
   readonly memoryProjection: AssembledMemoryRuntime['memoryProjection'];
+  /** #157 人类观测面（只读卡片检视）；窄柄未就绪为 null。 */
+  readonly observation: AssembledMemoryRuntime['observation'];
   /** 开一个请求级工具会话。 */
   createSession(): NodeMemoryToolSession;
   /** 关闭底层窄柄（幂等）。 */
@@ -212,6 +214,7 @@ export function openNodeMemoryRuntime(input: OpenNodeMemoryRuntimeInput): NodeMe
     indexReady: runtime.indexReady,
     tools,
     memoryProjection: runtime.memoryProjection,
+    observation: runtime.observation,
     createSession(): NodeMemoryToolSession {
       // 请求级私有状态：模型只传回序号，序号表不落库、不跨请求，每次新检索整体替换。
       let serialMap: GatedSearchView['serialMap'] | null = null;

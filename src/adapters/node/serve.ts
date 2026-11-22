@@ -10,18 +10,36 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Fasti } from '../../api/index.ts';
 import type { ChannelDescriptor } from '../../contract/channel.ts';
 import type { LoggerPort } from '../../ports/logger-port.ts';
 import { createOpenAIAgentClient, createOpenAICompatLLMPort } from '../headless/index.ts';
 import { readServeConfig, type ServeConfig } from './config.ts';
+import { ActivityBus } from './activity-bus.ts';
+import { createObservationStage } from './observe-stage.ts';
 import { createChatHandler, type ChatHandler } from './chat.ts';
 import { openNodeMemoryRuntime } from './memory-session.ts';
 import { startHttpServer } from './http-server.ts';
 import { startClosureLoop } from './loop.ts';
 import { startProjectionLoop } from './projection-loop.ts';
+
+/** 前端静态资产目录（与本文件同目录的 web/，编译后 lib 镜像同构路径仍成立）。 */
+const WEB_ROOT = fileURLToPath(new URL('./web/', import.meta.url));
+
+/**
+ * 启动句柄。token 随句柄返回是给编程式调用/测试复用的引导口：
+ * 直跑姿态下它本来就会打印到本机控制台，并不因此扩大暴露面；HTTP 鉴权纪律不变。
+ */
+export interface ServeHandle {
+  readonly url: string;
+  /** 实际监听端口（port=0 由内核分配时用于回读）。 */
+  readonly port: number;
+  /** 本次启动的一次性 Bearer token（进程重启即失效、不落盘）。 */
+  readonly token: string;
+  close(): Promise<void>;
+}
 
 /** 最小 console 日志端口：前缀 + printf 占位。 */
 function consoleLogger(): LoggerPort {
@@ -37,6 +55,17 @@ function consoleLogger(): LoggerPort {
 }
 
 /** 由配置派生通道描述符（中性、不含任何宿主字面）。 */
+/** 防御式对象 narrowing：节拍报告是 unknown 入参，非对象形状直接丢弃。 */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+/** 防御式数字读数：缺失或类型不符一律按 0（观测面不得因报告演进炸节拍）。 */
+function numberField(data: Record<string, unknown>, key: string): number {
+  const value = data[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
 function descriptorOf(channel: string): ChannelDescriptor {
   return {
     id: channel,
@@ -49,7 +78,7 @@ function descriptorOf(channel: string): ChannelDescriptor {
 }
 
 /** 装配并启动；返回句柄供测试/嵌入复用。 */
-export async function serve(config: ServeConfig): Promise<{ url: string; close(): Promise<void> }> {
+export async function serve(config: ServeConfig): Promise<ServeHandle> {
   const logger = consoleLogger();
 
   const llmPort =
@@ -83,6 +112,10 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
     onDiagnostic: (level, message) => logger.warn(`${level}: ${message}`),
   });
 
+  // #157 进程内活动总线：写入链（观测 stage）、两个节拍、读出链（聊天工具）统一汇入。
+  const bus = new ActivityBus();
+  fasti.registerIngestStage(createObservationStage(bus));
+
   await fasti.registerChannel(descriptorOf(config.channel));
 
   // 记忆工具宿主：node 身体固定 on（mode 在 memory-session 内写死，无开关可翻）。
@@ -104,23 +137,101 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
           channel: config.channel,
           client: agentClient,
           toolHost: memoryRuntime,
+          onToolActivity: (activity) => {
+            try {
+              bus.emit(
+                'tool.call',
+                activity.ok ? 'ok' : 'warn',
+                `工具 ${activity.tool} 调用${activity.ok ? '成功' : '失败'}`,
+                { tool: activity.tool, ok: activity.ok, callId: activity.callId },
+              );
+            } catch {
+              // 总线故障不反噬聊天主流程。
+            }
+          },
         });
 
   // 一次性 token：每次启动新生成、不落盘；进程重启即失效。
   const token = randomBytes(32).toString('base64url');
+  // 本次启动实例 id：前端识别「后端重启、脉冲游标作废」的依据。
+  const bootId = randomBytes(6).toString('hex');
 
-  const server = await startHttpServer(fasti, { port: config.port, token, channel: config.channel, chat, logger });
+  const server = await startHttpServer(fasti, {
+    port: config.port,
+    token,
+    channel: config.channel,
+    chat,
+    logger,
+    bus,
+    observation: memoryRuntime.observation,
+    bootId,
+    webRoot: WEB_ROOT,
+  });
 
   // 闭合节拍：dsh 里由宿主 scheduler 周期调 checkSilenceClock + drainClosure，
   // 这里由启动器自己驱动——否则「模型接上了却永远不会被叫到」，摘要永远 pending。
   const closureLoop = startClosureLoop(fasti, {
-    onError: (error, phase) => logger.warn(`闭合节拍 ${phase} 阶段失败：${error instanceof Error ? error.message : String(error)}`),
+    onError: (error, phase) => {
+      logger.warn(`闭合节拍 ${phase} 阶段失败：${error instanceof Error ? error.message : String(error)}`);
+      safeBusError('closure-loop', error);
+    },
+    onReport: ({ closed, summaries }) => {
+      // 空轮不刷活动流：只有真的闭合/摘要了事件才上报。
+      if (closed > 0) {
+        safeEmit('closure.drain', 'ok', `闭合 ${closed} 条安静事件`, { closed });
+      }
+      if (summaries > 0) {
+        safeEmit('summary.drain', 'ok', `摘要处理 ${summaries} 条`, { summaries });
+      }
+    },
   });
 
   // 记忆投影节拍：独立 5s 轮询/60s 预算，把真源折叠进 memory-index，失败隔离不阻断闭合。
   const projectionLoop = startProjectionLoop(fasti, {
-    onError: (error) => logger.warn(`记忆投影节拍失败（已隔离）：${error instanceof Error ? error.message : String(error)}`),
+    onError: (error) => {
+      logger.warn(`记忆投影节拍失败（已隔离）：${error instanceof Error ? error.message : String(error)}`);
+      safeBusError('projection-loop', error);
+    },
+    onReport: (report) => {
+      // 报告形状属记忆内核（MemoryProjectionDrainReport），组合根只做防御式读数：
+      // skipped 非空表示本轮没干活；只有真有卡片折叠/失效/隔离/空锚才发活动。
+      const data = asRecord(report);
+      if (data === null || typeof data.skipped === 'string') {
+        return;
+      }
+      const cardUpserts = numberField(data, 'cardUpserts');
+      const invalidations = numberField(data, 'invalidations');
+      const quarantined = numberField(data, 'quarantined');
+      const emptyAnchored = numberField(data, 'emptyAnchored');
+      const total = cardUpserts + invalidations + quarantined + emptyAnchored;
+      if (total > 0) {
+        safeEmit('memory.drain', 'ok', `记忆投影折叠 ${total} 项变更`, {
+          ...(cardUpserts === 0 ? {} : { cardUpserts }),
+          ...(invalidations === 0 ? {} : { invalidations }),
+          ...(quarantined === 0 ? {} : { quarantined }),
+          ...(emptyAnchored === 0 ? {} : { emptyAnchored }),
+        });
+      }
+    },
   });
+
+  function safeEmit(kind: 'closure.drain' | 'summary.drain' | 'memory.drain', level: 'ok', message: string, data: Record<string, number>): void {
+    try {
+      bus.emit(kind, level, message, data);
+    } catch {
+      // 观测故障不影响节拍。
+    }
+  }
+  function safeBusError(phase: string, error: unknown): void {
+    try {
+      bus.emit('loop.error', 'error', `后台节拍失败（${phase}）`, {
+        phase,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } catch {
+      // 总线自身故障时无处可报，静默。
+    }
+  }
 
   console.log(`[fasti-http] 已启动：${server.url}`);
   console.log(`[fasti-http] 数据根：${fasti.paths.root}`);
@@ -137,9 +248,13 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
 
   return {
     url: server.url,
+    port: server.port,
+    token,
     async close() {
       closureLoop.stop();
       projectionLoop.stop();
+      // 先释放总线上所有长轮询等待，避免 pulse 请求悬挂到 server 强制关闭。
+      bus.dispose();
       await server.close();
       await memoryRuntime.dispose();
       await fasti.close();

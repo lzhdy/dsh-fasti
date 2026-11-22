@@ -159,3 +159,24 @@ test('端到端裸连：本机 OpenAI 兼容端点 → 内核真调模型 → �
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
   }
 });
+
+test('节拍器：onReport 钩子在每轮成功后上报闭合/摘要条数（#157 观测挂点）', async () => {
+  const reports: Array<{ closed: number; summaries: number }> = [];
+  const target = {
+    checkSilenceClock: () => 2,
+    drainClosure: async () => 1,
+  };
+  const handle = startClosureLoop(target, {
+    intervalMs: 20,
+    onReport: (report) => reports.push(report),
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 70));
+  } finally {
+    handle.stop();
+  }
+  assert.ok(reports.length >= 2, `至少两轮上报，实际 ${reports.length}`);
+  for (const report of reports) {
+    assert.deepEqual(report, { closed: 2, summaries: 1 });
+  }
+});

@@ -26,6 +26,11 @@ export interface ProjectionLoopOptions {
   readonly intervalMs?: number;
   readonly budgetMs?: number;
   readonly onError?: (error: unknown) => void;
+  /**
+   * 每轮 drain 成功后的观测上报（#157 活动总线挂点）：原样透传 drain 轮报告。
+   * 失败轮不触发；报告形状由记忆内核定义，节拍器只透传不解读。
+   */
+  readonly onReport?: (report: unknown) => void;
 }
 
 export interface ProjectionLoopHandle {
@@ -51,6 +56,13 @@ export function startProjectionLoop(
     inFlight = true;
     void target
       .drainMemoryProjection(budgetMs)
+      .then((report) => {
+        try {
+          options.onReport?.(report);
+        } catch {
+          // 观测回调故障不反噬节拍。
+        }
+      })
       .catch((error: unknown) => {
         options.onError?.(error);
       })

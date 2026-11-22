@@ -41,6 +41,7 @@ import type { MissSentinel, MissSentinelOptions, MissSentinelSnapshot } from './
 import { MISS_RETENTION_TMP_POLICY } from './miss-retention.ts';
 import type { MissRetentionPolicy } from './miss-retention.ts';
 import { MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from './schema.ts';
+import type { MemoryObservationCounts } from './observation.ts';
 import {
   CURRENT_RULES_VERSION,
   type AliasRow,
@@ -90,6 +91,15 @@ export interface MemoryReadHandle {
   /** 几何版本窗口校验：版本/tokenizer 不符抛 MemoryIndexStaleError（#124，检索与 drain 入口调用）。 */
   assertGeometryCurrent(): void;
   listEffective(atMs: number): MemoryCard[];
+  /**
+   * 观测面：列出**全部状态**卡（含 invalid/superseded），确定性次序
+   * occurred_ms, card_id。供 #157 本机观测台使用，模型检索路径仍走 listEffective。
+   */
+  listAllCards(): MemoryCard[];
+  /** 观测面：取某卡的权威别名行（mem_alias 表，而非卡内快照）。 */
+  listAliasesByCard(cardId: string): AliasRow[];
+  /** 观测面：卡/别名/漏召台账聚合计数（纯 SELECT，参数化，零写）。 */
+  observationCounts(): MemoryObservationCounts;
   /** 真值指纹与 stamp 不符抛 MemoryIndexStaleError（读操作拒绝服务）。 */
   verifyStampedFingerprint(current: TruthFingerprint): void;
   /** 读 schema_meta 单键；缺键返回 null（只读，不建表/不写值）。 */
@@ -456,6 +466,42 @@ class ReadHandle implements MemoryReadHandle, MemoryInternalReadHandle {
       )
       .all(atMs, atMs, atMs) as Array<Record<string, unknown>>;
     return rows.map(cardFromRow);
+  }
+
+  listAllCards(): MemoryCard[] {
+    // 观测面全状态列举（含 invalid/superseded）；确定性次序，分页由上层窄柄切片。
+    const rows = this.require()
+      .prepare('SELECT * FROM mem_card ORDER BY occurred_ms ASC, card_id ASC')
+      .all() as Array<Record<string, unknown>>;
+    return rows.map(cardFromRow);
+  }
+
+  listAliasesByCard(cardId: string): AliasRow[] {
+    const rows = this.require()
+      .prepare('SELECT * FROM mem_alias WHERE card_id = ? ORDER BY created_ms ASC, term_norm ASC')
+      .all(cardId) as Array<Record<string, unknown>>;
+    return rows.map(aliasFromRow);
+  }
+
+  observationCounts(): MemoryObservationCounts {
+    const db = this.require();
+    const countOf = (sql: string, ...params: Array<string | number | bigint | null>): number => {
+      const row = db.prepare(sql).get(...params) as { n: number } | undefined;
+      return row?.n ?? 0;
+    };
+    const statusRows = db
+      .prepare('SELECT status, COUNT(*) AS n FROM mem_card GROUP BY status')
+      .all() as Array<{ status: string; n: number }>;
+    const byStatus = new Map(statusRows.map((row) => [row.status, row.n]));
+    return {
+      cards: countOf('SELECT COUNT(*) AS n FROM mem_card'),
+      activeCards: byStatus.get('active') ?? 0,
+      invalidCards: byStatus.get('invalid') ?? 0,
+      supersededCards: byStatus.get('superseded') ?? 0,
+      aliases: countOf('SELECT COUNT(*) AS n FROM mem_alias'),
+      sensitiveAliases: countOf('SELECT COUNT(*) AS n FROM mem_alias WHERE sensitive = 1'),
+      misses: countOf('SELECT COUNT(*) AS n FROM mem_miss'),
+    };
   }
 
   getMeta(key: string): string | null {

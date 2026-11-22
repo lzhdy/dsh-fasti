@@ -1270,7 +1270,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 |---|---|---|---|
 | #42 | 记忆卡运行期建卡通道 | **④实现完成，待主控验收**（编码已完成，L1→B0→B1→B2 四批全绿：1019/1019/0、双 tsc 0、静态门 50/50，全部改动在工作区未提交） | 机械自动建卡（闭合且 ready 的经历确定性派生零正文轻卡）＋她的判断经同一窄写通道落 `decisions.jsonl`（`created_by=her`）；不存在逐条人工审批环节。**立项定稿（2026-11-15，三家外审整合）见 `docs/task42-runtime-autocard-final-spec.md`，七问终裁已闭合，与本文旧口径冲突处以该定稿为准** |
 | #43 | 工作记忆窗口参数 | pending，待评审 | 依赖 #42；历史自系误挂已注明；700 字硬顶与每轮补取 ≤1 次为暂定结构预算 |
-| #72 | 平台化目标架构（C6） | 整卡挂起未关闭；**首批子集已落地** | 去宿主化＋LLM/五装配端口＋参考适配器薄壳化＋独立核验已凭逐次显式授权入库（落地登记见 11.13.7）；宿主无关启动器第一刀（loopback 同源 HTTP＋零网络冒烟）已落地（见 11.13.8）；node 身体直连模型纯聊天回路（POST /chat、真源重建上下文、零工具）已落地（见 11.13.9）；对话第二刀——node 内存工具宿主（固定 on、无模式开关）＋记忆投影 worker＋进程内 function-calling agent 回路（六工具不 HTTP 化）已落地（见 11.13.10）；dsh 内置 system prompt 经 complete 段全量替换为跨通道英文母本（契约层单点、裸连同引用）＋裸连可选推理档已落地（见 11.13.11）；R1 删除、embedding/storage/clock、跨进程锁、跨源/外网服务面、迁移脚本等其余子项仍冻结，整卡解冻仍待主控拍板 |
+| #72 | 平台化目标架构（C6） | 整卡挂起未关闭；**首批子集已落地** | 去宿主化＋LLM/五装配端口＋参考适配器薄壳化＋独立核验已凭逐次显式授权入库（落地登记见 11.13.7）；宿主无关启动器第一刀（loopback 同源 HTTP＋零网络冒烟）已落地（见 11.13.8）；node 身体直连模型纯聊天回路（POST /chat、真源重建上下文、零工具）已落地（见 11.13.9）；对话第二刀——node 内存工具宿主（固定 on、无模式开关）＋记忆投影 worker＋进程内 function-calling agent 回路（六工具不 HTTP 化）已落地（见 11.13.10）；dsh 内置 system prompt 经 complete 段全量替换为跨通道英文母本（契约层单点、裸连同引用）＋裸连可选推理档已落地（见 11.13.11）；网页观测台批 A——只读检视原语、活动总线长轮询、八个 /api 只读端点与 /app 强 CSP 静态托管、前端对接任务书已落地（见 11.13.12，本地未提交）；网页观测台批 B——/app 静态面免凭证直开＋入口 HTML 每响应 nonce 注入一次性 token 引导、/api 数据墙与写路由 Bearer 不动且不发 CORS 仅绑 loopback，浏览器零配置同源首屏死结解开（见 11.13.13，本地未提交）；R1 删除、embedding/storage/clock、跨进程锁、跨源/外网服务面、迁移脚本等其余子项仍冻结，整卡解冻仍待主控拍板 |
 
 ## 11.4 卡号台账与待建卡总表
 
@@ -2182,7 +2182,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 | 事项 | 归属 | 说明 |
 |---|---|---|
 | 两阶段遗忘、`trash/` 与 tombstone 落地 | **既有 #95** | 卡面已含 30／180 天口径，11.13.4 为其细化；动工前先订正 ADR-4/6 |
-| 平台独立化契约重议（R1 删除、目录去宿主化）、能力端口抽象（LLM／embedding／storage／clock）、跨进程写者锁、宿主无关启动器、真源迁移脚本规范 | **既有 #72**（方向已立宪，施工解冻门待主控拍板） | #72 台账原口径"挂起勿擅启，只在 C 线首期跑通后重议"与 11.13 已立宪的方向存在张力，**未拍板前不得据 11.13 直接开工** ｜【2026-11-21 补】其中目录去宿主化、LLM 与五个装配作用域端口、参考适配器薄壳化、内核独立运行核验子集已落地，部分履约登记见 11.13.7；【2026-11-21 再补】宿主无关启动器第一刀（单机 loopback 同源 HTTP＋零网络冒烟，不含跨源/外网/多实例）已落地，见 11.13.8，跨进程锁等其余子项继续按本行冻结；【2026-11-21 三补】node 身体直连模型纯聊天回路（零工具第一刀，记忆门在 node 身体固定 on 的拍板口径见该节三）已落地，见 11.13.9；【2026-11-21 四补】对话第二刀（node 记忆工具宿主＋投影 worker＋function-calling 回路，六工具进程内化、不开放 HTTP 面）已落地，见 11.13.10，跨源/外网/TLS/跨进程锁等其余子项继续按本行冻结 |
+| 平台独立化契约重议（R1 删除、目录去宿主化）、能力端口抽象（LLM／embedding／storage／clock）、跨进程写者锁、宿主无关启动器、真源迁移脚本规范 | **既有 #72**（方向已立宪，施工解冻门待主控拍板） | #72 台账原口径"挂起勿擅启，只在 C 线首期跑通后重议"与 11.13 已立宪的方向存在张力，**未拍板前不得据 11.13 直接开工** ｜【2026-11-21 补】其中目录去宿主化、LLM 与五个装配作用域端口、参考适配器薄壳化、内核独立运行核验子集已落地，部分履约登记见 11.13.7；【2026-11-21 再补】宿主无关启动器第一刀（单机 loopback 同源 HTTP＋零网络冒烟，不含跨源/外网/多实例）已落地，见 11.13.8，跨进程锁等其余子项继续按本行冻结；【2026-11-21 三补】node 身体直连模型纯聊天回路（零工具第一刀，记忆门在 node 身体固定 on 的拍板口径见该节三）已落地，见 11.13.9；【2026-11-21 四补】对话第二刀（node 记忆工具宿主＋投影 worker＋function-calling 回路，六工具进程内化、不开放 HTTP 面）已落地，见 11.13.10，跨源/外网/TLS/跨进程锁等其余子项继续按本行冻结；【2026-11-22 五补】网页观测台批 A（loopback 只读 GET 观测面＋进程内活动总线长轮询＋/app 静态托管，无写路由、无跨源/外网）已本地落地待授权提交，见 11.13.12，跨源/外网/TLS/跨进程锁/六工具 HTTP 化继续按本行冻结；【2026-11-22 六补】网页观测台批 B（/app 静态面免 Bearer 直开＋入口 HTML 每响应 nonce 注入一次性 token 引导、/api 与写路由 Bearer 401 分毫不动、不发 CORS 仅绑 loopback，浏览器零配置同源首屏打通）已本地落地待授权提交，见 11.13.13，跨源/外网/TLS/跨进程锁/六工具 HTTP 化继续按本行冻结 |
 | 窗口重议（降级线索触发器、identity／obligation 取消） | **既有 #116** | 现卡面为"运行期接线"，重议后须改卡面，属实质变更待拍板 |
 | 重要性打分 | **既有 #94**（前置 #93 反思通道解冻） | 依赖链已排，非"未排期" |
 | 端到端闭环验收判据、身体／设备来源维度 | 待立卡（后者与 #106 E 块 HLC 合并评估） | 号段按 11.2 取号，下一空号 #125 |
@@ -2366,6 +2366,81 @@ node 两个 OpenAI 兼容出口（摘要口 `openai-llm.ts`、对话口 `openai-
 **五、测试、变异反证与真机验收**
 
 离线：全量 `npm run verify` **1583/1583 全绿**（双 tsc＋node --test），净新增契约母本冻结/单点守卫、complete 段同一性、glue complete 注册、裸连 config 解析与两出口透传等用例。四发变异反证全部如期变红后逐字节还原：①glue 的 `complete:true` 改 false → 注册断言红；②母本改词 → 字面冻结红；③在别的源码文件复制母本指纹（含写进注释）→ 单点定义守卫报出两个文件；④（推理档）零漂移与透传断言在旧代码下先红 3 例。真机（2026-11-22，SCNet-Max，临时 headless profile＋本地透传中继，用后即删）：dsh 侧实发 system 仅 1 段 162 字符且逐字等于母本，旧 2727 字身份句/exit code/cat-sed 等特征经会话日志核验全部消失，29 个工具（含 fasti 六件）照常下发、宿主 high 思考档配置保留，模型真实作答正常；裸连侧经中继抓真实请求体——配 `high` 时四键含 `"reasoning_effort":"high"` 且 SCNet 200 账单含 reasoning_tokens，不配置时回到三键无该字段且同样 200。临时 profile、临时数据根、中继脚本与冒烟会话日志全部清除，profiles 目录只留正式 fasti；密钥仅经进程环境变量随行使用，删除前扫描确认零落盘。
+
+### 11.13.12 网页观测台批 A：后端只读观测面＋活动总线＋/api 族与 /app 静态托管（2026-11-22，#156/#157/#158，#72 部分履约，不关闭整卡）
+
+本节登记主控拍板「继续网页端、不做桌面壳；前端界面交外部 AI 实现，本仓只负责后端观测 API、冻结接口契约、出具对接任务书与最终验收」后的**后端批 A**。需求来自主控四条硬需求（启动仪式、写入链/读出链实时可见、五类数据可下钻、界面美观），本刀只交付前三条的后端底座与第四条的托管边界；前端实现与启动 bootstrap 注入分别挂批 B。对接任务书已成文于 `docs/task158-frontend-handoff-brief.md`，其契约描述与本节同口径，正本为唯一权威。
+
+**一、能力面（全部只读，零写路由）**
+
+1. **门面三只读检视原语**（`src/api/index.ts`）：`inspectRuntime()`（引擎 L1/L2/L3 与降级、eventLayer、checkpoint、启动对账 reconciliation 快照、pendingSummaryCount、channels、聚合计数）、`inspectRawTurns(channel,{limit,offset})`（完整 RawTurn 八字段＋shard/seq 定位，limit 1–100 默认 50、offset 0–10000，非法参数 fail-closed）、`inspectExperience(id)`（null 表不存在）。`startupReconciliation()` 是开门时刻快照、进程内新写入不回改，这一既有语义不变，前端按脉冲附带的实时 snapshot 取动态值。
+2. **记忆卡人类观测窄面**（新 `src/memory/observation.ts` 等）：与给模型的 N14 白名单刻意分开，面向本人在 loopback 阅读，保留卡主表全字段、锚点与线索；隐私红线不退——`sensitive=1` 别名的 `termNorm` 恒脱敏为 `null`，坏 JSON 行降级空数组不整页崩。窄柄经 store→runtime→assembly `observation` 面逐层暴露，窄柄缺失时为 `null`，DI 只绑定不编排；类型锁与反射测试由 8 方法扩到 11 方法。
+3. **活动总线与写入链挂点**（新 `activity-bus.ts`/`observe-stage.ts`）：封闭七枚举 `ingest.turn | closure.drain | summary.drain | memory.drain | loop.error | tool.call | chat.turn`，level 四档；seq 从 1 单调、有界环形缓冲默认 500、`since` 游标、`waitForNext` 长轮询、`dispose` 释放全部等待者；定时器生产态 `unref`（不拖进程退出），测试态关闭 unref 以便断言。观测 stage 是零副作用 ingest stage，只发元数据（通道/tick/经历 id/shard/seq，**无正文**），任何上报异常全吞，绝不把正常摄入变成失败。
+4. **HTTP 观测族与静态托管**（`http-server.ts` 大改，旧路由一行未动）：`/api/*` 与 `/app/*` 同在 Host 白名单之后、共用同一 Bearer 校验；`/api` 只接受 GET，其余方法 405。八个只读端点：`/api/status`、`/api/pulse?after=`（长轮询默认挂 5000ms，断线返回 null 不写死 socket，响应携带 `{seq,activities,snapshot,memory}`）、`/api/raw`、`/api/experiences`、`/api/experiences/:id`、`/api/events`、`/api/events/:id`（`{event,versions}`）、`/api/cards` 与 `/api/cards/:id`（observation=null 时 503 `memory-unavailable`，未知 id 404）、`/api/projection`（edges 硬顶 100）。静态 `/app/*` 经 decode＋normalize＋前缀圈定防路径穿越（含 `%2f`）、后缀白名单、强 CSP＋nosniff＋no-referrer，非白名单/不存在统一 404 不区分存在性。旧 `GET /` 内联页与旧 `/experiences` 路由零破坏保留。
+5. **组合根接线**（`serve.ts`）：Fasti 开门后建总线并注册观测 stage；闭合/投影两个后台节拍加 `onReport` 钩子，**空轮不发活动**（闭合条数与摘要条数分别大于 0 才发 `closure.drain`/`summary.drain`；投影报告经 unknown 防御式读数，`skipped` 非空或四类变更全 0 时静默，有折叠才发 `memory.drain`），节拍失败保留日志并发 `loop.error`；chat 注入 `onToolActivity`，按工具信封 `error` 键判成败发 `tool.call`，只报 `{tool,ok,callId}` 元数据、不含检索词与正文，观测异常全吞且 result 原样回灌模型。`serve()` 返回句柄增补 `port`/`token`（一次性 token 本就打印在本机控制台，返回编程式句柄不扩大暴露面，鉴权纪律不变）。
+6. **静态占位与任务书**：新增 `src/adapters/node/web/` 占位三件套（index.html/styles.css/app.js，全部同源自引、零外链、CSP 合规，待外部 AI 整体替换）；对接任务书 `docs/task158-frontend-handoff-brief.md` 冻结八端点形状、七活动语义、长轮询编排、零构建零外链约束、四需求 DoD 与三关验收。
+
+**二、关停防悬挂的两层防御**
+
+长轮询会让在途连接长期存活。`close()` 先 `bus.dispose()` 让等待者以 null 立即 settle、handler 走正常空响应路径收尾；HTTP 层 `server.close()` 同步 `closeIdleConnections()` 断空闲 keep-alive，并 `setImmediate(closeAllConnections)` 兜底清在途连接（本机只读服务、关停即断，长轮询客户端自带断线自愈，不做在途优雅排空）。顶层路由 `.catch` 兜底保证写已销毁 socket 不会变成 unhandledRejection。
+
+**三、边界与仍冻结项（防夸大，#72 仍不关闭）**
+
+- 本刀全是本机 loopback 只读 GET 观测，不碰 11.13.8 冻结的跨源 CORS/PNA、外网监听/TLS、全局 bin/打包、多通道管理 API、跨进程写者锁；六记忆工具仍只在进程内可见、不 HTTP 化；没有任何写/删/改路由。
+- 显式挂账：①浏览器首屏 token 引导（bootstrap nonce 注入）留批 B，前端约定从 `window.__FASTI_BOOTSTRAP__` 读取，联调期以任务书给定的夹具/调试路径过渡；②`chat.turn` 枚举已留但本刀不发射；③人工 FTS 搜索框第一刀不做，前端不得用本地模糊检索冒充；④前端正式界面与启动动画属批 B，本刀只提供 `/api/status` 真实检查项与 `/app` 托管。
+- 活动总线是**进程内**设施，环形缓冲不跨进程、不落盘；后端重启后脉冲历史清空，客户端凭 `bootId` 变化重置游标并靠分页端点重建历史，任务书已冻结该编排。
+
+**四、测试、变异反证与真机验收**
+
+离线：全量 `npm run verify` **1610/1610 全绿**（双 tsc＋node --test，较最近入库基线 1583 净增 27 条），新增覆盖三检视原语、观测视图脱敏、总线/观测 stage、HTTP 十一组安全与形状子用例、chat 与两节拍回调、以及 `serve-wiring` 组合根装配冒烟。安全门（无 token 401、伪 Host 403、写方法 405、路径穿越 404、observation 缺失 503、分页非法 400）在 HTTP 观测测试中逐条锁死。关键变异反证：关停路径上撤掉 `bus.dispose()` 且无 socket 兜底时，挂起长轮询使 `close()` 实测拖到约 8.9 秒才被断言抓红，补 `closeAllConnections` 兜底后即使缺业务层 dispose 也能在 1 秒内收口（两层各自成立后逐字节还原）；本轮所有红测均先看红再转绿。真机（2026-11-22，独立临时数据根，用后即删）：临时根起服务实测 `/health` 免 token 200、无 token 401、`/app` 三件套 200 且强 CSP/nosniff 齐全、路径穿越 404、八端点 JSON 形状与任务书样例一致、无索引时 cards 503、pulse 无事件 5.0s 干净空返、SIGTERM 走完整优雅关闭日志退出；临时根、采样脚本与日志全部清除，正式数据根与正式服务进程未受触碰。
+
+**五、提交状态**
+
+本节代码与文书截至登记时**均在本地工作区、未 commit**；commit/push 仍按逐次显式授权纪律执行，入库后以实际 commit 号补登。
+
+### 11.13.13 网页观测台批 B：bootstrap nonce 注入与静态面零配置直开（2026-11-22，#158 阶段二同源联调后端前置，本地任务 #159/#160/#161/#162）
+
+本节兑现 11.13.12「三、边界与仍冻结项」显式挂账①浏览器首屏 token 引导（bootstrap nonce 注入），使外部前端在零配置同源下直接打开 `/app` 而不再在拿到 token 之前先撞 401。对接任务书 `docs/task158-frontend-handoff-brief.md` 第 2.1/3.1/3.2/3.3/6.5/7 节同步改口径，正本为唯一权威。
+
+**一、要解开的具体矛盾**
+
+浏览器地址栏直达与 `<script src>`/`<link href>` 这类标签发起的子资源请求，都无法自定义 `Authorization` 请求头；批 A 把 `/app/*` 与 `/api/*` 一同置于 Bearer 墙后，导致零配置打开入口 HTML 时形成"先要有 token 才能打开会给 token 的页面"的死结。一次性 token 本就只打印在本机控制台、不落盘、重启即失效，无法靠用户手工粘贴支撑标签加载。
+
+**二、鉴权口径的一处受控调整（静态墙拆开、数据墙不拆）**
+
+1. **静态面免凭证直开**：`/app`、`/app/`、`/app/index.html` 及其下静态资产不再要求 Bearer，仅接受 GET（非 GET 仍 405），`webRoot=null` 仍 404。静态前端是不含任何秘密的公开代码（无密钥、无数据、无通道正文），匿名可读不构成机密性损失。
+2. **数据墙分毫不动**：`/api/*` 只读族与 `/chat`、`/channels/:id/turns`、`/experiences` 全部写路由维持 `tokenMatches`＋`timingSafeEqual` 的 Bearer 校验，无 token 一律 401；所有真实记忆数据仍只在鉴权墙后。
+3. **其余安全门一道不撤**：Host 白名单（`localhost`/`127.0.0.1`/`[::1]`/`::1`，伪 Host 403）仍最先执行且对免凭证静态面同样生效；九种后缀白名单、decode＋normalize＋webRoot 前缀圈定（含 `%2f` 编码穿越）、非白名单/不存在统一 404 不区分存在性、nosniff/no-referrer 全部保留。
+
+**三、bootstrap 注入与 nonce 机制（唯一的内联脚本例外）**
+
+1. **仅入口 HTML 注入**：只有扩展名 `.html` 的响应在返回前注入一段内联引导脚本，形态 `<script nonce="N">window.__FASTI_BOOTSTRAP__={"token":...,"bootId":...,"channel":...};</script>`，字段与任务书 3.2 冻结的前端契约逐字一致；前端从该全局读取一次性 token 后，用统一 `apiFetch` 封装给 `/api` 请求附 `Authorization`，引导缺失时走显式错误态而非白屏。
+2. **每响应随机 nonce、CSP 精确放行**：每个 HTML 响应现场用 `randomBytes(16)` 生成 base64url nonce，该响应 CSP 的 `script-src` 由静态资产的 `'self'` 收紧为 `'self' 'nonce-N'`（`style-src` 仍只 `'self'`，不放开 inline style），内联标签 nonce 与 CSP nonce 必须同值，由契约测试锁死，nonce 不跨响应复用。
+3. **非 HTML 资产零改写**：`.js/.mjs/.css/.svg/.png/.ico/.woff2/.json` 字节原样返回、不注入任何内容，其 CSP 维持严格 `script-src 'self'`、**不带 nonce**，不在可缓存静态资源上平白增加内联许可。
+4. **注入位置兜底**：优先插在首个 `</head>` 之前；无 head 闭合时退而插在首个 `<body...>` 之后；再退化为整体前置，保证任何合规 HTML 都能在解析早期拿到引导而不破坏文档。
+5. **注入值转义防护**：payload 先经 `JSON.stringify`，再对 `<`、`>`、`&` 及 U+2028/U+2029 做 Unicode 转义（`<`→`\u003c`、`>`→`\u003e`、`&`→`\u0026`，两个行分隔符同法转义），杜绝 channel/bootId 中的 `</script>` 提前闭合或行分隔符断开脚本；转义只影响脚本字面量，前端 `JSON.parse` 后原值无损。
+
+**四、为什么这样不削弱安全（威胁模型论证）**
+
+- 威胁模型与批 A 早已存在的免 token `GET /` 内联演示页**同源同构**：本仓从批 A 起就把一次性 token 内联进本机可匿名打开的入口页，批 B 只是把同一信任边界从演示页正式赋予 `/app` 入口，未引入新的暴露面类型。
+- 服务**不发任何 CORS 响应头、只绑 loopback**；跨源恶意页面在同源策略下读不到 `/app/index.html` 的响应体（跨源 fetch 被 SOP 拦截、标签导航拿不到 DOM 与脚本执行环境），因而读不到内联 token；能读到该 body 的只有同源前端代码本身，而它本就被允许代表本机用户访问同源 `/api`。
+- token 仍是 32 字节随机、重启即失效、不落盘的一次性凭证；nonce 令"万一存在注入点"也无法执行攻击者预置的无 nonce 脚本，`default-src 'none'`＋`frame-ancestors 'none'`＋`base-uri 'none'` 使入口不被嵌套、不加载任何第三方源，纵深防御不变。
+- 静态代码无机密性，故免鉴权可读 HTML/JS/CSS 不泄漏任何受 Bearer 保护的数据；机密性边界从"整个 `/app` 都要 token"精确收敛为"只有携带数据的 `/api` 与写路由要 token"，与浏览器真实能力对齐。
+
+**五、边界与仍冻结项**
+
+- 本节只调整 loopback 同源静态面的读取鉴权与入口注入，仍不碰 11.13.8/11.13.12 冻结的跨源 CORS/PNA、外网监听/TLS、全局 bin/打包、多通道管理 API、跨进程写者锁；不新增任何写/删/改路由，`chat.turn` 仍预留不发射。
+- 架构门 `node-adapter-boundary` 规则 4 只要求 Host 校验（forbidden-host）字符串位置先于 token 校验（unauthorized）并保留 `ALLOWED_HOSTS`/`timingSafeEqual`/`'Bearer '` 符号，不硬锁 `/app` 必须 401；改造后首个 unauthorized 仍位于 `/api` 块、先后顺序不变，该门实跑保持通过。
+- 挂账①于本节兑现销项；批 A 其余挂账（`chat.turn` 不发射、人工 FTS 不做、启动动画与正式前端界面）维持原状，外部前端回交 `web/` 后仍由本仓执行验收三关。
+
+**六、测试、变异反证与真机验收**
+
+离线：全量 `npm run verify` **1612/1612 全绿**（双 tsc＋node:test，较批 A 基线 1610 净增 2 条：新增入口 bootstrap/nonce 契约子用例与一条独立的恶意 channel 转义顶层用例；原静态安全用例改写为免凭证口径，数量不重复计）。锁死的关键断言：入口 body 含 `window.__FASTI_BOOTSTRAP__` 且内联标签 nonce 与同响应 CSP nonce 同值、CSP 在 nonce 外保留 `'self'`；非 HTML 资产 CSP 不带 nonce 且字节不被注入；恶意 channel（`</script><img onerror=...>`）响应中无 `<img`、`</script>` 仅引导脚本自身一个、危险尖括号以 `\u003c` 形态存在且 `JSON.parse` 后 channel 原值无损；`/api/status` 无 token 仍 401；架构门规则 4 全绿。红测纪律不变，先看红再转绿。
+真机（2026-11-22，独立临时数据根，用后即删）：临时根起服务实测九项——`/health`、`/app/index.html`、`/app/app.js`、`/app/styles.css` 免 token 均 200；`/api/status` 无 token 401、带本次 token 200；伪造 `Host: evil.example` 打 `/app` 403；`%2f` 编码穿越与非白名单 `.txt` 均 404；入口内联脚本三字段齐全，HTML 响应 CSP 带该次随机 nonce 且保留 self，app.js CSP 严格 `script-src 'self'` 无 nonce（两次独立请求 nonce 不同，印证每响应随机、不跨响应复用）。临时根、探针脚本与日志全部清除，正式数据根 `/home/user/.dsh/fasti` 与正式服务进程未受触碰。
+
+**七、提交状态**
+
+本节代码、测试与文书截至登记时**均在本地工作区、未 commit**（与批 A 改动同处一个未提交工作区）；commit/push 仍按逐次显式授权、显式文件名 `git add` 纪律执行，入库后以实际 commit 号补登。
 
 ---
 
