@@ -52,4 +52,10 @@ export {
   type HostModelSelection,
 } from './host-model-route.ts';
 
+export {
+  DSH_COMPLETE_PROMPT,
+  DSH_COMPLETE_SECTION_NAME,
+  DSH_COMPLETE_SECTION_ORDER,
+} from './complete-prompt.ts';
+
 export { default } from './plugin.ts';

@@ -7,3 +7,4 @@ export * from './channel.ts';
 export * from './primitives.ts';
 export * from './event-primitives.ts';
 export * from './frozen-surface.ts';
+export * from './system-prompts.ts';

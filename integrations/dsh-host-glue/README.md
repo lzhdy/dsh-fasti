@@ -5,10 +5,13 @@ dsh-fasti 的宿主 LLM 胶水包，只用于 **web profile**（有凭据的交�
 ## 它做什么
 
 宿主的 LLM 运行时（`ctx.llm`）与 dsh-fasti 内核只认的 `DshModelRoute.complete()`
-之间本来没有接线，导致事件闭合后摘要一直 `pending`。本包在两个 cordis 服务
-（`llm`、`agentDefaultModel`）就绪后，用仓库出厂的 `createDshHostModelRoute()`
+之间本来没有接线，导致事件闭合后摘要一直 `pending`。本包在三个 cordis 服务
+（`llm`、`agentDefaultModel`、`systemPrompt`）就绪后，用仓库出厂的 `createDshHostModelRoute()`
 构造路由，再带着它装载 dsh-fasti 适配器。
 
+- 同时向 `systemPrompt` 注册内核冻结的 **complete 段**（`complete: true`，#154）：宿主装配
+  系统提示词时只保留这一段（工具 schemas 与运行时快照不受影响），替换宿主自带的身份句与
+  工具纪律段；文案常量在内核 `adapters/dsh/complete-prompt.ts` 及其冻结测试里锁定，本包不持文案。
 - 不含任何密钥、端点或提供方假设：云端账号、API key、本地 OpenAI 兼容网关
   （dsh-llm-pi-ai 手工声明路由）都走宿主统一分发，本包与提供方无关。
 - headless profile 不挂本包，继续保持无凭据的如实降级。

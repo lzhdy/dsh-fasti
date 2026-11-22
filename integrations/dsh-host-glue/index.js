@@ -1,10 +1,15 @@
 /**
  * dsh-fasti 宿主 LLM 胶水包（web profile 专用）。
  *
- * 职责只有一件事：等宿主的 llm / agentDefaultModel 两个服务就绪后，
- * 用仓库出厂的 createDshHostModelRoute 把 ctx.llm 包成 DshModelRoute，
- * 再带着它装载 dsh-fasti 适配器插件。内核与适配器逻辑全部在仓库内，
- * 本包不含业务逻辑、不碰凭据、不硬编码端点。
+ * 职责两件事：
+ *  1. 等宿主的 llm / agentDefaultModel / systemPrompt 三个服务就绪后，用仓库出厂的
+ *     createDshHostModelRoute 把 ctx.llm 包成 DshModelRoute，再带着它装载 dsh-fasti
+ *     适配器插件；
+ *  2. 向宿主 systemPrompt 注册内核冻结的 complete 段（#154）：complete:true 使宿主
+ *     装配时只保留这一段 system section（工具 schemas/runtime context 不受影响），
+ *     替换掉宿主内置的身份句与工具纪律段。文案常量在内核冻结测试里锁定，本包不持文案。
+ *
+ * 内核与适配器逻辑全部在仓库内，本包不含业务逻辑、不碰凭据、不硬编码端点。
  *
  * 内核编译产物定位（可移植，2026-11-18 修）：按序尝试三个候选，全部失败即抛错并
  * 列出已试路径与修复指引，绝不静默降级。此前本行写死某台机器的绝对路径，导致
@@ -44,7 +49,13 @@ async function loadKernel() {
   );
 }
 
-const { default: fastiPlugin, createDshHostModelRoute } = await loadKernel();
+const {
+  default: fastiPlugin,
+  createDshHostModelRoute,
+  DSH_COMPLETE_PROMPT,
+  DSH_COMPLETE_SECTION_NAME,
+  DSH_COMPLETE_SECTION_ORDER,
+} = await loadKernel();
 
 /** 固定摘要路由允许显式给出的键（其余键一律不透传）。 */
 const PINNED_ROUTE_KEYS = ['provider', 'model', 'reasoningEffort'];
@@ -90,13 +101,22 @@ function apply(ctx, rawConfig) {
     }
   }
 
+  // #154：注册唯一 complete section 替换宿主内置系统段落。section() 返回 effect
+  // disposer，随本插件作用域自动撤销；宿主对多个 complete 段会直接抛错，全机仅此一处注册。
+  ctx.systemPrompt.section({
+    name: DSH_COMPLETE_SECTION_NAME,
+    order: DSH_COMPLETE_SECTION_ORDER,
+    text: DSH_COMPLETE_PROMPT,
+    complete: true,
+  });
+
   ctx.plugin(fastiPlugin, { ...forwarded, modelRoute });
 }
 
-/** 对象插件：inject 保证装载时两个宿主服务已注册。 */
+/** 对象插件：inject 保证装载时三个宿主服务已注册。 */
 const plugin = {
   name: 'dsh-fasti-dsh-glue',
-  inject: ['llm', 'agentDefaultModel'],
+  inject: ['llm', 'agentDefaultModel', 'systemPrompt'],
   apply,
 };
 
