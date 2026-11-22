@@ -125,9 +125,10 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
 
   const gatedSearch = defineTool({
     name: MEMORY_TOOL_NAMES.gatedSearch,
+    // 描述只讲模式无关的稳定能力（#153）：门档位（on/shadow/off）是内部机制，不写进给模型的话术；
+    // 是否有候选以实际信封为准，描述里自称“不可用”会让模型在 on 态也放弃调用。
     description:
-      'Search long-term memory with a keyword under the correctness gate. Returns gated candidates with private serial numbers; pass the serials to the resolve tool to pin card ids. '
-      + '观测期检索不可用：影子试运行（shadow）态本工具恒定返回 observing 空信封，不产出任何候选，仅内部记录无原文观测。',
+      'Search long-term memory with a keyword under the correctness gate. Returns gated candidates with private serial numbers; pass the serials to the resolve tool to pin card ids.',
     parameters: {
       text: { type: 'string', required: true, description: 'Search keyword or phrase.' },
       limit: { type: 'number', description: 'Optional maximum number of candidates.' },

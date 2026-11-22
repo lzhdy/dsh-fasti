@@ -433,7 +433,7 @@ for (const mode of ['shadow', 'on'] as MemoryGateMode[]) {
   });
 }
 
-test('WP4b 接线：shadow 态检索工具恒定回 observing 空信封（无 source 键），description 明示观测期不可用', async () => {
+test('WP4b 接线：shadow 态检索工具恒定回 observing 空信封（无 source 键）；工具描述只讲能力、不暴露门档位', async () => {
   const root = makeTempRoot('wp4b-wire-shadow-observing-');
   try {
     const fake = makeFakeRegistry();
@@ -446,10 +446,16 @@ test('WP4b 接线：shadow 态检索工具恒定回 observing 空信封（无 so
     });
     assert.equal(wiring.registered, true);
     const search = fake.definitions.find((d) => d.name === MEMORY_TOOL_NAMES.gatedSearch) as ToolDefinition;
-    assert.ok(
-      String(search.description).includes('观测期检索不可用'),
-      '工具 description 必须显式声明观测期检索不可用（设计正本 7.2）',
-    );
+    // 描述是模式无关的能力说明（#153）：门档位（shadow/observing）属内部机制，不得写进给模型的话术，
+    // 否则 on 态模型读到“恒定返回空信封”会放弃调用；模型只凭实际返回判断有无候选。
+    const desc = String(search.description);
+    assert.ok(desc.includes('Search long-term memory'), '工具 description 必须声明检索能力');
+    for (const banned of ['观测期', '不可用', '影子', 'shadow', 'observing']) {
+      assert.ok(
+        !desc.toLowerCase().includes(banned.toLowerCase()),
+        `工具 description 不得暴露内部门档位/自我否定词：${banned}`,
+      );
+    }
     const result = await callTool(search, { text: '任意词' });
     assert.equal(result.ok, true);
     const data = result.data as { status: string; cards: unknown[] };

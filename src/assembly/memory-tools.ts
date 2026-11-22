@@ -186,7 +186,7 @@ function toGateView(outcome: GatedSearchOutcome, atMs: number): GatedSearchView 
 
 /**
  * shadow 态对外空信封（7.2 形状定死）：observing + 空卡 + 空序号表；
- * 不携带 source 键或任何候选，reason 留空（观测期检索不可用由工具 description 显式声明）。
+ * 不携带 source 键或任何候选，reason 留空。门档位不写进工具 description（#153），模型只凭信封判读。
  */
 function observingView(): GatedSearchView {
   return { status: 'observing', cards: [], candidateTotal: 0, serialMap: new Map<number, string>() };
