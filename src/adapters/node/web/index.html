@@ -1,17 +1,50 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>FasTI 本地观测台</title>
-    <!-- CSP 禁内联样式与脚本：样式/逻辑必须走同源独立文件，零外链零 CDN。 -->
-    <link rel="stylesheet" href="/app/styles.css" />
-  </head>
-  <body>
-    <main id="app">
-      <h1>FasTI 本地观测台</h1>
-      <p id="boot-note">前端骨架占位中（批 A 后端观测面已就绪，正式界面由批 B 交付）。</p>
-    </main>
-    <script type="module" src="/app/app.js"></script>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>FasTI 观测台</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- 主控制台外壳：启动序列完成后才显示 -->
+  <div id="app" hidden>
+    <header id="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div class="brand-text">
+          <b>FasTI 观测台</b>
+          <span>本机记忆内核 · 只读观测</span>
+        </div>
+      </div>
+      <div id="topbar-status" class="topbar-status"></div>
+    </header>
+
+    <div id="status-strip" class="strip" aria-label="内核运行指标"></div>
+
+    <div id="alert-strip" class="alert-strip" hidden></div>
+
+    <nav id="nav" aria-label="数据域导航"></nav>
+
+    <main id="main" tabindex="-1"></main>
+  </div>
+
+  <!-- 详情抽屉（右侧滑出） -->
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <aside id="drawer" class="drawer" aria-label="详情面板">
+    <header class="drawer-head">
+      <h2 id="drawer-title">详情</h2>
+      <button id="drawer-close" class="icon-btn" type="button" aria-label="关闭详情面板"></button>
+    </header>
+    <div id="drawer-body" class="drawer-body"></div>
+  </aside>
+
+  <!-- 启动序列 / 断连恢复 等全屏覆盖层 -->
+  <div id="overlay-root"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
 </html>
