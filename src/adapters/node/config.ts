@@ -19,6 +19,11 @@ export interface ServeConfig {
   readonly openaiModel: string | undefined;
   /** 模型密钥。 */
   readonly openaiApiKey: string | undefined;
+  /**
+   * 可选推理档位（#154，环境变量 OPENAI_REASONING_EFFORT）：透传为请求体 reasoning_effort。
+   * 缺省/空白 = undefined，两端口都不发该键（吃模型端点默认档）。
+   */
+  readonly openaiReasoningEffort: string | undefined;
 }
 
 const DEFAULT_PORT = 8731;
@@ -48,5 +53,6 @@ export function readServeConfig(env: NodeJS.ProcessEnv = process.env): ServeConf
     openaiBaseURL: env['OPENAI_BASE_URL']?.trim() || undefined,
     openaiModel: env['OPENAI_MODEL']?.trim() || undefined,
     openaiApiKey: env['OPENAI_API_KEY']?.trim() || undefined,
+    openaiReasoningEffort: env['OPENAI_REASONING_EFFORT']?.trim() || undefined,
   };
 }

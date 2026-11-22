@@ -58,6 +58,9 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
           baseURL: config.openaiBaseURL,
           model: config.openaiModel,
           apiKey: config.openaiApiKey,
+          ...(config.openaiReasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: config.openaiReasoningEffort }),
         })
       : null;
 
@@ -68,6 +71,9 @@ export async function serve(config: ServeConfig): Promise<{ url: string; close()
           baseURL: config.openaiBaseURL,
           model: config.openaiModel,
           apiKey: config.openaiApiKey,
+          ...(config.openaiReasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: config.openaiReasoningEffort }),
         })
       : null;
 

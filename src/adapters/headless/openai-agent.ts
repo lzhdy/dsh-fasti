@@ -5,7 +5,9 @@
  * 承担；dsh 拿掉后由本客户端在 node 身体内自跑，且不依赖任何宿主包。
  *
  * 安全纪律（与 openai-llm 同源，共享 openai-wire）：
- *  - 请求体恒为 {model, messages, tools} 三键，不发 tool_choice（缺省 auto）与任何采样参数；
+ *  - 请求体缺省恒为 {model, messages, tools} 三键，不发 tool_choice（缺省 auto）与温度等采样参数；
+ *    唯一可选第四键是 reasoning_effort（#154）：显式配置 reasoningEffort 才发出，每轮请求都带，
+ *    字符串原样透传、不配置则零漂移，合法取值由端点模型能力决定；
  *  - 只认 OpenAI function 形状（type 恒 'function'），工具执行体由调用方注入，本模块不内置
  *    任何业务工具，也不知道记忆门/真源的存在；
  *  - 工具轮次硬顶 MAX_AGENT_TOOL_ROUNDS：防模型陷入工具死循环烧 token，超限归一
@@ -79,6 +81,11 @@ export interface OpenAIAgentClientOptions {
   readonly baseURL: string;
   readonly model: string;
   readonly apiKey?: string | undefined;
+  /**
+   * 可选推理档位（#154）：透传为每轮请求体的 `reasoning_effort` 字符串。
+   * 省略即不发该键（吃端点默认档，请求体保持三键零漂移）；合法取值由端点决定。
+   */
+  readonly reasoningEffort?: string | undefined;
   readonly timeoutMs?: number | undefined;
   readonly fetchImpl?: FetchLike | undefined;
 }
@@ -159,6 +166,8 @@ export function createOpenAIAgentClient(options: OpenAIAgentClientOptions): Open
   const timeoutMs = options.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
   const fetchImpl = options.fetchImpl ?? resolveGlobalFetch();
   const headers = buildCommonHeaders(options.apiKey);
+  // 仅当显式配置时携带推理档；空白与 undefined 都不产出该键，保持未配置时的三键零漂移。
+  const reasoningEffort = options.reasoningEffort?.trim();
 
   return {
     modelName: model,
@@ -192,7 +201,13 @@ export function createOpenAIAgentClient(options: OpenAIAgentClientOptions): Open
       let toolRounds = 0;
 
       while (true) {
-        const body = { model, messages: convo, tools: wireTools };
+        // body 在循环内构造：每一轮工具回灌后都重新携带同一组键（含可选 reasoning_effort）。
+        const body = {
+          model,
+          messages: convo,
+          tools: wireTools,
+          ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        };
         const init: HttpRequestInit = { method: 'POST', headers, body: JSON.stringify(body) };
         const call = (signal: AbortSignal): Promise<MinimalHttpResponse> => fetchImpl(endpoint, { ...init, signal });
 

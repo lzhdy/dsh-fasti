@@ -76,12 +76,31 @@ test('请求装配：POST 到归一化后的 /chat/completions，带 Bearer 鉴�
   assert.equal(init.method, 'POST');
   assert.equal(init.headers['content-type'], 'application/json');
   assert.equal(init.headers['authorization'], 'Bearer sk-secret');
-  const body = JSON.parse(init.body) as { model: string; messages: Array<{ role: string; content: string }> };
+  const body = JSON.parse(init.body) as {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+  };
   assert.equal(body.model, 'default-model');
   assert.deepEqual(body.messages, [
     { role: 'system', content: REQ.system },
     { role: 'user', content: REQ.user },
   ]);
+  assert.ok(!('reasoning_effort' in body), '未配置 reasoningEffort 时零漂移：请求体不含 reasoning_effort');
+});
+
+test('请求装配：reasoningEffort 可选项配置后以 reasoning_effort 原样入 body（字符串透传，不做别名转换）', async () => {
+  const captured: Captured[] = [];
+  const port = createOpenAICompatLLMPort({
+    baseURL: 'https://api.example.com/v1',
+    model: 'default-model',
+    reasoningEffort: 'high',
+    fetchImpl: stubFetch(chatSuccess(SUMMARY_TEXT), captured),
+  });
+
+  await port.summarize(REQ);
+
+  const body = JSON.parse(captured[0]!.init.body) as Record<string, unknown>;
+  assert.equal(body['reasoning_effort'], 'high');
 });
 
 test('请求装配：单次 request.model 覆盖默认模型', async () => {

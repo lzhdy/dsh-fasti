@@ -7,7 +7,10 @@
  *  - 本地部署（Ollama / vLLM / LM Studio 等）：填本地网关 baseURL + model，无密钥就省略 apiKey。
  *
  * 设计纪律（与 dsh 端口对齐，不另造一套）：
- *  - 不硬编码温度 / maxTokens 等采样参数（YAGNI），body 只发 model + 两条消息；
+ *  - 不硬编码温度 / maxTokens 等采样参数（YAGNI）；唯一例外是显式可选的 `reasoningEffort`
+ *    （#154，与 dsh 同语义：不配置零漂移，配置了才发 OpenAI 协议键 `reasoning_effort`，
+ *    字符串原样透传，合法取值由端点模型能力决定，本端口不做别名转换或静默裁剪），
+ *    body 只发 model + 两条消息（+可选 reasoning_effort）；
  *  - 超时与取消复用 `withDeadline`：有上级 signal 原样透传，没有就用 timeoutMs 兜底；
  *  - 传输失败 / abort / 非 2xx / 信封残缺 / 正文非法，统一归一为 `UnavailableError`，
  *    序号线错误（AnchorSerialWireError）原样上抛；错误信息不回显鉴权头，避免泄密钥；
@@ -50,6 +53,11 @@ export interface OpenAICompatLLMPortOptions {
   readonly model: string;
   /** API 密钥；本地无鉴权网关可省略，省略即不发送 Authorization 头。 */
   readonly apiKey?: string | undefined;
+  /**
+   * 可选推理档位（#154）：透传为 OpenAI 请求体 `reasoning_effort` 字符串。
+   * 省略即不发该键（吃端点默认档，请求体与历史行为逐字节一致）；合法取值由端点决定。
+   */
+  readonly reasoningEffort?: string | undefined;
   /** 无上级 signal 时的自带兜底超时（毫秒），默认同闭合管线预算。 */
   readonly timeoutMs?: number | undefined;
   /** 注入 HTTP 客户端；缺省使用全局 fetch。 */
@@ -64,6 +72,7 @@ interface ChatMessage {
 interface ChatCompletionRequestBody {
   model: string;
   messages: ChatMessage[];
+  reasoning_effort?: string;
 }
 
 /** 构造一个走 OpenAI 兼容 HTTP 端点的摘要端口（云端 / 本地同构，只差配置）。 */
@@ -80,6 +89,8 @@ export function createOpenAICompatLLMPort(options: OpenAICompatLLMPortOptions): 
   const endpoint = endpointOf(baseURL);
   const timeoutMs = options.timeoutMs ?? DEFAULT_CLOSURE_CALL_TIMEOUT_MS;
   const fetchImpl = options.fetchImpl ?? resolveGlobalFetch();
+  // 仅当显式配置时携带推理档；undefined 不产出该键，保持未配置时的零漂移。
+  const reasoningEffort = options.reasoningEffort?.trim();
 
   const headers = buildCommonHeaders(options.apiKey);
 
@@ -96,6 +107,7 @@ export function createOpenAICompatLLMPort(options: OpenAICompatLLMPortOptions): 
           { role: 'system', content: request.system },
           { role: 'user', content: request.user },
         ],
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       };
       const baseInit: HttpRequestInit = { method: 'POST', headers, body: JSON.stringify(body) };
       const call = (signal: AbortSignal): Promise<MinimalHttpResponse> =>

@@ -117,6 +117,7 @@ test('请求装配：tools 按 OpenAI function 形状发出，请求体恰好三
   assert.equal(body['model'], MODEL);
   assert.ok(!('tool_choice' in body), '不硬编码 tool_choice，缺省即 auto');
   assert.ok(!('temperature' in body) && !('max_tokens' in body), '不发采样参数');
+  assert.ok(!('reasoning_effort' in body), '未配置 reasoningEffort 时零漂移：请求体不含 reasoning_effort');
   const wireTools = body['tools'] as Array<Record<string, unknown>>;
   assert.equal(wireTools.length, 2);
   assert.deepEqual(Object.keys(wireTools[0]!).sort(), ['function', 'type']);
@@ -126,6 +127,23 @@ test('请求装配：tools 按 OpenAI function 形状发出，请求体恰好三
   assert.equal(fn['description'], TOOLS[0]!.description);
   assert.deepEqual(fn['parameters'], TOOLS[0]!.parameters);
   assert.equal(captured[0]!.headers['authorization'], undefined, '无 key 不发 Authorization');
+});
+
+test('请求装配：reasoningEffort 可选项配置后每轮请求都带 reasoning_effort，取值原样透传', async () => {
+  const captured: HttpRequestInit[] = [];
+  const client = createOpenAIAgentClient({
+    baseURL: 'http://127.0.0.1:9999/v1',
+    model: MODEL,
+    reasoningEffort: 'high',
+    fetchImpl: scriptedFetch([textResponse('最终回答')], captured),
+  });
+
+  await client.run({ messages: SEED_MESSAGES, tools: TOOLS, execute: async () => '{}' });
+
+  assert.equal(captured.length, 1);
+  const body = JSON.parse(captured[0]!.body) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), ['messages', 'model', 'reasoning_effort', 'tools']);
+  assert.equal(body['reasoning_effort'], 'high');
 });
 
 test('单工具往返：执行器收到原始参数，assistant(tool_calls) 与 tool 结果按序回灌', async () => {
