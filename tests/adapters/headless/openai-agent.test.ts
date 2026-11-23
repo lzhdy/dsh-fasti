@@ -319,36 +319,49 @@ test('工具轮次硬顶：连续 tool_calls 超过 5 轮即抛 UnavailableError
 });
 
 test('传输失败/HTTP 5xx/空正文无工具调用 均归一 UnavailableError', async () => {
+  // 瞬态失败（传输 reject、5xx）按默认策略重试 2 次后才归一；这里注入假 sleep 免真实等待。
+  const noSleep = async (): Promise<void> => {};
+
   const networkCapture: HttpRequestInit[] = [];
   const networkClient = createOpenAIAgentClient({
     baseURL: 'http://127.0.0.1:9999/v1',
     model: MODEL,
     fetchImpl: scriptedFetch([], networkCapture, 0),
+    sleepImpl: noSleep,
   });
   await assert.rejects(
     networkClient.run({ messages: SEED_MESSAGES, tools: TOOLS, execute: async () => '{}' }),
     (error: unknown) => error instanceof UnavailableError,
   );
+  assert.equal(networkCapture.length, 3, '瞬态传输失败按 1+2 次用完退避预算后归一');
 
   const httpCapture: HttpRequestInit[] = [];
   const httpClient = createOpenAIAgentClient({
     baseURL: 'http://127.0.0.1:9999/v1',
     model: MODEL,
-    fetchImpl: scriptedFetch([jsonResponse(500, { error: 'boom' })], httpCapture),
+    fetchImpl: scriptedFetch(
+      [jsonResponse(500, { error: 'boom' }), jsonResponse(500, { error: 'boom' }), jsonResponse(500, { error: 'boom' })],
+      httpCapture,
+    ),
+    sleepImpl: noSleep,
   });
   await assert.rejects(
     httpClient.run({ messages: SEED_MESSAGES, tools: TOOLS, execute: async () => '{}' }),
     (error: unknown) => error instanceof UnavailableError,
   );
+  assert.equal(httpCapture.length, 3, '5xx 同样按退避预算重试，用尽后归一');
 
+  // 200 但正文为空：不是瞬态，不重试，一次即归一。
   const emptyCapture: HttpRequestInit[] = [];
   const emptyClient = createOpenAIAgentClient({
     baseURL: 'http://127.0.0.1:9999/v1',
     model: MODEL,
     fetchImpl: scriptedFetch([jsonResponse(200, { choices: [{ message: { role: 'assistant', content: '' } }] })], emptyCapture),
+    sleepImpl: noSleep,
   });
   await assert.rejects(
     emptyClient.run({ messages: SEED_MESSAGES, tools: TOOLS, execute: async () => '{}' }),
     (error: unknown) => error instanceof UnavailableError,
   );
+  assert.equal(emptyCapture.length, 1, '非瞬态的空正文不消耗重试预算');
 });

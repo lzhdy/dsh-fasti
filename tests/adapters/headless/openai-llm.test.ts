@@ -151,22 +151,31 @@ test('失败归一：HTTP 非 2xx 抛 UnavailableError 并带状态码', async (
 });
 
 test('失败归一：传输层抛普通错误与 AbortError 都包成 UnavailableError', async () => {
+  const noSleep = async (): Promise<void> => {};
+  // 普通传输错误（连接被拒）属瞬态：按 1+2 次退避后归一；注入假 sleep 免真实等待。
   const networkError = new Error('ECONNREFUSED');
+  const networkCapture: Captured[] = [];
   const portNetwork = createOpenAICompatLLMPort({
     baseURL: 'https://api.example.com/v1',
     model: 'm',
-    fetchImpl: stubFetch(jsonResponse(500, {}), [], networkError),
+    fetchImpl: stubFetch(jsonResponse(500, {}), networkCapture, networkError),
+    sleepImpl: noSleep,
   });
   await assert.rejects(() => portNetwork.summarize(REQ), UnavailableError);
+  assert.equal(networkCapture.length, 3, '瞬态传输错误用尽退避预算后归一');
 
+  // 中止语义（AbortError）一律不重试：撤了就撤，一次即归一。
   const abortError = new Error('aborted');
   abortError.name = 'AbortError';
+  const abortCapture: Captured[] = [];
   const portAbort = createOpenAICompatLLMPort({
     baseURL: 'https://api.example.com/v1',
     model: 'm',
-    fetchImpl: stubFetch(jsonResponse(500, {}), [], abortError),
+    fetchImpl: stubFetch(jsonResponse(500, {}), abortCapture, abortError),
+    sleepImpl: noSleep,
   });
   await assert.rejects(() => portAbort.summarize(REQ), UnavailableError);
+  assert.equal(abortCapture.length, 1, 'AbortError 不消耗重试预算');
 });
 
 test('失败归一：chat 响应缺 choices / message / 字符串 content 都拒绝', async () => {

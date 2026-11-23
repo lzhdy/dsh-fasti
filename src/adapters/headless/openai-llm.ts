@@ -11,7 +11,9 @@
  *    （#154，与 dsh 同语义：不配置零漂移，配置了才发 OpenAI 协议键 `reasoning_effort`，
  *    字符串原样透传，合法取值由端点模型能力决定，本端口不做别名转换或静默裁剪），
  *    body 只发 model + 两条消息（+可选 reasoning_effort）；
- *  - 超时与取消复用 `withDeadline`：有上级 signal 原样透传，没有就用 timeoutMs 兜底；
+ *  - 超时、取消与瞬态重试复用共享传输件 `requestWithRetry`（内部仍走 `withDeadline`）：
+ *    有上级 signal 原样透传，没有就用 timeoutMs 兜底；429 与瞬时 5xx 在拿到 200 之前
+ *    有限次退避重发同一 body，超时/取消不重试；
  *  - 传输失败 / abort / 非 2xx / 信封残缺 / 正文非法，统一归一为 `UnavailableError`，
  *    序号线错误（AnchorSerialWireError）原样上抛；错误信息不回显鉴权头，避免泄密钥；
  *  - 摘要正文的 strict 解析与 dsh 端口共用 `event/llm-wire-parse.ts`，规则不复制不漂移。
@@ -20,7 +22,6 @@
  * 缺省取全局 fetch（Node 18+/22 内置）。
  */
 
-import { withDeadline } from '../../core/deadline.ts';
 import { UnavailableError } from '../../core/errors.ts';
 import type {
   LLMPort,
@@ -34,11 +35,14 @@ import {
   buildCommonHeaders,
   endpointOf,
   extractAssistantContent,
+  requestWithRetry,
   resolveGlobalFetch,
   toUnavailable,
   type FetchLike,
   type HttpRequestInit,
   type MinimalHttpResponse,
+  type RetryPolicy,
+  type SleepLike,
 } from './openai-wire.ts';
 
 /** 直连端口构造选项；全部为显式配置，不读宿主、不碰全局凭据库。 */
@@ -62,6 +66,13 @@ export interface OpenAICompatLLMPortOptions {
   readonly timeoutMs?: number | undefined;
   /** 注入 HTTP 客户端；缺省使用全局 fetch。 */
   readonly fetchImpl?: FetchLike | undefined;
+  /**
+   * 瞬态失败退避策略（429 与瞬时 5xx 单请求级重试）；省略用 DEFAULT_RETRY_POLICY。
+   * 与对话 agent 共用同一份传输规则（openai-wire），不另造一套。
+   */
+  readonly retryPolicy?: RetryPolicy | undefined;
+  /** 退避等待面：生产用 defaultSleep，红测注入假 sleep 保证确定性。 */
+  readonly sleepImpl?: SleepLike | undefined;
 }
 
 interface ChatMessage {
@@ -93,6 +104,8 @@ export function createOpenAICompatLLMPort(options: OpenAICompatLLMPortOptions): 
   const reasoningEffort = options.reasoningEffort?.trim();
 
   const headers = buildCommonHeaders(options.apiKey);
+  const retryPolicy = options.retryPolicy;
+  const sleepImpl = options.sleepImpl;
 
   return {
     async summarize(
@@ -115,14 +128,18 @@ export function createOpenAICompatLLMPort(options: OpenAICompatLLMPortOptions): 
 
       let response: MinimalHttpResponse;
       try {
-        // 与 dsh 端口同一套超时纪律：上级管着时限就只透传，否则自带兜底，绝不无限等。
-        response =
-          external === undefined
-            ? await withDeadline(timeoutMs, call, {
-                timeoutError: () =>
-                  new UnavailableError(`直连模型请求超时（>${timeoutMs}ms 未返回，已中断）：${endpoint}`),
-              })
-            : await call(external);
+        // 与对话 agent 共用同一份瞬态退避规则：拿到 200 之前有限次重发同一 body，超时/取消不重试。
+        response = await requestWithRetry({
+          send: call,
+          timeoutMs,
+          timeoutError: () =>
+            new UnavailableError(`直连模型请求超时（>${timeoutMs}ms 未返回，已中断）：${endpoint}`),
+          ...(external === undefined ? {} : { signal: external }),
+          retry: {
+            ...(retryPolicy === undefined ? {} : { policy: retryPolicy }),
+            ...(sleepImpl === undefined ? {} : { sleep: sleepImpl }),
+          },
+        });
       } catch (error) {
         if (external?.aborted === true) {
           throw new UnavailableError('直连模型请求被中止（未返回结果）', { cause: error });

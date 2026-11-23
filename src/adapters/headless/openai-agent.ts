@@ -18,16 +18,18 @@
  *  - 无 key 不发 Authorization，传输/信封失败一律 UnavailableError。
  */
 
-import { withDeadline } from '../../core/deadline.ts';
 import { UnavailableError } from '../../core/errors.ts';
 import {
   buildCommonHeaders,
   endpointOf,
+  requestWithRetry,
   resolveGlobalFetch,
   toUnavailable,
   type FetchLike,
   type HttpRequestInit,
   type MinimalHttpResponse,
+  type RetryPolicy,
+  type SleepLike,
 } from './openai-wire.ts';
 
 /** 自带兜底超时（毫秒），每次模型 HTTP 调用独立计时。 */
@@ -88,6 +90,13 @@ export interface OpenAIAgentClientOptions {
   readonly reasoningEffort?: string | undefined;
   readonly timeoutMs?: number | undefined;
   readonly fetchImpl?: FetchLike | undefined;
+  /**
+   * 瞬态失败退避策略（429 与瞬时 5xx 单请求级重试）；省略用 DEFAULT_RETRY_POLICY。
+   * 只在拿到 200 之前重发字节完全相同的同一请求体，退避够不到工具执行器。
+   */
+  readonly retryPolicy?: RetryPolicy | undefined;
+  /** 退避等待面：生产用 defaultSleep，红测注入假 sleep 保证确定性。 */
+  readonly sleepImpl?: SleepLike | undefined;
 }
 
 // ── 线协议内部形状（不对外导出，出了本文件都经 JSON 序列化）──
@@ -168,6 +177,8 @@ export function createOpenAIAgentClient(options: OpenAIAgentClientOptions): Open
   const headers = buildCommonHeaders(options.apiKey);
   // 仅当显式配置时携带推理档；空白与 undefined 都不产出该键，保持未配置时的三键零漂移。
   const reasoningEffort = options.reasoningEffort?.trim();
+  const retryPolicy = options.retryPolicy;
+  const sleepImpl = options.sleepImpl;
 
   return {
     modelName: model,
@@ -213,13 +224,18 @@ export function createOpenAIAgentClient(options: OpenAIAgentClientOptions): Open
 
         let response: MinimalHttpResponse;
         try {
-          response =
-            external === undefined
-              ? await withDeadline(timeoutMs, call, {
-                  timeoutError: () =>
-                    new UnavailableError(`agent 模型请求超时（>${timeoutMs}ms 未返回，已中断）：${endpoint}`),
-                })
-              : await call(external);
+          // 单请求级瞬态退避：只在拿到 200 之前重发同一 body；超时/取消不重试。
+          response = await requestWithRetry({
+            send: call,
+            timeoutMs,
+            timeoutError: () =>
+              new UnavailableError(`agent 模型请求超时（>${timeoutMs}ms 未返回，已中断）：${endpoint}`),
+            ...(external === undefined ? {} : { signal: external }),
+            retry: {
+              ...(retryPolicy === undefined ? {} : { policy: retryPolicy }),
+              ...(sleepImpl === undefined ? {} : { sleep: sleepImpl }),
+            },
+          });
         } catch (error) {
           if (external?.aborted === true) {
             throw new UnavailableError('agent 模型请求被中止（未返回结果）', { cause: error });
