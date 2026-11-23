@@ -2182,7 +2182,7 @@ SQLite 规定六张表（`src/memory/schema.ts`）：
 | 事项 | 归属 | 说明 |
 |---|---|---|
 | 两阶段遗忘、`trash/` 与 tombstone 落地 | **既有 #95** | 卡面已含 30／180 天口径，11.13.4 为其细化；动工前先订正 ADR-4/6 |
-| 平台独立化契约重议（R1 删除、目录去宿主化）、能力端口抽象（LLM／embedding／storage／clock）、跨进程写者锁、宿主无关启动器、真源迁移脚本规范 | **既有 #72**（方向已立宪，施工解冻门待主控拍板） | #72 台账原口径"挂起勿擅启，只在 C 线首期跑通后重议"与 11.13 已立宪的方向存在张力，**未拍板前不得据 11.13 直接开工** ｜【2026-11-21 补】其中目录去宿主化、LLM 与五个装配作用域端口、参考适配器薄壳化、内核独立运行核验子集已落地，部分履约登记见 11.13.7；【2026-11-21 再补】宿主无关启动器第一刀（单机 loopback 同源 HTTP＋零网络冒烟，不含跨源/外网/多实例）已落地，见 11.13.8，跨进程锁等其余子项继续按本行冻结；【2026-11-21 三补】node 身体直连模型纯聊天回路（零工具第一刀，记忆门在 node 身体固定 on 的拍板口径见该节三）已落地，见 11.13.9；【2026-11-21 四补】对话第二刀（node 记忆工具宿主＋投影 worker＋function-calling 回路，六工具进程内化、不开放 HTTP 面）已落地，见 11.13.10，跨源/外网/TLS/跨进程锁等其余子项继续按本行冻结；【2026-11-22 五补】网页观测台批 A（loopback 只读 GET 观测面＋进程内活动总线长轮询＋/app 静态托管，无写路由、无跨源/外网）已本地落地待授权提交，见 11.13.12，跨源/外网/TLS/跨进程锁/六工具 HTTP 化继续按本行冻结；【2026-11-22 六补】网页观测台批 B（/app 静态面免 Bearer 直开＋入口 HTML 每响应 nonce 注入一次性 token 引导、/api 与写路由 Bearer 401 分毫不动、不发 CORS 仅绑 loopback，浏览器零配置同源首屏打通）已本地落地待授权提交，见 11.13.13，跨源/外网/TLS/跨进程锁/六工具 HTTP 化继续按本行冻结；【2026-11-22 七补】网页观测台正式前端（零构建零依赖零外链原生 ESM 单页控制台，`src/adapters/node/web/` 24 文件）经三关验收通过并入库 `c5e58b6`，见 11.13.14，#156/#158 关闭、后端零改动；【2026-11-24 八补】headless 瞬态失败退避重试（429 与瞬时 5xx 单请求级、有限次、尊重 Retry-After；只在拿到 200 前重发同一 body，不重放工具副作用）已落地，见 11.13.15，跨源/外网/TLS/跨进程锁/六工具 HTTP 化继续按本行冻结 |
+| 平台独立化契约重议（R1 删除、目录去宿主化）、能力端口抽象（LLM／embedding／storage／clock）、跨进程写者锁、宿主无关启动器、真源迁移脚本规范 | **既有 #72**（方向已立宪，施工解冻门待主控拍板） | #72 台账原口径"挂起勿擅启，只在 C 线首期跑通后重议"与 11.13 已立宪的方向存在张力，**未拍板前不得据 11.13 直接开工** ｜【2026-11-21 补】其中目录去宿主化、LLM 与五个装配作用域端口、参考适配器薄壳化、内核独立运行核验子集已落地，部分履约登记见 11.13.7；【2026-11-21 再补】宿主无关启动器第一刀（单机 loopback 同源 HTTP＋零网络冒烟，不含跨源/外网/多实例）已落地，见 11.13.8，跨进程锁等其余子项继续按本行冻结；【2026-11-21 三补】node 身体直连模型纯聊天回路（零工具第一刀，记忆门在 node 身体固定 on 的拍板口径见该节三）已落地，见 11.13.9；【2026-11-21 四补】对话第二刀（node 记忆工具宿主＋投影 worker＋function-calling 回路，六工具进程内化、不开放 HTTP 面）已落地，见 11.13.10，跨源/外网/TLS/跨进程锁等其余子项继续按本行冻结；【2026-11-22 五补】网页观测台批 A（loopback 只读 GET 观测面＋进程内活动总线长轮询＋/app 静态托管，无写路由、无跨源/外网）已本地落地待授权提交，见 11.13.12，跨源/外网/TLS/跨进程锁/六工具 HTTP 化继续按本行冻结；【2026-11-22 六补】网页观测台批 B（/app 静态面免 Bearer 直开＋入口 HTML 每响应 nonce 注入一次性 token 引导、/api 与写路由 Bearer 401 分毫不动、不发 CORS 仅绑 loopback，浏览器零配置同源首屏打通）已本地落地待授权提交，见 11.13.13，跨源/外网/TLS/跨进程锁/六工具 HTTP 化继续按本行冻结；【2026-11-22 七补】网页观测台正式前端（零构建零依赖零外链原生 ESM 单页控制台，`src/adapters/node/web/` 24 文件）经三关验收通过并入库 `c5e58b6`，见 11.13.14，#156/#158 关闭、后端零改动；【2026-11-24 八补】headless 瞬态失败退避重试（429 与瞬时 5xx 单请求级、有限次、尊重 Retry-After；只在拿到 200 前重发同一 body，不重放工具副作用）已落地，见 11.13.15，跨源/外网/TLS/跨进程锁/六工具 HTTP 化继续按本行冻结；【2026-11-24 九补】闭合永久失败台账（exhausted/permanent 落 `state/closure-failures.jsonl`，跨进程 settlement_index 累计，只记录不拦截、sweepPending 零变化）与门控检索 limit 装配边界归一（下限 1、硬顶 20）已落地，见 11.13.16；跨进程写者锁仍冻结——台账本版只做进程内同步 append，未引入跨进程锁 |
 | 窗口重议（降级线索触发器、identity／obligation 取消） | **既有 #116** | 现卡面为"运行期接线"，重议后须改卡面，属实质变更待拍板 |
 | 重要性打分 | **既有 #94**（前置 #93 反思通道解冻） | 依赖链已排，非"未排期" |
 | 端到端闭环验收判据、身体／设备来源维度 | 待立卡（后者与 #106 E 块 HLC 合并评估） | 号段按 11.2 取号，下一空号 #125 |
@@ -2525,6 +2525,64 @@ node 两个 OpenAI 兼容出口（摘要口 `openai-llm.ts`、对话口 `openai-
 - 本节只改 headless 适配器的传输纪律，不碰内核、契约、真源、投影与 HTTP 鉴权口径；11.13.8/12/13 冻结的跨源 CORS/PNA、外网监听/TLS、全局 bin/打包、多通道管理 API、跨进程写者锁、六工具 HTTP 化继续冻结，**#72 整卡仍不关闭**。
 - 与闭合 backlog 的关系为正交：headless 内层用秒级退避快速消化瞬时限流，backlog 用 30s 起、8 次处理分钟级持续故障；瞬态在内层被消化后，冒泡到 backlog 的只剩真正持续不可用的情况。
 - 已知边界（不改）：`rules-v1` 词法召回只认 `display_cues` 与非敏感活跃别名，空 cue 卡自然 `zero-lexical-hit`，自然长句弱召回仍是既定边界（与本节无关，另案处理）。
+
+---
+
+### 11.13.16 闭合永久失败台账落盘与门控检索 limit 归一（2026-11-24，#171/#172）
+
+本节登记两处**韧性/防呆补齐**，均源自 11.13.15 收口后对「重启会怎样」「模型能传什么」的追问。两条都不改契约、不加依赖，属既有纪律的补洞。
+
+**一、问题事实（两处，均当轮重读源码取证）**
+
+1. **闭合失败只活到进程结束**：`failTask` 在 `attempts >= RETRY_MAX_ATTEMPTS`（8）时判 exhausted、`backlog.complete` 出队、事件保持 pending（`src/event/closure.ts:731`）；失败明细只进进程内环形缓冲（上限 100，`closure.ts:75`）与宿主日志（`closure.ts:770` 的 `pushFailure`）。而启动清道夫 `sweepPending`（`closure.ts:460`，由 `src/api/index.ts:1023-1035` 在启动时调用）会把**所有** `status=closed && summary_quality=pending` 的事件重新 `enqueue`、attempts 从 0 重计。两条叠加的后果：一条已判定「永久失败」的事件，每次重启都会从头再撞 8 次上限（退避 30s 起、封顶 600s，合计约 35 分钟），若模型可用则白烧 8 次调用，且「它已经废了」这件事没有任何跨进程痕迹。
+2. **门控检索 limit 无护栏**：工具口 `gatedSearch({text, limit?})` 把 limit 原样透传（`src/assembly/memory-tools.ts:296` → `runGatedSearch`），门内直接 `accepted.slice(0, limit)`（`src/memory/gate.ts:192`）、排序侧 `limit ?? RANK_POLICY.defaultLimit`（`gate.ts:337`、`src/memory/rank.ts:128`）。实测（三张同 cue 卡、`port check` 查询）：**`limit=-1` → accepted=2**（`slice(0,-1)` 反向裁掉末尾，本该少给却多给）、**`limit=0` → accepted=0**（一条都拿不到）、超大值与 `Infinity` 完全不设防。
+
+**二、定位：一个落盘缺口 + 一个边界防呆，均不属新机制**
+
+- 台账侧：真源权威不变（事件仍 pending），台账是**运行态观测**，落 `state/`（与 `checkpoint.json` 并列），丢了不丢事实、只丢历史。
+- limit 侧：门是纯函数、语义已被冻结测试锁死（v1 缺省保留全部过门卡）；归一必须发生在**装配边界**，不能改进门里，否则会动已冻结的门内语义。
+
+**三、方案**
+
+1. **闭合永久失败台账**（`src/event/closure-failure-ledger.ts`）：
+   - `state/closure-failures.jsonl`，append-only 一行一次**终结结算**（`state` 仅 `exhausted` / `permanent`），`retry` 态一律不写——否则台账退化成日志。
+   - 行含 `event_id / at / attempts / state / error / settlement_index / reason?`；`settlement_index` 由台账按事件自增（跨进程延续），`error` 按码点截 300。
+   - 读口 `readClosureFailures(dir)` 对**末行截断残行**容忍（进程被 kill 可能留半行），中间行坏仍抛 `CorruptedError`；行形状非法显式报错，不静默跳过。
+   - 接线：`ClosureDeps.failureLedger?`（`closure.ts:188`）可选注入；`pushFailure` 后由 `recordSettlement`（`closure.ts:787`）只对终结态 append；装配方在 `src/api/index.ts:375` 注入 `FileClosureFailureLedger(layout.state)`。
+   - **本版只记录不拦截**：`sweepPending` 行为零变化（仍重新入队），台账写失败被吞掉（观测丢失不是事实丢失，绝不拖垮闭合管线）。
+2. **limit 归一 + 硬顶**（`src/assembly/index.ts:44-66`）：
+   - `MAX_GATED_SEARCH_LIMIT = 20`（召回信封只含白名单轻量字段，20 条远低于任何模型上下文压力）。
+   - `normalizeGatedSearchLimit(limit?)`：`undefined` 原样返回（v1 缺省契约禁漂移）；`NaN`/`±Infinity` 归为缺省；`trunc → <1 抬到 1 → 封顶 20`。`runGatedSearch` 单点调用（`assembly/index.ts:88`），门内纯函数一行未改。
+
+**四、参数与边界**
+
+- 台账单条错误 300 码点（`FAILURE_LEDGER_ERROR_MAX_CHARS`），不复制长错误正文。
+- 台账并发：进程内同步 append，不做跨进程锁——跨进程写者属 #72 冻结项，届时需版本号乐观锁。
+- limit 硬顶 20、下限 1；`0`/负值抬到 1 而非报错（工具口对模型应「能用」优先于「报错」，但永不给空结果）。
+- 幂等：permanent 每进程只结算一次（沿用既有 `missingModel` 去重）；重复清扫不重复写。
+
+**五、改动面**
+
+- 新增 `src/event/closure-failure-ledger.ts`（+约 200 行）。
+- `src/event/closure.ts`：`ClosureDeps` 增可选 `failureLedger`；`pushFailure` 后接 `recordSettlement`。
+- `src/api/index.ts:375`：装配注入文件台账。
+- `src/assembly/index.ts`：新增 `MAX_GATED_SEARCH_LIMIT` / `normalizeGatedSearchLimit`，`runGatedSearch` 单点归一。
+- 无 DB 迁移、无新依赖、无新错误码、无对外接口形状变化。
+
+**六、验证证据**
+
+1. **红测先行**：`tests/event/task171-closure-failure-ledger.test.ts` 8 条（先因模块缺失报红）、`tests/assembly/task172-gated-limit-clamp.test.ts` 4 条（先因导出缺失报红）。
+2. **变异反证五组全抓红**：①retry 态也落盘 → #171-2 红；②`settlement_index` 硬编码 1 → #171-6/7 红；③关掉末行容忍 → #171-7 红；④负值穿透 → #172-1/2/3 红；⑤去掉硬顶 → #172-1 红。恢复后全绿。
+3. **行为取证**：`limit=-1` 从「给 2 张」修成「给 1 张且保留第一名」；`limit=0` 从「0 张」修成「1 张」；正数与缺省语义零漂移（`accepted=2` / `accepted=3`）。
+4. **依赖面守卫复核准**：`tests/architecture/plugin-independence.test.ts:210` 与 `tests/memory/schema.test.ts:561` 早已双线锁死 `dependencies` 为空对象——本节**不重复立测试**，只复核。
+5. `npm run verify` **1638/1638 全绿**（1626 基线 + 12 条新增）。
+
+**七、边界与仍冻结项**
+
+- 台账**不参与**重试判定（「只记录不拦截」是本版刻意选择）：是否按台账跳过重试，需另案拍板，且必须同时给人工清除入口，否则故障自愈后事件会被永久卡住。
+- 台账是运行态观测，可随 `state/` 一并丢弃；不做压缩/轮转（量极小：每事件只在终结态写一次）。
+- 11.13.8/12/13 冻结项（跨源 CORS/PNA、外网/TLS、全局 bin、多通道 API、跨进程写者锁、六工具 HTTP 化）继续冻结，**#72 整卡仍不关闭**。
+- `rules-v1` → `rules-v2` 的切换仍不在本节范围（属契约级变更，须预注册＋外审；v2 几何与门代码已在库，仅 `CURRENT_RULES_VERSION` 冻结在 v1）。
 
 ---
 
