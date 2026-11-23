@@ -44,6 +44,7 @@ import type { BoundaryCandidate } from '../contract/event.ts';
 import type { EventLog } from '../source/event-log.ts';
 import { RETRY_MAX_ATTEMPTS } from './backlog.ts';
 import type { Backlog, BacklogTask } from './backlog.ts';
+import type { ClosureFailureLedger } from './closure-failure-ledger.ts';
 import {
   AnchorSerialWireError,
   type LLMPort,
@@ -178,6 +179,13 @@ export interface ClosureDeps {
    * 不报错、不静默丢失败。观测零 IO、不落盘、不写投影。
    */
   readonly onClosureObservation?: (observation: ClosureObservation) => void;
+  /**
+   * 永久失败台账（#171）：**只记终结态**（exhausted / permanent）的结算。
+   *
+   * 可选：未注入时行为与旧构造完全一致（零落盘、零 IO）。本版只记录不拦截 ——
+   * 台账不参与 `sweepPending` 的重试判定。
+   */
+  readonly failureLedger?: ClosureFailureLedger;
 }
 
 /** 解析后落盘前的中间结果：id 锚点 + id 候选（线协议序号已解析完毕）。 */
@@ -766,6 +774,37 @@ export class ClosurePipeline {
       this.failureLog.shift();
     }
     this.deps.onFailure?.(failure);
+    this.recordSettlement(failure);
+  }
+
+  /**
+   * #171 · 终结态结算落盘（exhausted / permanent）。
+   *
+   * 只记终结态：retry 态每轮都会出现，落盘只会把台账刷成日志。
+   * 台账写失败**绝不拖垮闭合管线**：那只是运行态观测丢了，事实（事件 pending）仍在；
+   * 故吞掉异常、不重复 pushFailure（否则递归）。
+   */
+  private recordSettlement(failure: ClosureFailure): void {
+    if (failure.state === 'retry') {
+      return;
+    }
+    const ledger = this.deps.failureLedger;
+    if (ledger === undefined) {
+      return;
+    }
+    const reason = failure.detail?.reason;
+    try {
+      ledger.append({
+        event_id: failure.eventId,
+        at: failure.at,
+        attempts: failure.attempts,
+        state: failure.state,
+        error: failure.error,
+        ...(typeof reason === 'string' ? { reason } : {}),
+      });
+    } catch {
+      // 观测丢失不是事实丢失：内存明细与宿主日志已各自留痕。
+    }
   }
 
   /** 记一条 L3 观测（环形缓冲 + 可选上报；零 IO、不落盘）。 */

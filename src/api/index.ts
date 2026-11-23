@@ -77,6 +77,7 @@ import type { CorrectionRerunner } from '../event/correction.ts';
 import { InMemoryBacklog } from '../event/backlog.ts';
 import { ClosurePipeline } from '../event/closure.ts';
 import type { ClosureFailure, ClosureObservation } from '../event/closure.ts';
+import { FileClosureFailureLedger } from '../event/closure-failure-ledger.ts';
 import type { LLMPort } from '../event/llm-port.ts';
 import { DEFAULT_CLOSURE_ROUND_BUDGET_MS } from '../event/params.ts';
 import { selectEngine } from '../projection/detect.ts';
@@ -369,6 +370,9 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
       ...(options.onClosureObservation === undefined
         ? {}
         : { onClosureObservation: options.onClosureObservation }),
+      // #171：永久失败台账（state/closure-failures.jsonl）。运行态观测，非事实源；
+      // 只记 exhausted / permanent，不参与重试判定（本版只记录不拦截）。
+      failureLedger: new FileClosureFailureLedger(this.layout.state),
     });
 
     // ── T14 区块：事件开放面 ──

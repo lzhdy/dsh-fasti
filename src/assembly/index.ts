@@ -36,6 +36,36 @@ function buildTimeAnchor(atMs: number): TimeAnchor {
 }
 
 /**
+ * 单次门控检索 accepted 条数硬顶（#172）。
+ *
+ * 取 20：召回信封是白名单轻量字段（不含长正文），20 条远低于任何模型的上下文压力，
+ * 同时挡住「模型传 1e9 / 负数」这类越界值把排序结果整份搬出。
+ */
+export const MAX_GATED_SEARCH_LIMIT = 20;
+
+/**
+ * 门控检索 limit 归一（纯函数，#172）。
+ *
+ * 问题事实：`applyGate` 直接 `accepted.slice(0, limit)`，于是
+ *  - 负值 → `slice(0, -1)` 反向裁掉末尾（本该「少给」却多给）；
+ *  - 0 → 空结果（模型一条都拿不到）；
+ *  - 超大值 / Infinity 无护栏。
+ *
+ * 归一放在**装配边界**（本函数），不改进 gate 纯函数：门内语义与冻结测试零漂移。
+ * `undefined` 必须原样返回 —— v1 缺省「保留全部过门卡」是既有契约。
+ */
+export function normalizeGatedSearchLimit(limit?: number): number | undefined {
+  if (limit === undefined || !Number.isFinite(limit)) {
+    return undefined;
+  }
+  const truncated = Math.trunc(limit);
+  if (truncated < 1) {
+    return 1;
+  }
+  return Math.min(truncated, MAX_GATED_SEARCH_LIMIT);
+}
+
+/**
  * 门控召回编排（纯函数式，不持有 IO）：
  * 窄柄 searchExplained 返回 limit=undefined 的完整排序全集 → 规范化查询词 → applyGate 逐卡裁决，
  * limit 仅在门内排序完成后生效。装配层不重建/截断候选，杜绝门前进片。
@@ -43,6 +73,7 @@ function buildTimeAnchor(atMs: number): TimeAnchor {
  * @param handle 调用方（宿主）注入的记忆窄柄；本函数不打开也不关闭它。
  * @param query  无 limit 键的窄查询（RuntimeSearchQuery），任何额外字段在窄柄边界即被丢弃。
  * @param limit  动态 top-k；v1 缺省保留全部过门卡，#129 起 V2 缺省回落 RANK_POLICY.defaultLimit（10）。
+ *               #172 起在装配边界归一：非有限数→缺省、<1→1、>MAX_GATED_SEARCH_LIMIT→硬顶。
  */
 export async function runGatedSearch(
   handle: RuntimeMemoryHandle,
@@ -54,5 +85,5 @@ export async function runGatedSearch(
   // #127 时间约束编译：同进程纯函数，Anchor 只由注入的 atMs 组装，不读系统时钟。
   // CURRENT 仍 rules-v1 时 applyGate 分派 V1 会忽略本信封（T7 零漂移）；切 v2 后时间槽即生效。
   const timeConstraint = resolveTimeConstraint(query.text, buildTimeAnchor(query.atMs));
-  return applyGate({ qNorm, candidates, atMs: query.atMs, limit, timeConstraint });
+  return applyGate({ qNorm, candidates, atMs: query.atMs, limit: normalizeGatedSearchLimit(limit), timeConstraint });
 }
