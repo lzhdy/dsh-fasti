@@ -1,7 +1,7 @@
 // app.js —— ESM 入口：启动仪式 → 外壳装配 → 路由 → 长轮询常驻
 //
-// 阶段一（引导改造未上线）：依赖本地开发服务器注入 window.__FASTI_BOOTSTRAP__；
-// 阶段二（后端批 B）：后端直接注入 nonce 引导对象，零配置联调。
+// 后端在 index.html 响应中注入带 nonce 的 window.__FASTI_BOOTSTRAP__（机制见正本 11.13.13），
+// 前端零配置同源读取其中的一次性 token，仅存内存、不自行持久化。
 // 引导缺失时给出明确的“引导未注入”错误态，绝不白屏。
 
 import { el, icon } from './js/dom.js';
@@ -157,7 +157,7 @@ async function boot() {
     if (!bs) {
       const err = new Error('boot-bootstrap-missing');
       err.userMessage = '引导对象未注入：window.__FASTI_BOOTSTRAP__ 缺失或 token 字段为空。'
-        + '该对象由后端在 index.html 响应中注入（批 B 引导改造）；当前阶段可由本地开发服务器临时注入。';
+        + '该对象由后端在 index.html 响应中随页面注入；请确认从 /app/ 入口正常打开，或刷新页面重新领取；若反复出现，请检查后端服务是否正常。';
       throw err;
     }
     initApi(bs.token);
