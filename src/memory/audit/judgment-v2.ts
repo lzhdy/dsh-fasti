@@ -5,6 +5,7 @@
  * 本模块只服务 `fasti-p6-probes/v2` 卷，按预注册把口径拆开：
  *  - R1 宏 **只取 S0+S1**（n=300，簇 bootstrap 半宽 ≤0.05）；
  *  - R1_S0 单列副条件（点估计 ≥0.85）；
+ *  - S0/S1 提交类另设 L_S0/L_S1 门（wc=0 且高危 0，C1 对齐 §6.2 表格；wrong-abstain 不进此门）；
  *  - S2/S3/S4/S5 不考召回，只判 `L_S*`（`wc=0` 且高危错认 0）；S5 的 `wrong-abstain` 只登记；
  *  - R2 整体 200 对作门（≤0.05 且半宽 ≤0.05、高危错认 0），三类比率作必报明细；
  *  - 弃权：unanswerable `correct-abstain` 须 100%；noise 三态只登记（预注册未设数值门）；
@@ -76,7 +77,7 @@ export interface JudgmentV2 {
   r2: EstimateV2;
   r2ByKind: Record<DecoyKind, EstimateV2>;
   decoyHighRiskErrors: number;
-  layers: Partial<Record<'S2' | 'S3' | 'S4' | 'S5', LayerGateV2>>;
+  layers: Partial<Record<'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5', LayerGateV2>>;
   abstain: {
     unanswerable: { n: number; correctAbstain: number; rate: EstimateV2 };
     noise: { n: number; correctCommit: number; wrongCommit: number; wrongAbstain: number };
@@ -85,6 +86,9 @@ export interface JudgmentV2 {
   gates: {
     r1Macro: boolean;
     r1S0: boolean;
+    /** C1：预注册 §6.2 表格明示的 S0/S1 提交类 wc=0 门（193/194 号文书）。 */
+    L_S0: boolean;
+    L_S1: boolean;
     L_S2: boolean;
     L_S3: boolean;
     L_S4: boolean;
@@ -169,7 +173,11 @@ export function judgeV2(
   }
   const decoyHighRiskErrors = input.decoy.filter((d) => d.highRiskError).length;
 
-  const layers: JudgmentV2['layers'] = {};
+  // C1（193/194）：§6.2 表格要求 S0/S1 提交类 wc=0（含高危 0），与 S2-S5 同构建门。
+  // wrong-abstain 不进这些门（withWrongAbstain=false）：弃权盲区由 C2 警告印与未来 §9 新判据处理。
+  const s0Gate = layerGate(s0, false);
+  const s1Gate = layerGate(s1, false);
+  const layers: JudgmentV2['layers'] = { S0: s0Gate, S1: s1Gate };
   for (const layer of ['S2', 'S3', 'S4', 'S5'] as const) {
     const probes = input.gold.filter((p) => p.layer === layer);
     if (probes.length > 0 || layer !== 'S5') {
@@ -212,7 +220,9 @@ export function judgeV2(
   const r1S0Pass = r1S0Point !== null && r1S0Point >= R1_MACRO_POINT_FLOOR;
   const r2Pass = r2Point !== null && r2Point <= R2_POINT_CEIL && r2Half <= R2_HALF_WIDTH_CEIL && decoyHighRiskErrors === 0;
   const abstainPass = abstainPoint !== null && abstainPoint >= 1;
-  const layerGates: Record<'S2' | 'S3' | 'S4' | 'S5', boolean> = {
+  const layerGates: Record<'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5', boolean> = {
+    S0: layers.S0?.pass ?? false,
+    S1: layers.S1?.pass ?? false,
     S2: layers.S2?.pass ?? false,
     S3: layers.S3?.pass ?? false,
     S4: layers.S4?.pass ?? false,
@@ -247,6 +257,8 @@ export function judgeV2(
   const allGateFields: Array<[string, boolean]> = [
     ['R1 宏', r1MacroPass],
     ['R1_S0', r1S0Pass],
+    ['L_S0', layerGates.S0],
+    ['L_S1', layerGates.S1],
     ['L_S2', layerGates.S2],
     ['L_S3', layerGates.S3],
     ['L_S4', layerGates.S4],
@@ -272,6 +284,8 @@ export function judgeV2(
     gates: {
       r1Macro: r1MacroPass,
       r1S0: r1S0Pass,
+      L_S0: layerGates.S0,
+      L_S1: layerGates.S1,
       L_S2: layerGates.S2,
       L_S3: layerGates.S3,
       L_S4: layerGates.S4,

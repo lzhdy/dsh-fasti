@@ -158,6 +158,8 @@ test('合取式：全绿 PASSED；任一层失败即 NOT-PASSED；同种子逐�
   const base = greenV2();
   const pass = judgeV2(base, { seed: 7 });
   assert.equal(pass.verdict, 'PASSED');
+  assert.equal(pass.gates.L_S0, true);
+  assert.equal(pass.gates.L_S1, true);
   assert.deepEqual(judgeV2(base, { seed: 7 }), pass);
 
   const s4Wrong = judgeV2(
@@ -170,4 +172,51 @@ test('合取式：全绿 PASSED；任一层失败即 NOT-PASSED；同种子逐�
   assert.equal(s4Wrong.gates.L_S4, false);
   assert.equal(s4Wrong.layers.S4?.highRiskWrongCommit, 1);
   assert.equal(s4Wrong.verdict, 'NOT-PASSED');
+});
+
+test('C1：S0 提交类 wc=0 门——R1 仍全中但 S0 一条高危错认即 NOT-PASSED（预注册 §6.2 :207）', () => {
+  const base = greenV2();
+  const s0Bad = {
+    ...base,
+    gold: [
+      ...base.gold.filter((p) => p.layer !== 'S0'),
+      ...goldProbes('S0', 149, 'hit'),
+      { layer: 'S0' as const, eventId: 'ev-s0-bad', hit: true, highRisk: true, committed: true, top1IsGold: false },
+    ],
+  };
+  const j = judgeV2(s0Bad, { seed: 11 });
+  assert.equal(j.layers.S0?.n, 150);
+  assert.equal(j.layers.S0?.wrongCommit, 1);
+  assert.equal(j.layers.S0?.highRiskWrongCommit, 1);
+  assert.equal(j.gates.L_S0, false);
+  assert.equal(j.verdict, 'NOT-PASSED');
+});
+
+test('C1：S1 提交类 wc=0 门同构；S0/S1 的 wrong-abstain 不拉下门（C2 弃权盲区另案）', () => {
+  const base = greenV2();
+  const s1Bad = {
+    ...base,
+    gold: [
+      ...base.gold.filter((p) => p.layer !== 'S1'),
+      ...goldProbes('S1', 149, 'hit'),
+      { layer: 'S1' as const, eventId: 'ev-s1-bad', hit: true, highRisk: false, committed: true, top1IsGold: false },
+    ],
+  };
+  const j1 = judgeV2(s1Bad, { seed: 12 });
+  assert.equal(j1.gates.L_S1, false);
+  assert.equal(j1.verdict, 'NOT-PASSED');
+
+  // S0 一条 wrong-abstain（未提交）：L_S0 仍过，合取式不受弃权影响——C2 警告印负责防误读，不在此设门。
+  const s0Abstain = {
+    ...base,
+    gold: [
+      ...base.gold.filter((p) => p.layer !== 'S0'),
+      ...goldProbes('S0', 149, 'hit'),
+      { layer: 'S0' as const, eventId: 'ev-s0-wa', hit: false, highRisk: false, committed: false, top1IsGold: false },
+    ],
+  };
+  const j2 = judgeV2(s0Abstain, { seed: 13 });
+  assert.equal(j2.layers.S0?.wrongCommit, 0);
+  assert.equal(j2.gates.L_S0, true);
+  assert.equal(j2.verdict, 'PASSED');
 });

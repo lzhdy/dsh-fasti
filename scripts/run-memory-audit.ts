@@ -46,6 +46,7 @@ import type { LoadedAbstainFixtures, LoadedClarifyFixtures } from '../src/memory
 import { judgeV2 } from '../src/memory/audit/judgment-v2.ts';
 import type { JudgmentV2, LayerProbeV2, DecoyProbeV2, AbstainProbeV2, ClarifyProbeV2 } from '../src/memory/audit/judgment-v2.ts';
 import { buildLayerProbesV2, collectTop1Records } from '../src/memory/audit/top1-alignment.ts';
+import { gatedVerdictCaveat } from '../src/memory/audit/gated-caveat.ts';
 import type { Top1Record } from '../src/memory/audit/top1-alignment.ts';
 import { applyGate, normalizeLexicalText } from '../src/memory/gate.ts';
 import { summarizeFourState } from '../src/memory/audit/four-state.ts';
@@ -474,6 +475,8 @@ export interface AuditReport {
   judgmentV2Gated?: JudgmentV2;
   /** 生产门后栈四态汇总（192-H1）；未跑 v2 终判时为 undefined。 */
   fourStateGated?: FourStateSummary;
+  /** C2-甲：门后栈机械 PASSED 的弃权警告（null＝无警告；v1 卷为 undefined）。 */
+  gatedVerdictCaveat?: string | null;
   provenanceFailed: boolean;
   holdout: { mode: 'holdout' | 'loeo' | 'not-run'; folds: number; loeo?: LoeoResult };
   redLines: { r1: number | null; r2: number | null; r3: number | null };
@@ -610,6 +613,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
     let judgmentV2: JudgmentV2 | undefined;
     let judgmentV2Gated: JudgmentV2 | undefined;
     let fourStateGated: FourStateSummary | undefined;
+    let gatedCaveat: string | null = null;
     if (isV2Probes && options.holdout) {
       // 澄清档只在终判（封存集）路径结算，施工 dry-run 不消化探针。
       try {
@@ -710,6 +714,13 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
         { gold: gatedLayerProbes, decoy: decoyProbes, abstain: gatedAbstainV2, clarify: gatedClarifyProbes },
         { seed },
       );
+      // C2-甲：判决机对 wa 不设门，PASSED 伴随错弃权时强制留警告印（只渲染/留档，不改判决）。
+      gatedCaveat = gatedVerdictCaveat({
+        verdict: judgmentV2Gated.verdict,
+        wrongAbstain: fourStateGated.counts.wa,
+        answerableGold: fourStateGated.counts.G,
+        correctCommit: fourStateGated.counts.cc,
+      });
     }
 
     // consistency：v1 无叙事线，reflection 对来自夹具组织（合成期为空）→ N/A。
@@ -834,6 +845,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       ...(judgmentV2 ? { judgmentV2 } : {}),
       ...(judgmentV2Gated ? { judgmentV2Gated } : {}),
       ...(fourStateGated ? { fourStateGated } : {}),
+      ...(judgmentV2Gated ? { gatedVerdictCaveat: gatedCaveat } : {}),
       provenanceFailed: provenance.failed,
       holdout: { mode: holdoutMode, folds, ...(lOeo ? { loeo: lOeo } : {}) },
       redLines: { r1, r2, r3 },
@@ -890,7 +902,7 @@ function formatReport(report: AuditReport): string {
     for (const kind of ['same-family', 'cross-family-collision', 'cross-family-detail-reuse'] as const) {
       lines.push(`R2 ${kind}：${fmt(j.r2ByKind[kind] as never)}（明细必报，整体作门）`);
     }
-    for (const layer of ['S2', 'S3', 'S4', 'S5'] as const) {
+    for (const layer of ['S0', 'S1', 'S2', 'S3', 'S4', 'S5'] as const) {
       const gate = j.layers[layer];
       lines.push(
         `L_${layer}：n=${gate?.n ?? 0} wc=${gate?.wrongCommit ?? 0} 高危wc=${gate?.highRiskWrongCommit ?? 0}` +
@@ -913,6 +925,15 @@ function formatReport(report: AuditReport): string {
     }
     lines.push(`精度闭环：${j.gates.precision ? '通过' : '未通过'}`);
     lines.push(`判决      ：${j.verdict}`);
+    if (gatedSummary !== undefined) {
+      const caveat = gatedVerdictCaveat({
+        verdict: j.verdict,
+        wrongAbstain: gatedSummary.counts.wa,
+        answerableGold: gatedSummary.counts.G,
+        correctCommit: gatedSummary.counts.cc,
+      });
+      if (caveat !== null) lines.push(`  · ${caveat}`);
+    }
     for (const note of j.notes) lines.push(`  · ${note}`);
   };
   if (report.judgmentV2 !== undefined) {
