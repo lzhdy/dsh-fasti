@@ -74,6 +74,9 @@ const ACYCLIC_LEAF_FILES = [
   'time-lexicon.ts',
   'time-expr.ts',
   'time-resolve.ts',
+  // lexical-signals.ts（#193/P0 分级词面信号留痕）只依赖 bigram 与全局字符串，必须保持 leaf：
+  // 若将来被 store/bm25 反向拉入即报红，防止留痕仪表变成判据耦合点。
+  'lexical-signals.ts',
 ] as const;
 
 /** 显式直接拉黑（闭包判定的双保险，意图清晰且不依赖图计算正确性）。 */

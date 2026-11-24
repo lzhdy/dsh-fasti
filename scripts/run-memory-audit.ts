@@ -47,6 +47,8 @@ import { judgeV2 } from '../src/memory/audit/judgment-v2.ts';
 import type { JudgmentV2, LayerProbeV2, DecoyProbeV2, AbstainProbeV2, ClarifyProbeV2 } from '../src/memory/audit/judgment-v2.ts';
 import { buildLayerProbesV2, collectTop1Records } from '../src/memory/audit/top1-alignment.ts';
 import { gatedVerdictCaveat } from '../src/memory/audit/gated-caveat.ts';
+import { gradedLexicalSignals } from '../src/memory/lexical-signals.ts';
+import type { GradedSignals } from '../src/memory/types.ts';
 import type { Top1Record } from '../src/memory/audit/top1-alignment.ts';
 import { applyGate, normalizeLexicalText } from '../src/memory/gate.ts';
 import { summarizeFourState } from '../src/memory/audit/four-state.ts';
@@ -459,6 +461,25 @@ export interface AuditOptions {
 /** 允许出现在审计信封里的规则版本（与 cue-derive 白名单同源管理，未知值拒收）。 */
 const KNOWN_RULES_VERSIONS: ReadonlySet<string> = new Set(['rules-v1', 'rules-v2']);
 
+/**
+ * P0 分级词面信号留痕行（#193/194 §四 P0）：每题一条，仅披露不判分。
+ * top1Signals 取门后第一名卡（accepted[0] 优先，否则 rejected[0]）；goldSignals 取金标事件卡
+ * 若在本次候选集内，否则 null（未召回）。两者均为 null 表示该题零候选。
+ */
+export interface GatedSignalRow {
+  probeRef: string;
+  layer?: string;
+  committed: boolean;
+  top1Signals: GradedSignals | null;
+  goldSignals: GradedSignals | null;
+}
+
+/** 卡的词面字段集：v2 优先结构化 lexicalFields，回退 cueText 单字段（v1 卷无门后栈，不影响）。 */
+function lexicalFieldsOf(card: { lexicalFields?: string[]; cueText?: string }): string[] {
+  if (card.lexicalFields !== undefined && card.lexicalFields.length > 0) return card.lexicalFields;
+  return card.cueText !== undefined ? [card.cueText] : [];
+}
+
 export interface AuditReport {
   run: AuditRunRecord;
   items: AuditItemRecord[];
@@ -477,6 +498,8 @@ export interface AuditReport {
   fourStateGated?: FourStateSummary;
   /** C2-甲：门后栈机械 PASSED 的弃权警告（null＝无警告；v1 卷为 undefined）。 */
   gatedVerdictCaveat?: string | null;
+  /** P0 分级词面信号逐题留痕（#193）：仅 v2 门后栈路径产出，只披露不判分。 */
+  gatedSignalRows?: readonly GatedSignalRow[];
   provenanceFailed: boolean;
   holdout: { mode: 'holdout' | 'loeo' | 'not-run'; folds: number; loeo?: LoeoResult };
   redLines: { r1: number | null; r2: number | null; r3: number | null };
@@ -614,6 +637,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
     let judgmentV2Gated: JudgmentV2 | undefined;
     let fourStateGated: FourStateSummary | undefined;
     let gatedCaveat: string | null = null;
+    const gatedSignalRows: GatedSignalRow[] = [];
     if (isV2Probes && options.holdout) {
       // 澄清档只在终判（封存集）路径结算，施工 dry-run 不消化探针。
       try {
@@ -635,6 +659,16 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
         const outcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
         const resolvedEventId = relayMap.get(question.targetEventId) ?? question.targetEventId;
         const topCard = outcome.accepted[0]?.card ?? null;
+        // P0 留痕（#193）：同一趟回放顺手取信号向量，不额外检索、不改任何裁决。
+        const firstGated = outcome.accepted[0] ?? outcome.rejected[0] ?? null;
+        const goldCard = candidates.find((candidate) => candidate.card.eventId === resolvedEventId) ?? null;
+        gatedSignalRows.push({
+          probeRef: question.questionRef,
+          ...(question.constructionLayer !== undefined ? { layer: question.constructionLayer } : {}),
+          committed: topCard !== null,
+          top1Signals: firstGated !== null ? gradedLexicalSignals(qNorm, lexicalFieldsOf(firstGated)) : null,
+          goldSignals: goldCard !== null ? gradedLexicalSignals(qNorm, lexicalFieldsOf(goldCard)) : null,
+        });
         return { committed: topCard !== null, top1IsGold: topCard !== null && topCard.eventId === resolvedEventId };
       });
       const gatedLayerProbes = buildLayerProbesV2(gold, questions, gatedTop1);
@@ -846,6 +880,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       ...(judgmentV2Gated ? { judgmentV2Gated } : {}),
       ...(fourStateGated ? { fourStateGated } : {}),
       ...(judgmentV2Gated ? { gatedVerdictCaveat: gatedCaveat } : {}),
+      ...(judgmentV2Gated ? { gatedSignalRows } : {}),
       provenanceFailed: provenance.failed,
       holdout: { mode: holdoutMode, folds, ...(lOeo ? { loeo: lOeo } : {}) },
       redLines: { r1, r2, r3 },
@@ -917,6 +952,26 @@ function formatReport(report: AuditReport): string {
       lines.push(
         `门后四态合计：cc=${gatedSummary.counts.cc} wc=${gatedSummary.counts.wc} wa=${gatedSummary.counts.wa} ca=${gatedSummary.counts.ca} 高危wc=${gatedSummary.highRiskWrongCommits}（N=${gatedSummary.counts.N}）`,
       );
+      // P0 分级词面信号留痕（#193）：仅门后栈披露整数分布，明细逐题在 JSON，不参与任何判据。
+      const rows = report.gatedSignalRows;
+      if (rows !== undefined) {
+        const bucketize = (pick: (row: GatedSignalRow) => GradedSignals | null): string => {
+          const b = { none: 0, lcs0: 0, lcs1: 0, lcs2: 0, lcs3: 0 };
+          for (const row of rows) {
+            const s = pick(row);
+            if (s === null) b.none += 1;
+            else if (s.lcs === 0) b.lcs0 += 1;
+            else if (s.lcs === 1) b.lcs1 += 1;
+            else if (s.lcs === 2) b.lcs2 += 1;
+            else b.lcs3 += 1;
+          }
+          return `无卡=${b.none} 0=${b.lcs0} 1=${b.lcs1} 2=${b.lcs2} 3+=${b.lcs3}`;
+        };
+        lines.push('── 分级词面信号留痕（P0，仅披露不判分；逐题明细见 JSON）────────');
+        lines.push(`行数        ：${rows.length}（门后提交=${rows.filter((row) => row.committed).length}）`);
+        lines.push(`金标卡 LCS  ：${bucketize((row) => row.goldSignals)}`);
+        lines.push(`门后第一名  ：${bucketize((row) => row.top1Signals)}`);
+      }
     }
     lines.push('── 澄清档披露（F6，只作描述性统计，不进 R1/R2 分母）────────────');
     lines.push(`汇总：澄清/低置信=${j.clarify.clarified} 自信给卡=${j.clarify.confidentCard} 其中诱饵置顶=${j.clarify.decoyTop1}（文件${report.clarifyFixturePresent ? '已加载' : '缺失'}）`);

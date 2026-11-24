@@ -327,12 +327,38 @@ export interface GatedViewSlots {
 }
 
 /** 通过布尔门后的候选：在可解释候选上附加门原因。evidence 第一层恒 undefined（连续分演进项占位）。 */
+/**
+ * P0 分级词面信号向量（#193）：纯整数留痕，不参与任何裁决/排序。
+ * 算法在 lexical-signals.ts；此处只声明 DTO 形状，供门后卡与审计报告携带。
+ */
+export interface GradedSignals {
+  /** 与任一字段的最长公共连续码点数。 */
+  lcs: number;
+  /** 被至少一个字段包含的查询单元数 c。 */
+  unitCovered: number;
+  /** 查询单元总数 m（emitUnits 口径）。 */
+  unitTotal: number;
+  /** 含至少一个查询单元的字段数。 */
+  hitFields: number;
+  /** LCS≥3 的字段数。 */
+  strongFields: number;
+  /** 命中字段中最短者码点数（无命中为 0）。 */
+  minHitFieldLength: number;
+  /** 命中字段中最长者码点数（无命中为 0）。 */
+  maxHitFieldLength: number;
+}
+
 export interface GatedRankedCard extends ExplainedRankedCard {
   gateReasons: GateReasonCode[];
   /** 演进项占位：未来连续有界证据分承载位，第一层不填（恒 undefined），预留以避免未来破 API。 */
   evidence?: number;
   /** #130 截窗槽位：仅 applyGateV2 产出；v1 冻结路径恒 undefined（零漂移）。#178 起只会是 'marked' 或 'ranked'。 */
   slot?: GatedSlotTag;
+  /**
+   * P0 分级词面信号（#193）：只在审计侧按需填充，生产门路径恒 undefined（零热路径开销、零判据影响）。
+   * 任何把它接进 accept/reject 或排序键的用法都属判据变更，必须另走预注册 §9。
+   */
+  gradedSignals?: GradedSignals;
 }
 
 /** 布尔门一次检索的完整裁决结果（含被拒候选，不静默丢弃，供可解释与漏召统计）。 */
