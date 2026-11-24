@@ -1,6 +1,9 @@
 # P6 出题任务书 v2 · 新合成世界（questions-v2，冻结稿）
 
 > 版本：**v2 冻结稿 · 2026-11-24 外审终审通过即冻结**（对应预注册 v5；终审件 `rules-v2外审终审确认-2026-11-24.md`，冻结内容基线 commit `8ae063a`）。v1 已随旧卷 `probes-v1` 退役，不得混用两版配额。冻结后题面／配额／校验器口径若须改动，须与预注册 §9 同步走升版重审，不得就地改本任务书。
+>
+> **勘误 E1（2026-11-24，主控授权｜编辑级算术订正，非预注册 §9 判据升版）**：金标六层配额 S0/S1/S2/S3/S4/S5＝150/150/50/50/50/100 系冻结值、从未改动，其正确求和为 **550 题**；原稿在 §4 目录注记、§6.3 合计行、§8、§10 模板 `goldQuestionsTotal`、§11 自检第 3 条把合计误写为 500，已就地改为 550。全卷人工题正确总量＝550 金标＋200 诱饵＋200 弃权＋200 调参＝**1150 条**（澄清 18 条独立分母、不计入；原误写 1100）。本次仅订正求和笔误，**六层配额、每事件分布上限、金标并集覆盖 400、各判别/弃权/澄清分母与全部校验规则零变化**；外部考卷已按六层分项实交 550 条且其 manifest 自洽，与本订正一致，无需返工。
+>
 > 你是**独立出题人**。唯一输入是一份盲包 `blind-package.json` ＋ `world-manifest.json`；唯一产出是一套 JSON 考卷。本文自包含：**不读任何代码、不看任何系统内部文件、不看旧卷**，仅凭本文与盲包即可完成。
 
 ---
@@ -87,7 +90,7 @@
 ```
 q2-output/
 ├── sealed/
-│   ├── gold-l0.json          # 500 条金标题（主交付物）
+│   ├── gold-l0.json          # 550 条金标题（主交付物；原目录注记误写 500，见文首勘误 E1）
 │   ├── decoy-authored.json   # 200 条诱饵判别题（事件级中间格式）
 │   ├── abstain-authored.json # 200 条弃权/噪声探针（事件级中间格式）
 │   ├── clarify-authored.json # 18 条应澄清题（只含共享细节词，独立分母，P-c 新增）
@@ -206,7 +209,7 @@ sourceCharShare = Array.from(片段).length / Array.from(原句rawText).length
 | S3 | **50** | 同 S2 |
 | S4 | **50** | 同 S2；每事件题面须含 ≥2 种变体手法 |
 | S5 | **100** | **覆盖 ≥100 个不同封存事件，每事件 ≤1**（每族只有 2 条指代素材，不许同事件出多题） |
-| 合计 | **500** | — |
+| 合计 | **550** | —（150＋150＋50＋50＋50＋100＝550；原合计行笔误作 500，见文首勘误 E1） |
 
 每条 query 全局唯一（跨事件、跨层、跨文件都不得复用同一句）。S0 两条配额可来自同事件不同 turns。
 
@@ -275,7 +278,7 @@ sourceCharShare = Array.from(片段).length / Array.from(原句rawText).length
 
 ## 8. 弃权/噪声探针 `sealed/abstain-authored.json`
 
-两类各 100 条，独立分母，**不计入 500 金标题**。
+两类各 100 条，独立分母，**不计入 550 金标题**（原误写 500，见文首勘误 E1）。
 
 顶层：`{ "probeSetVersion": "fasti-p6-probes/v2", "layer": "abstain", "items": [ ... ] }`
 
@@ -325,7 +328,7 @@ sourceCharShare = Array.from(片段).length / Array.from(原句rawText).length
   "partition": "sealed",
   "counts": {
     "goldByLayer": { "S0": 150, "S1": 150, "S2": 50, "S3": 50, "S4": 50, "S5": 100 },
-    "goldQuestionsTotal": 500,
+    "goldQuestionsTotal": 550,
     "goldEventsCovered": 400,
     "decoyPairs": 200,
     "decoySameFamily": 114,
@@ -351,7 +354,7 @@ tuning 目录 `partition` 填 `"tuning"`，counts 只填 `goldByLayer: {"S0":100
 
 1. 目录结构与文件名同 §4；所有 JSON 可被标准解析器解析，无注释／尾逗号／BOM。
 2. 五个文件 `probeSetVersion` 都是 `fasti-p6-probes/v2`，`layer` 与文件名匹配。
-3. 500 金标题配额精确达标；每事件每层 ≤4；S0/S1 各覆盖 ≥150 事件、S5 覆盖 ≥100 事件且每事件 ≤1；S2/S3/S4 各覆盖 ≥30 事件。
+3. 550 金标题配额精确达标（原误写 500，见文首勘误 E1）；每事件每层 ≤4；S0/S1 各覆盖 ≥150 事件、S5 覆盖 ≥100 事件且每事件 ≤1；S2/S3/S4 各覆盖 ≥30 事件。
 4. 每个 item 字段严格匹配白名单、无自创键；枚举逐字正确；金标 item 均有 sourceLocation 与 arbitration。
 5. 全部 `aliases` 为 `[]`；无 item 引用 tuning id；tuning 包无 sealed id。
 6. S0 句句能与某条 rawText 逐字对上（含语气词、错字、空格）；S1 全部为连续片段且 `sourceCharShare` 经码点口径复算 ≤0.25。
