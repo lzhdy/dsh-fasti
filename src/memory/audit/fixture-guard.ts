@@ -30,8 +30,10 @@ export interface GuardCardRef {
 export const S1_MAX_CHAR_SHARE = 0.25;
 /** key_points 重合硬规则的连续片段码点下限（v4 §6.2）。 */
 export const KEY_POINT_FRAGMENT_CODEPOINTS = 3;
-/** 适用连续子串/重合硬规则的构造层。 */
+/** 适用 G4① 连续子串硬规则的构造层（换述层禁止抄目标卡词面；S5 指代句天然含事件细节，不适用）。 */
 const PARAPHRASE_LAYERS: ReadonlySet<ConstructionLayer> = new Set(['S2', 'S3', 'S4']);
+/** 适用 G4② key_points 重合硬规则的构造层（v5 §8.2 N3：S5 一并纳入）。 */
+const KEYPOINT_GUARD_LAYERS: ReadonlySet<ConstructionLayer> = new Set(['S2', 'S3', 'S4', 'S5']);
 
 function reject(reason: string): never {
   throw new IntegrityError(`P6 夹具防自证硬拒：${reason}`);
@@ -143,11 +145,12 @@ export function assertP6GoldItem(
   if (card === undefined) {
     reject(`eventId=${item.eventId}（${item.constructionLayer}）在临时根找不到目标卡，金标悬空`);
   }
-  if (!PARAPHRASE_LAYERS.has(item.constructionLayer)) {
+  if (!KEYPOINT_GUARD_LAYERS.has(item.constructionLayer)) {
     return;
   }
+  const paraphrase = PARAPHRASE_LAYERS.has(item.constructionLayer);
   for (const [queryIndex, query] of item.queries.entries()) {
-    if (isCueOrAliasSubstring(query, card)) {
+    if (paraphrase && isCueOrAliasSubstring(query, card)) {
       reject(
         `${item.constructionLayer} 查询[${queryIndex}]「${query}」是目标卡 cue/别名的连续子串（G4①，换述层禁止抄词面）`,
       );

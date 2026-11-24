@@ -2754,6 +2754,15 @@ node 两个 OpenAI 兼容出口（摘要口 `openai-llm.ts`、对话口 `openai-
 
 **十一、冻结稿题量算术勘误 E1（2026-11-24，#182，主控授权编辑级订正）**：收卷机检（报告 183/184）发现冻结的出题任务书 v2 与预注册 v5 把金标六层分项（S0/S1/S2/S3/S4/S5＝150/150/50/50/50/100）的合计误写为 500，正确求和为 **550**；出题端人工题总量随之由误写的 1100 订正为 **1150**（550 金标＋200 诱饵＋200 弃权＋200 调参，澄清 18 独立不进分母）。本节及两份冻结稿已就地订正并在各自文首加「勘误 E1」签注、保留原值可追溯。**此为纯加法笔误、不属 §9 判据升版**：R1 宏只取 S0＋S1（n＝300、阈值 0.85、半宽 0.0404）、R2 n＝200（阈值 0.05、半宽 0.0302），无任何阈值/CI/层定义/覆盖定值（goldEventsCovered＝400）引用该总和，判据与配额零变化；500 事件、400 封存/100 调参等事件规模数字本就正确、未改。外部首版与润色版均按分项实交 550 条且 manifest 自洽，无需返工。本次仅改 docs、`src/` 零改动，verify 基线不变。
 
+**十二、v2 封存装配机落地（N3，2026-11-24，#183，方案 A）**：预注册 v5 §8.2 N3（N1–N5 中最后未落地的一项）要求新卷装配落点为 v1 `assemble-sealed-fixtures.ts` 的配额表与守卫。本次按方案 A 施工：**v1 脚本与其红测一字不动**（已封存的 v1 卷可复现性零回归），新立 `scripts/p6/assemble-sealed-fixtures-v2.ts`；共享层只做加法扩展：
+
+1. `fixtures.ts`：`ConstructionLayer` 增 `'S5'`；新增 `PROBES_V2_PATTERN = /^fasti-p6-probes\/v\d+(\.\d+)*$/` 与 v1 的 `PROBE_SET_VERSION_PATTERN` 并存（v1 卷仍只认 `v1`）；`FixtureLayer` 增 `'clarify'`，新增 `ClarifyItem`（pairCardIds/detailWord/expectedBehavior/query）与独立 `loadClarifyFixtures`（仿 `loadAbstainFixtures`，**不进**四文件契约）；`DecoyItem` 增可选 `decoyKind`，v2 卷由校验器强制必填且限三枚举、v1 卷保持可缺省。
+2. `fixture-guard.ts`：拆出 `KEYPOINT_GUARD_LAYERS = {S2,S3,S4,S5}` 专管 G4②，`PARAPHRASE_LAYERS` 继续专管 G4① 且**不扩 S5**——依任务书 C-S5 只要求 G4-2；S5 指代句天然含事件细节，套 G4① 会自相矛盾。
+3. 新脚本口径：`SEAL_LAYER_QUOTAS_V2 = {S0:150,S1:150,S2:50,S3:50,S4:50,S5:100}`；蓝本接 `buildWorldV2()`；只读 sealed/ 四文件（gold-l0 / decoy-authored / clarify-authored / abstain-authored），**不读 tuning/**；落六件套（多出 clarify.json，gold-l1/holdout 仍空 companion）；`assertAssembledGuardsV2` 在加载器白名单＋G3 零别名＋G4 逐条之外，硬拒调参分区事件混入任一层；`assertLayerQuotasV2` 逐层对账。
+4. `sealing.ts` **零改动**：`SEAL_SCHEMA` 仍 `fasti-p6-seal/v1`（哈希封装机制未变），卷版本由 manifest 内 `probeSetVersion` 区分；未新增 clarify 专属计数字段——files 哈希已锁该档内容，且澄清档按 §5.2 不设统计门。
+
+红测 `tests/memory/sealed-assembly-v2.test.ts` 8 条先红后绿；五条变异反证（G4② 去除 S5、decoyKind 不强制、v2 版本形态不认、clarify 翻成事件 id、不区分调参分区）均使新测转红。`npm run verify` = **1686/1686 fail 0**（原 1678＋8）。真机 500 事件根 dry-run 全量实跑：装配 gold 550／decoy 200／clarify 18／abstain 200，层分布 S0 150·S1 150·S2 50·S3 50·S4 50·S5 100，覆盖 400 事件，诱饵 114/50/36，弃权 100/100，**syn 零残留**，六层配额逐层相等、G4② 对 250 条 S2–S5 零误伤零漏网。**封存动作（写 `probes-v2` 目录）本次未执行，待主控另行授权**；`CURRENT_RULES_VERSION` 仍 `rules-v1`（预注册 §10），终判 harness 认 clarify/S5/decoyKind 的升级另立一卡。
+
 ---
 
 > 本文件是规范而非进度报告：它描述系统必须被建成的形状，并在第 11 章登记施工排期。凡标注"待设计／待评审／待标定"处，禁止在实现中先斩后奏；定稿后以加法方式回写正文，并同步更新第 11.4 节对应卡的阶段与状态。

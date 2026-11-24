@@ -18,19 +18,25 @@ import { parseJsonStrict, readFileStrict } from '../../core/fsx.ts';
 /** 非空版本字符串（I7 冻结正则）。 */
 export const PROBE_SET_VERSION_PATTERN = /^v\d+(\.\d+)*$/;
 
-export type FixtureLayer = 'l0' | 'l1' | 'l2' | 'decoy' | 'abstain';
+/**
+ * v2 卷（预注册 v5 §8.2 N3）版本形态：`fasti-p6-probes/v2`。
+ * 与 v1 的 `v1` 并存：两种形态各自可解析，v1 契约零漂移。
+ */
+export const PROBES_V2_PATTERN = /^fasti-p6-probes\/v\d+(\.\d+)*$/;
+
+export type FixtureLayer = 'l0' | 'l1' | 'l2' | 'decoy' | 'abstain' | 'clarify';
 
 /**
- * P6 查询构造层（v4 §3 S0–S4）。与文件级 `FixtureLayer`（l0/l1/l2/decoy/abstain）互不替代：
- * 前者是题目的构造方式分层，后者是夹具文件类别。
+ * P6 查询构造层（v4 §3 S0–S4；v5 Δ3 新增 S5 可解指代）。与文件级 `FixtureLayer`
+ * （l0/l1/l2/decoy/abstain/clarify）互不替代：前者是题目的构造方式分层，后者是夹具文件类别。
  */
-export type ConstructionLayer = 'S0' | 'S1' | 'S2' | 'S3' | 'S4';
+export type ConstructionLayer = 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5';
 
 const SLOT_NAMES = ['guaranteed', 'recency', 'identity', 'relevance', 'obligation'] as const;
 const INITIATIONS = ['her', 'user', 'environment'] as const;
 const ALIAS_SOURCES = ['miss'] as const;
 const HIGH_RISK_LABELS = ['strong', 'promise', 'date', 'verbatim', 'negation'] as const;
-const CONSTRUCTION_LAYERS: readonly ConstructionLayer[] = ['S0', 'S1', 'S2', 'S3', 'S4'];
+const CONSTRUCTION_LAYERS: readonly ConstructionLayer[] = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5'];
 const SOURCE_ORIGINS = ['raw-turn', 'summary'] as const;
 
 /** 撰写源定位（§6.3）：出题只许来自 raw-turn／summary；anchor 为轮号/段号等定位标记。 */
@@ -70,10 +76,16 @@ const L1_KEYS = [
   'sourceCharShare',
   'arbitration',
 ] as const;
-const DECOY_KEYS = ['pairCardIds', 'discriminatorQuery', 'goldCardId', 'highRiskLabel'] as const;
+const DECOY_KEYS = ['pairCardIds', 'discriminatorQuery', 'goldCardId', 'highRiskLabel', 'decoyKind'] as const;
+/** v5 Δ5 诱饵三分类（R2 按类各算比率，预注册 §5.2/:168）。 */
+export const DECOY_KINDS = ['same-family', 'cross-family-collision', 'cross-family-detail-reuse'] as const;
+export type DecoyKind = (typeof DECOY_KINDS)[number];
 /** 弃权/噪声探针（§5.7）：只含问句与目标标注，goldCardId=null 表示库里无金标（期望弃权）。 */
 const ABSTAIN_KEYS = ['query', 'goldCardId', 'kind'] as const;
 const ABSTAIN_KINDS = ['unanswerable', 'noise'] as const;
+/** 应澄清探针（v5 Δ5 / §5.2 澄清档 18 条，不设统计门）。 */
+const CLARIFY_KEYS = ['pairCardIds', 'detailWord', 'expectedBehavior', 'query'] as const;
+const CLARIFY_BEHAVIOR = ['clarify'] as const;
 
 /** L0 种子金标条目（§6.1：标准检索词/别名/敏感标记/判别近邻/窗口槽位）。 */
 export interface GoldL0Item {
@@ -109,12 +121,25 @@ export interface GoldL1Item {
   arbitration?: ArbitrationTrail;
 }
 
-/** DRM 诱饵条目（近邻对 + 判别提问 + 金标卡 + 可选高危标签）。 */
+/** DRM 诱饵条目（近邻对 + 判别提问 + 金标卡 + 可选高危标签；v2 起带三分类 `decoyKind`）。 */
 export interface DecoyItem {
   pairCardIds: readonly string[];
   discriminatorQuery: string;
   goldCardId: string;
   highRiskLabel?: 'strong' | 'promise' | 'date' | 'verbatim' | 'negation';
+  /** v5 Δ5：v2 卷必填、v1 卷不存在（兼容旧卷留可缺省，v2 由校验器强制）。 */
+  decoyKind?: DecoyKind;
+}
+
+/**
+ * 应澄清探针条目（v5 §5.2 澄清档，N1h 实测「只给共享词」结构上不可判别、只应澄清）。
+ * `expectedBehavior` 恒 `"clarify"`；独立分母、不进 R1/R2、不设统计门。
+ */
+export interface ClarifyItem {
+  pairCardIds: readonly string[];
+  detailWord: string;
+  expectedBehavior: 'clarify';
+  query: string;
 }
 
 /**
@@ -256,7 +281,7 @@ function validateL1Item(raw: unknown, label: string, index: number): void {
   validateP6Meta(item, label, index);
 }
 
-function validateDecoyItem(raw: unknown, label: string, index: number): void {
+function validateDecoyItem(raw: unknown, label: string, index: number, v2Probes: boolean): void {
   const item = asRecord(raw, label, index);
   checkKeys(item, DECOY_KEYS, label, index);
   const pairs = reqStringArray(item, 'pairCardIds', label, index);
@@ -268,6 +293,22 @@ function validateDecoyItem(raw: unknown, label: string, index: number): void {
   if (item['highRiskLabel'] !== undefined) {
     reqEnum(item['highRiskLabel'], HIGH_RISK_LABELS, 'highRiskLabel', label, index);
   }
+  // v2 卷必带三分类（R2 按类分算）；v1 卷保持可缺省，零漂移。
+  if (v2Probes || item['decoyKind'] !== undefined) {
+    reqEnum(item['decoyKind'], DECOY_KINDS, 'decoyKind', label, index);
+  }
+}
+
+function validateClarifyItem(raw: unknown, label: string, index: number): void {
+  const item = asRecord(raw, label, index);
+  checkKeys(item, CLARIFY_KEYS, label, index);
+  const pairs = reqStringArray(item, 'pairCardIds', label, index);
+  if (pairs.length < 2) {
+    fail(label, index, 'pairCardIds 须至少含两张卡');
+  }
+  reqString(item, 'detailWord', label, index);
+  reqEnum(item['expectedBehavior'], CLARIFY_BEHAVIOR, 'expectedBehavior', label, index);
+  reqString(item, 'query', label, index);
 }
 
 function validateAbstainItem(raw: unknown, label: string, index: number): void {
@@ -291,8 +332,11 @@ export function validateFixtureFile(raw: unknown, expectedLayer: FixtureLayer, f
   }
   const obj = raw as Record<string, unknown>;
   const version = obj['probeSetVersion'];
-  if (typeof version !== 'string' || !PROBE_SET_VERSION_PATTERN.test(version)) {
-    throw new IntegrityError(`夹具 ${fileLabel}：probeSetVersion 须匹配 /^v\\d+(\\.\\d+)*$/`);
+  const isV2Probes = typeof version === 'string' && PROBES_V2_PATTERN.test(version);
+  if (typeof version !== 'string' || (!PROBE_SET_VERSION_PATTERN.test(version) && !isV2Probes)) {
+    throw new IntegrityError(
+      `夹具 ${fileLabel}：probeSetVersion 须匹配 /^v\\d+(\\.\\d+)*$/ 或 fasti-p6-probes/v<N>`,
+    );
   }
   if (obj['layer'] !== expectedLayer) {
     throw new IntegrityError(`夹具 ${fileLabel}：layer 须为 ${expectedLayer}`);
@@ -305,9 +349,11 @@ export function validateFixtureFile(raw: unknown, expectedLayer: FixtureLayer, f
     if (expectedLayer === 'l0') {
       validateL0Item(item, fileLabel, index);
     } else if (expectedLayer === 'decoy') {
-      validateDecoyItem(item, fileLabel, index);
+      validateDecoyItem(item, fileLabel, index, isV2Probes);
     } else if (expectedLayer === 'abstain') {
       validateAbstainItem(item, fileLabel, index);
+    } else if (expectedLayer === 'clarify') {
+      validateClarifyItem(item, fileLabel, index);
     } else {
       validateL1Item(item, fileLabel, index);
     }
@@ -361,4 +407,19 @@ export function abstainHasGold(item: AbstainItem): boolean {
 export function loadAbstainFixtures(fixturesDir: string, fileName = 'abstain.json'): LoadedAbstainFixtures {
   const loaded = loadOne(fixturesDir, fileName, 'abstain');
   return { probeSetVersion: loaded.version, items: loaded.items as readonly AbstainItem[] };
+}
+
+/** 应澄清探针夹具全集（与四文件相互独立，不并入 loadFixtures 契约）。 */
+export interface LoadedClarifyFixtures {
+  probeSetVersion: string;
+  items: readonly ClarifyItem[];
+}
+
+/**
+ * 只读加载 clarify.json（v5 §5.2 澄清档；缺文件抛 NotFoundError、坏 JSON 抛 CorruptedError、坏形状抛
+ * IntegrityError）。独立于 loadFixtures，四文件契约零变化；文件不存在由调用方决定是否容忍。
+ */
+export function loadClarifyFixtures(fixturesDir: string, fileName = 'clarify.json'): LoadedClarifyFixtures {
+  const loaded = loadOne(fixturesDir, fileName, 'clarify');
+  return { probeSetVersion: loaded.version, items: loaded.items as readonly ClarifyItem[] };
 }
