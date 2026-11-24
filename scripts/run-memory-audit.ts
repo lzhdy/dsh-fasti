@@ -45,6 +45,9 @@ import { loadAbstainFixtures, abstainHasGold, PROBES_V2_PATTERN, loadClarifyFixt
 import type { LoadedAbstainFixtures, LoadedClarifyFixtures } from '../src/memory/audit/fixtures.ts';
 import { judgeV2 } from '../src/memory/audit/judgment-v2.ts';
 import type { JudgmentV2, LayerProbeV2, DecoyProbeV2, AbstainProbeV2, ClarifyProbeV2 } from '../src/memory/audit/judgment-v2.ts';
+import { buildLayerProbesV2, collectTop1Records } from '../src/memory/audit/top1-alignment.ts';
+import type { Top1Record } from '../src/memory/audit/top1-alignment.ts';
+import { applyGate, normalizeLexicalText } from '../src/memory/gate.ts';
 import { summarizeFourState } from '../src/memory/audit/four-state.ts';
 import type { FourStateProbeInput, FourStateSummary } from '../src/memory/audit/four-state.ts';
 import { assertMissAliasesSensitive, assertP6GoldItem } from '../src/memory/audit/fixture-guard.ts';
@@ -62,7 +65,7 @@ import { auditProvenance } from '../src/memory/audit/provenance.ts';
 import type { PointerResolver, ProvenanceResult } from '../src/memory/audit/provenance.ts';
 import { assembleWindow } from '../src/memory/window.ts';
 import { openMemoryRead, openMemoryWrite } from '../src/memory/store.ts';
-import type { MemoryReadHandle } from '../src/memory/store.ts';
+import type { MemoryReadHandle, MemoryInternalReadHandle } from '../src/memory/store.ts';
 import type { AuditItemRecord, AuditRunRecord, MemoryCard, RankedCard, AssembledWindow } from '../src/memory/types.ts';
 import { CURRENT_RULES_VERSION } from '../src/memory/types.ts';
 import { foldCurrentEvents } from '../src/projection/event-row.ts';
@@ -467,6 +470,10 @@ export interface AuditReport {
   clarifyFixturePresent: boolean;
   /** v2 卷判决（PASSED/NOT-PASSED/INCONCLUSIVE）；v1 卷为 undefined。 */
   judgmentV2?: JudgmentV2;
+  /** v2 卷生产门后栈判决（runGatedSearch 等价口径，192-H1）；v1 卷为 undefined。 */
+  judgmentV2Gated?: JudgmentV2;
+  /** 生产门后栈四态汇总（192-H1）；未跑 v2 终判时为 undefined。 */
+  fourStateGated?: FourStateSummary;
   provenanceFailed: boolean;
   holdout: { mode: 'holdout' | 'loeo' | 'not-run'; folds: number; loeo?: LoeoResult };
   redLines: { r1: number | null; r2: number | null; r3: number | null };
@@ -499,6 +506,9 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
   const indexDir = path.join(resolveDataRoot({ dataRoot: options.dataRoot }), 'projection', 'memory-index');
 
   const readHandle: MemoryReadHandle = openMemoryRead({ indexDir });
+  // 192-H1：审计是离线内部工具（非装配层），需要 explained 全集以等价回放生产门，
+  // ReadHandle 本身即实现 MemoryInternalReadHandle（store.ts 类声明），此处仅类型窄化、无运行时转换。
+  const explainedHandle = readHandle as MemoryInternalReadHandle;
   const fasti = await Fasti.open({ dataRoot: options.dataRoot });
   try {
     const cards = readHandle.listEffective(options.nowMs);
@@ -556,20 +566,23 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       abstainFixturePresent = false;
     }
     const fourStateProbes: FourStateProbeInput[] = [];
-    /** v2 判据复用同一次 top1 检索：按题目引用登记提交与命中。 */
-    const top1ByQuestionRef = new Map<string, { committed: boolean; top1IsGold: boolean }>();
+    /**
+     * 逐题对齐的粗召回 top1（192-H2）：键是题目索引而非 eventId。
+     * 同事件跨层供题（预注册 v5 §5.3）时旧 Map 口径会被后写层顶包，层探针改由
+     * buildLayerProbesV2 按索引组装；四态主计数仍在下方循环里当场落账，行为不变。
+     */
+    const ungatedTop1: Top1Record[] = [];
     for (const question of questions) {
       const top1 = await readHandle.search({ text: question.queryText, atMs: options.nowMs, limit: 1 });
       const resolvedEventId = relayMap.get(question.targetEventId) ?? question.targetEventId;
-      top1ByQuestionRef.set(question.questionRef, {
-        committed: top1.length > 0,
-        top1IsGold: top1[0]?.card.eventId === resolvedEventId,
-      });
+      const committed = top1.length > 0;
+      const top1IsGold = top1[0]?.card.eventId === resolvedEventId;
+      ungatedTop1.push({ committed, top1IsGold });
       fourStateProbes.push({
         probeRef: question.questionRef,
         hasGold: true,
-        committed: top1.length > 0,
-        top1IsGold: top1[0]?.card.eventId === resolvedEventId,
+        committed,
+        top1IsGold,
         highRisk: question.highRisk ?? false,
       });
     }
@@ -595,6 +608,8 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
     let clarifyFixturePresent = true;
     let clarifyItems: LoadedClarifyFixtures['items'] = [];
     let judgmentV2: JudgmentV2 | undefined;
+    let judgmentV2Gated: JudgmentV2 | undefined;
+    let fourStateGated: FourStateSummary | undefined;
     if (isV2Probes && options.holdout) {
       // 澄清档只在终判（封存集）路径结算，施工 dry-run 不消化探针。
       try {
@@ -603,21 +618,23 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
         if (!(error instanceof NotFoundError)) throw error;
         clarifyFixturePresent = false;
       }
-      const layerProbes: LayerProbeV2[] = [];
-      for (let i = 0; i < gold.length; i += 1) {
-        const result = gold[i]!;
-        const question = questions[i];
-        if (result.constructionLayer === undefined || question === undefined) continue;
-        const top1 = top1ByQuestionRef.get(result.questionRef) ?? { committed: false, top1IsGold: false };
-        layerProbes.push({
-          layer: result.constructionLayer,
-          eventId: result.targetEventId,
-          hit: result.hit,
-          highRisk: question.highRisk ?? false,
-          committed: top1.committed,
-          top1IsGold: top1.top1IsGold,
-        });
-      }
+      // 192-H2：层探针按题目索引逐题对齐，同事件跨层题（v5 §5.3）不再以后写层顶包先写层。
+      const layerProbes = buildLayerProbesV2(gold, questions, ungatedTop1);
+
+      // 192-H1：生产门后栈等价回放。与 src/assembly/index.ts 的 runGatedSearch 同构——
+      // searchExplained 取未截断全集 → normalizeLexicalText 规范化 → applyGate 逐卡裁决，
+      // 门后再截 limit=1。审计不构造时间信封；#131 起时间窗只留痕不删卡，提交集合与生产一致。
+      // 不经 runGatedSearch 直调是因为只读柄不满足 RuntimeMemoryHandle 的写窄能力形状。
+      const gatedTop1 = await collectTop1Records(questions, async (question) => {
+        const qNorm = normalizeLexicalText(question.queryText);
+        const candidates = await explainedHandle.searchExplained({ text: question.queryText, atMs: options.nowMs, limit: undefined });
+        const outcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
+        const resolvedEventId = relayMap.get(question.targetEventId) ?? question.targetEventId;
+        const topCard = outcome.accepted[0]?.card ?? null;
+        return { committed: topCard !== null, top1IsGold: topCard !== null && topCard.eventId === resolvedEventId };
+      });
+      const gatedLayerProbes = buildLayerProbesV2(gold, questions, gatedTop1);
+
       const decoyProbes: DecoyProbeV2[] = [];
       for (let i = 0; i < decoy.length; i += 1) {
         const result = decoy[i]!;
@@ -625,6 +642,8 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
         if (item === undefined) throw new IntegrityError('v2 判据：诱饵结果与夹具条数不齐，拒绝结算');
         const kind = item.decoyKind;
         if (kind === undefined) throw new IntegrityError('v2 判据：诱饵条目缺 decoyKind，无法按三类结算');
+        // 注意：R2 诱饵对仍沿用 scoreDecoy 的粗召回排序口径；门后栈下"双拒/单过门"如何计正确
+        // 属另立语义，192 号文书挂账后续，不在本次 harness 修复里静默改口径。
         decoyProbes.push({ kind, correct: result.correct, highRiskError: result.highRiskError });
       }
       const abstainV2: AbstainProbeV2[] = abstainItems.map((item, index) => {
@@ -633,6 +652,27 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
         return { kind: item.kind, committed: probe.committed, top1IsGold: probe.top1IsGold };
       });
       const clarifyProbes: ClarifyProbeV2[] = [];
+      // 门后栈弃权/澄清探针：与金标题同几何，逐题独立回放、不共享任何 Map。
+      const gatedAbstainV2: AbstainProbeV2[] = [];
+      const gatedAbstainFourState: FourStateProbeInput[] = [];
+      for (const item of abstainItems) {
+        const qNorm = normalizeLexicalText(item.query);
+        const candidates = await explainedHandle.searchExplained({ text: item.query, atMs: options.nowMs, limit: undefined });
+        const outcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
+        const topCard = outcome.accepted[0]?.card ?? null;
+        const committed = topCard !== null;
+        const top1IsGold = item.goldCardId !== null && topCard?.cardId === item.goldCardId;
+        gatedAbstainV2.push({ kind: item.kind, committed, top1IsGold });
+        gatedAbstainFourState.push({
+          probeRef: `abstain:${item.kind}`,
+          hasGold: abstainHasGold(item),
+          committed,
+          top1IsGold,
+          highRisk: false,
+          probeKind: item.kind,
+        });
+      }
+      const gatedClarifyProbes: ClarifyProbeV2[] = [];
       for (const item of clarifyItems) {
         const top1 = await readHandle.search({ text: item.query, atMs: options.nowMs, limit: 1 });
         const top1CardId = top1[0]?.card.cardId ?? null;
@@ -642,8 +682,34 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
           top1IsGold: false,
           top1IsDecoy: top1CardId !== null && item.pairCardIds.includes(top1CardId),
         });
+        const qNorm = normalizeLexicalText(item.query);
+        const candidates = await explainedHandle.searchExplained({ text: item.query, atMs: options.nowMs, limit: undefined });
+        const outcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
+        const gatedCardId = outcome.accepted[0]?.card.cardId ?? null;
+        gatedClarifyProbes.push({
+          query: item.query,
+          committed: gatedCardId !== null,
+          top1IsGold: false,
+          top1IsDecoy: gatedCardId !== null && item.pairCardIds.includes(gatedCardId),
+        });
       }
+      // 门后四态汇总（金标题＋弃权题），供报告与 notes 留档；粗召回四态仍以前文 fourState 为准。
+      const gatedFourStateProbes: FourStateProbeInput[] = questions.map((question, index) => {
+        const observation = gatedTop1[index]!;
+        return {
+          probeRef: question.questionRef,
+          hasGold: true,
+          committed: observation.committed,
+          top1IsGold: observation.top1IsGold,
+          highRisk: question.highRisk ?? false,
+        };
+      });
+      fourStateGated = summarizeFourState([...gatedFourStateProbes, ...gatedAbstainFourState]);
       judgmentV2 = judgeV2({ gold: layerProbes, decoy: decoyProbes, abstain: abstainV2, clarify: clarifyProbes }, { seed });
+      judgmentV2Gated = judgeV2(
+        { gold: gatedLayerProbes, decoy: decoyProbes, abstain: gatedAbstainV2, clarify: gatedClarifyProbes },
+        { seed },
+      );
     }
 
     // consistency：v1 无叙事线，reflection 对来自夹具组织（合成期为空）→ N/A。
@@ -728,6 +794,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       sampleN: items.length,
       abstainFixturePresent,
       fourState,
+      ...(fourStateGated ? { fourStateGated } : {}),
       initiationMerge: 'system->environment',
       decoyPairs: decoyPairs.length,
       nodeVersion: process.version,
@@ -765,6 +832,8 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       abstainFixturePresent,
       clarifyFixturePresent,
       ...(judgmentV2 ? { judgmentV2 } : {}),
+      ...(judgmentV2Gated ? { judgmentV2Gated } : {}),
+      ...(fourStateGated ? { fourStateGated } : {}),
       provenanceFailed: provenance.failed,
       holdout: { mode: holdoutMode, folds, ...(lOeo ? { loeo: lOeo } : {}) },
       redLines: { r1, r2, r3 },
@@ -811,14 +880,13 @@ function formatReport(report: AuditReport): string {
     lines.push(`错认率/召回 ：falseCommit=${pct(fs.rates.falseCommitRate)} recallAfterGate=${pct(fs.rates.recallAfterGate)} 高危错认=${fs.highRiskWrongCommits}`);
     lines.push(`弃权探针文件：${report.abstainFixturePresent ? '已加载' : '缺失（金标题四态照算）'}`);
   }
-  if (report.judgmentV2 !== undefined) {
-    const j = report.judgmentV2;
+  const renderV2Judgment = (j: JudgmentV2, title: string, gatedSummary?: FourStateSummary): void => {
     const fmt = (e: { status?: 'n-a' } | { point: number; ciLower: number; ciUpper: number; n: number }): string =>
       'point' in e ? `${e.point.toFixed(4)} [${e.ciLower.toFixed(4)}, ${e.ciUpper.toFixed(4)}] n=${e.n}` : 'N/A';
-    lines.push('── v2 判决（预注册 v5 §6.2 / §6.3）──────────────────────────');
+    lines.push(title);
     lines.push(`R1 宏(S0+S1)：${fmt(j.r1Macro as never)} 簇=${('clusterCount' in j.r1Macro ? j.r1Macro.clusterCount : 0) ?? 0} 门=${j.gates.r1Macro ? '过' : '未过'}`);
     lines.push(`R1_S0 副条件：${fmt(j.r1S0 as never)} 门=${j.gates.r1S0 ? '过' : '未过'}`);
-    lines.push(`R2 整体200对：${fmt(j.r2 as never)} 高危错认=${j.decoyHighRiskErrors} 门=${j.gates.r2 ? '过' : '未过'}`);
+    lines.push(`R2 整体200对：${fmt(j.r2 as never)} 高危错认=${j.decoyHighRiskErrors} 门=${j.gates.r2 ? '过' : '未过'}（R2 仍为粗召回排序口径，见 192 挂账）`);
     for (const kind of ['same-family', 'cross-family-collision', 'cross-family-detail-reuse'] as const) {
       lines.push(`R2 ${kind}：${fmt(j.r2ByKind[kind] as never)}（明细必报，整体作门）`);
     }
@@ -833,6 +901,11 @@ function formatReport(report: AuditReport): string {
       `弃权：unanswerable ca=${j.abstain.unanswerable.correctAbstain}/${j.abstain.unanswerable.n} 门=${j.gates.abstain ? '过' : '未过'}` +
         `；noise cc=${j.abstain.noise.correctCommit} wc=${j.abstain.noise.wrongCommit} wa=${j.abstain.noise.wrongAbstain}（三态只登记）`,
     );
+    if (gatedSummary !== undefined) {
+      lines.push(
+        `门后四态合计：cc=${gatedSummary.counts.cc} wc=${gatedSummary.counts.wc} wa=${gatedSummary.counts.wa} ca=${gatedSummary.counts.ca} 高危wc=${gatedSummary.highRiskWrongCommits}（N=${gatedSummary.counts.N}）`,
+      );
+    }
     lines.push('── 澄清档披露（F6，只作描述性统计，不进 R1/R2 分母）────────────');
     lines.push(`汇总：澄清/低置信=${j.clarify.clarified} 自信给卡=${j.clarify.confidentCard} 其中诱饵置顶=${j.clarify.decoyTop1}（文件${report.clarifyFixturePresent ? '已加载' : '缺失'}）`);
     for (const row of j.clarify.rows) {
@@ -841,6 +914,19 @@ function formatReport(report: AuditReport): string {
     lines.push(`精度闭环：${j.gates.precision ? '通过' : '未通过'}`);
     lines.push(`判决      ：${j.verdict}`);
     for (const note of j.notes) lines.push(`  · ${note}`);
+  };
+  if (report.judgmentV2 !== undefined) {
+    renderV2Judgment(
+      report.judgmentV2,
+      '── v2 判决·粗召回基线（无门宽召回 top1，192-H2 已修撞键；仅诊断对照，不代表生产栈）──',
+    );
+  }
+  if (report.judgmentV2Gated !== undefined) {
+    renderV2Judgment(
+      report.judgmentV2Gated,
+      '── v2 判决·生产门后栈（runGatedSearch 等价口径，192-H1；线上工具同几何）──────────',
+      report.fourStateGated,
+    );
   }
   lines.push('══════════════════════════════════════════════════════════════');
   return lines.join('\n');
