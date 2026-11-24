@@ -197,7 +197,8 @@ test('T6 CANDIDATES：三个候选日词面合格卡全部过门（OR 并集/禁
     [friday, saturday, sunday],
   );
   assert.ok(out.accepted.every((g) => g.gateReasons.includes('time-window-ignored')));
-  assert.ok(out.accepted.every((g) => g.slot === 'explore'));
+  // #178（P-a）：门控路径不再把零采用新卡丢进随机探索位，槽位统一 ranked。
+  assert.ok(out.accepted.every((g) => g.slot === 'ranked'));
 });
 
 test('T6 CANDIDATES：同一卡横跨两个候选窗只提交一次（按卡去重不重复）', () => {
@@ -278,7 +279,8 @@ test('T6 #129 双 exact 平局不放权：两张都过门，WINDOW 信封下各�
   );
   assert.ok(out.accepted.every((g) => !g.gateReasons.includes('tie-no-strict-leader')));
   assert.ok(out.accepted.every((g) => g.gateReasons.includes('time-window-ignored')));
-  assert.ok(out.accepted.every((g) => g.slot === 'explore'));
+  // #178（P-a）：槽位统一 ranked（探索位从精确检索退场）。
+  assert.ok(out.accepted.every((g) => g.slot === 'ranked'));
 });
 
 // ── #131 V2 可达原因码锁：time-conflict 永久不可达 ───────────────────────────

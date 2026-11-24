@@ -334,7 +334,7 @@ test('R-02 v2 反向包含：线索字段完整出现于问句才过门，挂最
   assert.ok(weak.rejected[0]!.gateReasons.includes('like-only-weak-match'));
 });
 
-test('R-03 #129 v2 严格优超/tie 弃权已废：合格卡一张不删，按 occurredMs 排序，证据长度只留痕', () => {
+test('R-03 #129 v2 严格优超/tie 弃权已废：合格卡一张不删，集合口径不依赖排序键，证据长度只留痕', () => {
   const q = '周末一起去咖啡馆约会怎么样';
   // 直接走 makeCard(partial) 造完整卡（makeRanked 的 card 键会整体覆盖，不能只给残片）。
   const overlapAt = (fields: string[], occurredMs: number): ExplainedRankedCard => ({
@@ -357,8 +357,8 @@ test('R-03 #129 v2 严格优超/tie 弃权已废：合格卡一张不删，按 o
     );
 
   // 旧平局场景：等长证据两张零采用新卡都过门、一张不删，rejected 为 0。
-  // #130 起零采用卡入探索池，截窗内次序由 atMs 派生 RNG 抽取决定（不再保证 occurred 序）；
-  // 门级只保证集合不丢、槽位与汇总一致、同 atMs 可重放，rank 字典序职责由 rank.test 承接。
+  // #178（P-a）起零采用卡不再进随机探索池：门级按证据三元组定序、打平回落 rankCards 记忆序；
+  // 门级保证集合不丢、槽位与汇总一致、同 atMs 逐字节可重放。
   const tieInput = {
     atMs: TEST_NOW_MS,
     qNorm: normalizeLexicalText(q),
@@ -370,9 +370,10 @@ test('R-03 #129 v2 严格优超/tie 弃权已废：合格卡一张不删，按 o
   assert.equal(tie.accepted.length, 2);
   assert.equal(tie.rejected.length, 0);
   assert.deepEqual([...tie.accepted.map((c) => c.card.occurredMs)].sort((a, b) => a - b), [2_000, 9_000]);
-  assert.ok(tie.accepted.every((c) => c.slot === 'explore'), '零采用新卡统一盖 explore 槽位');
-  assert.equal(tie.slots?.explore, 2);
-  assert.deepEqual(applyGateV2(tieInput), tie, '同 atMs 探索抽取逐字节可重放');
+  // #178（P-a）：门控路径取消随机探索位，零采用新卡与老卡一律 ranked，次序由证据序决定。
+  assert.ok(tie.accepted.every((c) => c.slot === 'ranked'), '门控路径槽位统一 ranked');
+  assert.deepEqual(tie.slots, { marked: 0, ranked: 2, explore: 0, exploreWanted: 0, exploreFilled: 0 });
+  assert.deepEqual(applyGateV2(tieInput), tie, '同 atMs 逐字节可重放（确定性证据序）');
   assert.ok(noLeaderCodes(tie));
 
   // 三张证据长短不一：词面都合格就全部保留（旧 C-10 场景整体不再弃权）。
@@ -407,7 +408,8 @@ test('R-03 #129 v2 严格优超/tie 弃权已废：合格卡一张不删，按 o
   assert.equal(containmentByOccurred.get(9_000), 3, '短证据卡留痕 3 码点');
   assert.equal(containmentByOccurred.get(1_000), 5, '长证据卡留痕 5 码点');
 
-  // exact-alias 与 fts 卡并存：两张都过门；exact 不再天然独占首位，排序只认四键，原因码各自保留。
+  // exact-alias 与 fts 卡并存：两张都过门；#178 起 exact 以显式布尔置顶（证据三元组 Infinity），
+  // 不再靠记忆序四键偶然排序，原因码各自保留。
   const exactWin = applyGateV2({
     atMs: TEST_NOW_MS,
     qNorm: normalizeLexicalText(q),
@@ -477,15 +479,17 @@ test('G5-1 V2 hit 信封携带 slots 汇总，且每张 accepted 按身份带 ma
   const out = applyGateV2({ atMs: TEST_NOW_MS, qNorm: 'q', candidates });
   assert.equal(out.status, 'hit');
   assert.ok(out.slots !== undefined, 'V2 hit 必须带 slots 汇总');
+  // #178（P-a）：explore 恒 0（随机探索位从精确检索退场）；marked 按她的复盘标记保留，其余 ranked。
   assert.equal(out.slots?.marked, 1);
-  assert.equal(out.slots?.ranked, 1);
-  assert.ok((out.slots?.explore ?? 0) >= 1, '零采用新卡至少占一个探索位');
+  assert.equal(out.slots?.ranked, 3);
+  assert.equal(out.slots?.explore, 0);
   for (const accepted of out.accepted) {
     assert.ok(accepted.slot !== undefined, '每张过门卡必须带 slot 标记');
     if (accepted.slot === 'marked') assert.ok(accepted.card.weight > 0);
-    if (accepted.slot === 'ranked') assert.ok(accepted.card.hitCount > 0 && accepted.card.weight === 0);
-    if (accepted.slot === 'explore') assert.equal(accepted.card.hitCount, 0);
+    if (accepted.slot === 'ranked') assert.equal(accepted.card.weight, 0);
+    assert.ok(accepted.slot !== 'explore', '门控路径不得再产出 explore 槽位');
   }
+  assert.equal(out.accepted[0]?.slot, 'marked', '她的复盘标记恒置顶');
   const slotCounts = { marked: 0, ranked: 0, explore: 0 };
   for (const accepted of out.accepted) slotCounts[accepted.slot ?? 'ranked'] += 1;
   assert.deepEqual(slotCounts, { marked: out.slots!.marked, ranked: out.slots!.ranked, explore: out.slots!.explore });

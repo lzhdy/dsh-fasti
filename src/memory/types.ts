@@ -308,7 +308,11 @@ export type GateReasonCode =
 /**
  * #130 截窗槽位标记（与 rank.ts SlotTag 同字面量联合，结构同形不互引：types 是无环纯类型基座，
  * rank 单向依赖 types，故此处独立声明联合，靠结构兼容与 gate/rank 测试锁同步）。
- *  - marked：weight>0 的置顶卡；ranked：有效强度老卡；explore：8:2 探索位（零采用新卡随机抽出）。
+ *  - marked：weight>0 的置顶卡；ranked：其余过门卡；explore：8:2 探索位（零采用新卡随机抽出）。
+ *
+ * #178（P-a）语义收窄：门控路径 `applyGateV2` 已废掉随机探索位，只产出 marked（她的复盘标记，恒置顶）
+ * 与 ranked（证据三元组定序），explore 恒 0；`explore` 字面量保留给浏览端口（rank.composeView），
+ * 不再出现在精确检索信封里。v1 冻结路径仍恒 undefined。
  */
 export type GatedSlotTag = 'marked' | 'ranked' | 'explore';
 
@@ -327,7 +331,7 @@ export interface GatedRankedCard extends ExplainedRankedCard {
   gateReasons: GateReasonCode[];
   /** 演进项占位：未来连续有界证据分承载位，第一层不填（恒 undefined），预留以避免未来破 API。 */
   evidence?: number;
-  /** #130 截窗槽位：仅 applyGateV2 产出；v1 冻结路径恒 undefined（零漂移）。 */
+  /** #130 截窗槽位：仅 applyGateV2 产出；v1 冻结路径恒 undefined（零漂移）。#178 起只会是 'marked' 或 'ranked'。 */
   slot?: GatedSlotTag;
 }
 

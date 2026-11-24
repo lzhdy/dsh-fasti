@@ -27,7 +27,7 @@
  */
 
 import { asciiLower } from '../projection/types.ts';
-import { RANK_POLICY, composeView, mulberry32, rankCards } from './rank.ts';
+import { RANK_POLICY, rankCards } from './rank.ts';
 import { buildSerialMap } from './serial.ts';
 import { CURRENT_RULES_VERSION } from './types.ts';
 import type {
@@ -217,44 +217,73 @@ export const GATE_POLICY_V2 = Object.freeze({
  * 仅做原生字符串运算，不 import 任何索引模块（守无环静态门）。
  */
 export function reverseContainment(qNorm: string, fields: readonly string[] | undefined, minLen: number): number {
-  if (fields === undefined) {
-    return 0;
-  }
-  let best = 0;
-  for (const raw of fields) {
-    const field = normalizeLexicalText(raw);
-    const length = [...field].length;
-    if (field !== '' && length >= minLen && qNorm.includes(field) && length > best) {
-      best = length;
+  return reverseContainmentDetail(qNorm, fields, minLen).max;
+}
+
+/**
+ * 证据三元组（P-a）：命中字段总码点 `sum` → 命中字段数 `hits` → 最长字段码点 `max`。
+ * 排序键顺序如此，理由见 #178：只比 max 会把「一个长字段」与「两个短字段合计更长」判平
+ * （N1h 实测 K1 最长单字段 top1 0.500 vs K2 三元组 1.000）。
+ */
+export interface ContainmentEvidence {
+  readonly sum: number;
+  readonly hits: number;
+  readonly max: number;
+}
+
+export function reverseContainmentDetail(
+  qNorm: string,
+  fields: readonly string[] | undefined,
+  minLen: number,
+): ContainmentEvidence {
+  const lens: number[] = [];
+  if (fields !== undefined) {
+    for (const raw of fields) {
+      const field = normalizeLexicalText(raw);
+      const length = [...field].length;
+      if (field !== '' && length >= minLen && qNorm.includes(field)) lens.push(length);
     }
   }
-  return best;
+  return {
+    sum: lens.reduce((acc, n) => acc + n, 0),
+    hits: lens.length,
+    max: lens.length === 0 ? 0 : Math.max(...lens),
+  };
 }
 
 interface V2Judgement {
   accept: boolean;
   reasons: GateReasonCode[];
   evidence: number;
+  /** P-a：排序用三元组；exact-alias 用 `exact=true` 单独置顶，避免 Infinity 相减出 NaN。 */
+  evidenceDetail: ContainmentEvidence;
+  exact: boolean;
 }
 
 /** rules-v2 单卡裁决：exact 恒过；fts-overlap 须过反向包含；like 构造性拒绝。 */
 function judgeV2(candidate: ExplainedRankedCard, qNorm: string): V2Judgement {
   const kinds = candidate.matchKinds;
   if (kinds.includes('exact-alias')) {
-    return { accept: true, reasons: ['exact-alias-pass'], evidence: GATE_POLICY_V2.exactEvidenceInfinity };
+    return {
+      accept: true,
+      reasons: ['exact-alias-pass'],
+      evidence: GATE_POLICY_V2.exactEvidenceInfinity,
+      evidenceDetail: { sum: GATE_POLICY_V2.exactEvidenceInfinity, hits: 1, max: GATE_POLICY_V2.exactEvidenceInfinity },
+      exact: true,
+    };
   }
   if (kinds.includes('fts-overlap')) {
     if (candidate.lexicalFields === undefined) {
       // 防御：v2 FTS 候选理应携带结构化字段；缺失即保守拒绝，宁空勿错。
-      return { accept: false, reasons: ['missing-cue-text'], evidence: 0 };
+      return { accept: false, reasons: ['missing-cue-text'], evidence: 0, evidenceDetail: { sum: 0, hits: 0, max: 0 }, exact: false };
     }
-    const evidence = reverseContainment(qNorm, candidate.lexicalFields, GATE_POLICY_V2.minContainCodepoints);
-    if (evidence > 0) {
-      return { accept: true, reasons: ['reverse-containment-pass'], evidence };
+    const detail = reverseContainmentDetail(qNorm, candidate.lexicalFields, GATE_POLICY_V2.minContainCodepoints);
+    if (detail.max > 0) {
+      return { accept: true, reasons: ['reverse-containment-pass'], evidence: detail.max, evidenceDetail: detail, exact: false };
     }
-    return { accept: false, reasons: ['no-containment'], evidence: 0 };
+    return { accept: false, reasons: ['no-containment'], evidence: 0, evidenceDetail: { sum: 0, hits: 0, max: 0 }, exact: false };
   }
-  return { accept: false, reasons: ['like-only-weak-match'], evidence: 0 };
+  return { accept: false, reasons: ['like-only-weak-match'], evidence: 0, evidenceDetail: { sum: 0, hits: 0, max: 0 }, exact: false };
 }
 
 /**
@@ -324,28 +353,51 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
     return { status: 'no-match', candidateCount, accepted: [], rejected, reason: 'all-rejected', serialMap: buildSerialMap([]) };
   }
 
-  // #129：废严格优超/tie 弃权——词面合格卡一张不删，全体交 rank 排序器按
-  // weight→strength（遗忘）→occurred→cardId 字典序定先后，澄清权归她。
-  // 证据长度仅随门原因留痕（containmentLength），不再承担删卡职责。
-  // #130：排序显式不截断（limit:null 拿完整名单），再交 composeView 做 8:2 截窗与槽位标记；
-  // 探索随机性由注入 atMs 派生种子的 mulberry32 驱动，门内禁 Math.random，同 atMs 可逐字节重放。
+  // #129：废严格优超/tie 弃权——词面合格卡一张不删，澄清权归她。
+  // #178（P-a）：合格集不再交 composeView 做 8:2 截窗。原因：封存卷卡全为零采用新卡
+  // （build-synthetic-world.ts 派卡 weight=0/hitCount=0），会整块落进「探索位」并被
+  // mulberry32 随机抽，使证据序在精确检索里完全失效（探针实测 8 次里 1 次反序）。
+  // 现改为：证据三元组（总码点→字段数→最长字段）定序，三元组打平才回落记忆序
+  // （weight→strength→occurred→cardId，由 rankCards 提供），绝不抽签；
+  // 槽位语义随之收敛为「marked（她的复盘标记，恒置顶）/ ranked（其余）」二态，
+  // explore 与探索位名额恒 0（探索留待浏览端口，不进精确检索）。
   const ranked = rankCards(
     passed.map((entry) => entry.candidate.card),
     { nowMs: atMs, limit: null },
   );
-  const view = composeView(ranked, {
-    limit: limit ?? RANK_POLICY.defaultLimit,
-    rng: mulberry32(atMs >>> 0),
+  const memOrder = new Map<string, number>();
+  ranked.entries.forEach((entry, idx) => memOrder.set(entry.cardId, idx));
+
+  const ordered = [...passed].sort((x, y) => {
+    const jx = x.judgement;
+    const jy = y.judgement;
+    // 她的复盘标记（weight>0）是显式意志，恒置顶且不被证据序覆盖；与 rankCards 第 1 键同序。
+    const wx = x.candidate.card.weight > 0 ? 1 : 0;
+    const wy = y.candidate.card.weight > 0 ? 1 : 0;
+    if (wx !== wy) return wy - wx;
+    // exact-alias 用显式布尔置顶：Infinity 参与相减会得 NaN，破坏排序稳定性。
+    const ex = jx.exact ? 1 : 0;
+    const ey = jy.exact ? 1 : 0;
+    if (ex !== ey) return ey - ex;
+    if (jy.evidenceDetail.sum !== jx.evidenceDetail.sum) return jy.evidenceDetail.sum - jx.evidenceDetail.sum;
+    if (jy.evidenceDetail.hits !== jx.evidenceDetail.hits) return jy.evidenceDetail.hits - jx.evidenceDetail.hits;
+    if (jy.evidenceDetail.max !== jx.evidenceDetail.max) return jy.evidenceDetail.max - jx.evidenceDetail.max;
+    const orderX = memOrder.get(x.candidate.card.cardId);
+    const orderY = memOrder.get(y.candidate.card.cardId);
+    return (orderX ?? 0) - (orderY ?? 0);
   });
-  const passedById = new Map(passed.map((entry) => [entry.candidate.card.cardId, entry]));
-  const accepted: GatedRankedCard[] = view.entries.map((slottedEntry) => {
-    const entry = passedById.get(slottedEntry.cardId);
-    if (entry === undefined) throw new Error(`rank 排序返回了未过门卡：${slottedEntry.cardId}`);
+
+  const cap = limit ?? RANK_POLICY.defaultLimit;
+  let markedCount = 0;
+  const accepted: GatedRankedCard[] = ordered.slice(0, cap).map((entry) => {
     const reasons = withTimeTag(entry.judgement.reasons, entry.timeTag);
     const gated = Number.isFinite(entry.judgement.evidence)
       ? { ...toGated(entry.candidate, reasons), containmentLength: entry.judgement.evidence }
       : toGated(entry.candidate, reasons);
-    return { ...gated, slot: slottedEntry.slot };
+    // marked 保留她的复盘标记语义；其余一律 ranked（探索位从精确检索退场）。
+    const slot = entry.candidate.card.weight > 0 ? 'marked' as const : 'ranked' as const;
+    if (slot === 'marked') markedCount += 1;
+    return { ...gated, slot };
   });
 
   return {
@@ -354,7 +406,7 @@ export function applyGateV2(input: ApplyGateInput): GatedSearchOutcome {
     accepted,
     rejected,
     serialMap: buildSerialMap(accepted),
-    slots: view.slots,
+    slots: { marked: markedCount, ranked: accepted.length - markedCount, explore: 0, exploreWanted: 0, exploreFilled: 0 },
   };
 }
 
