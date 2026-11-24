@@ -32,7 +32,7 @@ import { emitUnits, ftsOrExprOf, ftsPhraseOf } from './bigram.ts';
 import { aliasFromRow, cueTextOf } from './fts.ts';
 import { isEffectiveAt } from './invalidate.ts';
 import { cardFromRow } from './store.ts';
-import type { ExplainedRankedCard, MatchKind, RankedCard, SearchQuery } from './types.ts';
+import type { AliasRow, ExplainedRankedCard, MatchKind, RankedCard, SearchQuery } from './types.ts';
 import { CURRENT_RULES_VERSION } from './types.ts';
 
 /** 记忆侧 FTS 最短查询码点数（#124 bigram 几何；经历库 trigram 常量在 projection 侧独立保留）。 */
@@ -74,6 +74,72 @@ interface Hit {
   cueText?: string;
   /** rules-v2 结构化词面字段（仅 V2 fts-overlap 携带，gate 逐字段反向包含用）。 */
   lexicalFields?: string[];
+}
+
+/** 批量 IN 查询的每批 card_id 上限：守 SQLite 变量数缺省上限 999，留足余量。 */
+const IN_QUERY_BATCH = 400;
+
+function chunked<T>(items: readonly T[]): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += IN_QUERY_BATCH) {
+    batches.push(items.slice(i, i + IN_QUERY_BATCH));
+  }
+  return batches;
+}
+
+/**
+ * 按 card_id 批量取行（P-b：消逐卡 N+1）。返回以 card_id 为键的字典；缺行即缺键，
+ * 与逐卡 `get` 的 skip 语义逐句同构。调用方只按字典取用，不依赖返回行序。
+ */
+function selectRowsByCardIds(
+  db: DatabaseSync,
+  selectHead: string,
+  cardIds: readonly string[],
+): Map<string, Record<string, unknown>> {
+  const byCardId = new Map<string, Record<string, unknown>>();
+  if (cardIds.length === 0) {
+    return byCardId;
+  }
+  for (const batch of chunked([...new Set(cardIds)])) {
+    const stmt = db.prepare(`${selectHead}${batch.map(() => '?').join(',')})`);
+    for (const row of stmt.all(...batch) as Array<Record<string, unknown>>) {
+      byCardId.set(String(row['card_id']), row);
+    }
+  }
+  return byCardId;
+}
+
+/**
+ * 按 card_id 批量取活跃非敏感别名（P-b：消逐卡 N+1）。
+ * 组内顺序显式 ORDER BY rowid——逐卡 `WHERE card_id = ?` 在无索引约束下走全表 rowid 扫描，
+ * 这里显式钉死同一顺序，保证 cueText 与 lexicalFields 的字段次序逐字节不变
+ * （由 n1g 基线快照哈希与既有红测双重锁定）。
+ */
+function selectAliasesByCardIds(
+  db: DatabaseSync,
+  cardIds: readonly string[],
+): Map<string, AliasRow[]> {
+  const byCardId = new Map<string, AliasRow[]>();
+  if (cardIds.length === 0) {
+    return byCardId;
+  }
+  for (const batch of chunked([...new Set(cardIds)])) {
+    const stmt = db.prepare(
+      `SELECT * FROM mem_alias WHERE card_id IN (${batch.map(() => '?').join(',')})`
+      + " AND status = 'active' AND sensitive = 0 ORDER BY rowid",
+    );
+    for (const row of stmt.all(...batch) as Array<Record<string, unknown>>) {
+      const cardId = String(row['card_id']);
+      const alias = aliasFromRow(row);
+      const list = byCardId.get(cardId);
+      if (list === undefined) {
+        byCardId.set(cardId, [alias]);
+      } else {
+        list.push(alias);
+      }
+    }
+  }
+  return byCardId;
 }
 
 /**
@@ -139,16 +205,19 @@ export function searchCardsExplainedV1(
       const rows = db
         .prepare('SELECT card_id, bm25(mem_card_fts) AS bm25_raw FROM mem_card_fts WHERE mem_card_fts MATCH ?')
         .all(phrase) as Array<{ card_id: string; bm25_raw: number }>;
-      const cardCueStmt = db.prepare('SELECT display_cues_json FROM mem_card WHERE card_id = ?');
-      const aliasStmt = db.prepare(
-        "SELECT * FROM mem_alias WHERE card_id = ? AND status = 'active' AND sensitive = 0",
+      // P-b：候选卡的 cue 与别名各一次批量取，取代逐卡单行查询（几何判定一行未改）。
+      const cuesByCardId = selectRowsByCardIds(
+        db,
+        'SELECT card_id, display_cues_json FROM mem_card WHERE card_id IN (',
+        rows.map((row) => row.card_id),
       );
+      const aliasesByCardId = selectAliasesByCardIds(db, rows.map((row) => row.card_id));
       for (const row of rows) {
-        const cardRow = cardCueStmt.get(row.card_id) as { display_cues_json: string } | undefined;
+        const cardRow = cuesByCardId.get(row.card_id) as { display_cues_json: string } | undefined;
         if (cardRow === undefined) {
           continue;
         }
-        const aliases = (aliasStmt.all(row.card_id) as Array<Record<string, unknown>>).map(aliasFromRow);
+        const aliases = aliasesByCardId.get(row.card_id) ?? [];
         const cues = JSON.parse(cardRow.display_cues_json) as string[];
         // 复核靶＝原文字段（非 FTS bigram 列）：逐字段在规范化空间做子串判定，任一命中即收口通过。
         const confirmed = [...cues, ...aliases.map((alias) => alias.termNorm)].some((field) =>
@@ -176,10 +245,15 @@ export function searchCardsExplainedV1(
     }
   }
 
-  const cardStmt = db.prepare('SELECT * FROM mem_card WHERE card_id = ?');
+  // P-b：命中卡的整卡行一次批量取，取代逐卡单行查询。
+  const cardsByCardId = selectRowsByCardIds(
+    db,
+    'SELECT * FROM mem_card WHERE card_id IN (',
+    [...hits.keys()],
+  );
   const ranked: ExplainedRankedCard[] = [];
   for (const [cardId, hit] of hits) {
-    const raw = cardStmt.get(cardId) as Record<string, unknown> | undefined;
+    const raw = cardsByCardId.get(cardId);
     if (raw === undefined) {
       continue;
     }
@@ -277,16 +351,19 @@ export function searchCardsExplainedV2(
       const rows = db
         .prepare('SELECT card_id, bm25(mem_card_fts) AS bm25_raw FROM mem_card_fts WHERE mem_card_fts MATCH ?')
         .all(orExpr) as Array<{ card_id: string; bm25_raw: number }>;
-      const cardCueStmt = db.prepare('SELECT display_cues_json FROM mem_card WHERE card_id = ?');
-      const aliasStmt = db.prepare(
-        "SELECT * FROM mem_alias WHERE card_id = ? AND status = 'active' AND sensitive = 0",
+      // P-b：候选卡的 cue 与别名各一次批量取，取代逐卡单行查询（几何判定一行未改）。
+      const cuesByCardId = selectRowsByCardIds(
+        db,
+        'SELECT card_id, display_cues_json FROM mem_card WHERE card_id IN (',
+        rows.map((row) => row.card_id),
       );
+      const aliasesByCardId = selectAliasesByCardIds(db, rows.map((row) => row.card_id));
       for (const row of rows) {
-        const cardRow = cardCueStmt.get(row.card_id) as { display_cues_json: string } | undefined;
+        const cardRow = cuesByCardId.get(row.card_id) as { display_cues_json: string } | undefined;
         if (cardRow === undefined) {
           continue;
         }
-        const aliases = (aliasStmt.all(row.card_id) as Array<Record<string, unknown>>).map(aliasFromRow);
+        const aliases = aliasesByCardId.get(row.card_id) ?? [];
         const cues = JSON.parse(cardRow.display_cues_json) as string[];
         const fields = [...cues, ...aliases.map((alias) => alias.termNorm)];
         // v2：OR 命中即宽召回入候选，不做完整 query 子串收口；携带原文拼接串与结构化字段供 gate 反向包含裁决。
@@ -316,10 +393,15 @@ export function searchCardsExplainedV2(
     }
   }
 
-  const cardStmt = db.prepare('SELECT * FROM mem_card WHERE card_id = ?');
+  // P-b：命中卡的整卡行一次批量取，取代逐卡单行查询。
+  const cardsByCardId = selectRowsByCardIds(
+    db,
+    'SELECT * FROM mem_card WHERE card_id IN (',
+    [...hits.keys()],
+  );
   const ranked: ExplainedRankedCard[] = [];
   for (const [cardId, hit] of hits) {
-    const raw = cardStmt.get(cardId) as Record<string, unknown> | undefined;
+    const raw = cardsByCardId.get(cardId);
     if (raw === undefined) {
       continue;
     }
