@@ -35,30 +35,49 @@ import { deriveCuesFromKeyPoints } from '../../src/memory/cue-derive.ts';
 import { openMemoryWrite } from '../../src/memory/store.ts';
 import type { AliasRow, DecisionRecord, MemoryCard, RevisionRecord } from '../../src/memory/types.ts';
 import { buildWorldPlan, WORLD_REFERENCE_NOW_MS } from '../../src/memory/audit/corpus/world-plan.ts';
-import type { WorldPlan } from '../../src/memory/audit/corpus/world-plan.ts';
+import { SEED_V2, buildWorldV2 } from '../../src/memory/audit/corpus/world-plan-v2.ts';
 import { assertBlindPackageSafe, buildBlindPackage } from '../../src/memory/audit/corpus/blind-package.ts';
+import {
+  assertBlindPackageV2Shape,
+  buildBlindPackageV2,
+  buildWorldManifestV2,
+} from '../../src/memory/audit/corpus/blind-package-v2.ts';
 
 interface CliArgs {
   out: string | undefined;
   blindOut: string | undefined;
   seed: number | undefined;
+  /** #179：'v1'（默认，100 事件，行为与改造前逐字节一致）| 'v2'（500 事件）。 */
+  world: 'v1' | 'v2';
+  /** 仅对 --out 生效：目录带合成根标记时允许清空重建（无标记一律拒绝，防误删真实根）。 */
+  forceRebuild: boolean;
 }
 
+/** 无取值开关：解析时不吃下一个 token。 */
+const BOOLEAN_FLAGS: readonly string[] = ['--force-rebuild'];
+
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { out: undefined, blindOut: undefined, seed: undefined };
+  const args: CliArgs = { out: undefined, blindOut: undefined, seed: undefined, world: 'v1', forceRebuild: false };
   for (let i = 0; i < argv.length; i += 1) {
-    const flag = argv[i];
+    const flag = argv[i]!;
+    if (BOOLEAN_FLAGS.includes(flag)) {
+      if (flag === '--force-rebuild') args.forceRebuild = true;
+      continue;
+    }
     const value = argv[i + 1];
     if (value === undefined) {
       throw new Error(`参数 ${flag} 缺少取值`);
     }
     i += 1;
     if (flag === '--out') {
-      args.out = value;
+      args.out = path.resolve(value);
     } else if (flag === '--blind-out') {
-      args.blindOut = value;
+      args.blindOut = path.resolve(value);
     } else if (flag === '--seed') {
       args.seed = Number(value);
+    } else if (flag === '--world') {
+      if (value !== 'v1' && value !== 'v2') throw new Error(`--world 只接受 v1|v2，收到 ${value}`);
+      args.world = value;
     } else {
       throw new Error(`未知参数 ${flag}`);
     }
@@ -66,25 +85,68 @@ function parseArgs(argv: string[]): CliArgs {
   if (args.seed !== undefined && (!Number.isInteger(args.seed) || args.seed <= 0)) {
     throw new Error('--seed 须为正整数');
   }
+  // v2 蓝本的 seed 冻结在预注册里（改 seed 即改蓝图、N1h 结论脱节），不允许覆盖。
+  if (args.world === 'v2' && args.seed !== undefined && args.seed !== SEED_V2) {
+    throw new Error(`--world v2 的 seed 已冻结为 ${SEED_V2}，不接受 --seed ${args.seed}`);
+  }
   return args;
 }
 
-function ensureFreshDir(dir: string, label: string): void {
-  if (fs.existsSync(dir)) {
-    const entries = fs.readdirSync(dir);
-    if (entries.length > 0) {
-      throw new Error(`${label} 目录已存在且非空，拒绝覆盖：${dir}`);
-    }
-  } else {
+/**
+ * 合成根标记文件名。建根成功后写入 --out 根；`--force-rebuild` 只肯清空带此标记的目录，
+ * 从而「可重跑」与「绝不误删真实根」两者兼得（#179 缺口 8）。
+ */
+export const SYNTHETIC_ROOT_MARKER = '.fasti-synthetic-root.json';
+
+function ensureFreshDir(dir: string, label: string, opts?: { readonly allowRebuild?: boolean }): void {
+  if (!fs.existsSync(dir)) {
     ensureDir(dir);
+    return;
   }
+  if (fs.readdirSync(dir).length === 0) return;
+  const markerPath = path.join(dir, SYNTHETIC_ROOT_MARKER);
+  const marked = fs.existsSync(markerPath);
+  if (opts?.allowRebuild === true && marked) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    ensureDir(dir);
+    return;
+  }
+  throw new Error(
+    `${label} 目录已存在且非空，拒绝覆盖：${dir}` +
+      (marked ? '（检测到合成根标记，若确需重建请加 --force-rebuild）' : '（无合成根标记，绝不自动清空）'),
+  );
+}
+
+/**
+ * 两版蓝本的公共可见面：建根只吃这些字段，故 v1（100 事件）与 v2（500 事件）共用同一套
+ * 摄入/闭合/建卡逻辑，互不引入对方类型（v2 多出的 `hasRef` 仅存于蓝本，不参与建根）。
+ */
+export interface BuildableTurn {
+  readonly speaker: 'user';
+  readonly offsetMinutes: number;
+  readonly rawText: string;
+}
+
+export interface BuildableEvent {
+  readonly eventId: string;
+  readonly partition: 'sealed' | 'tuning';
+  readonly startedAtMs: number;
+  readonly endedMs: number;
+  readonly keyPoints: readonly string[];
+  readonly summary: string;
+  readonly turns: readonly BuildableTurn[];
+}
+
+export interface BuildablePlan {
+  readonly referenceNowMs: number;
+  readonly events: readonly BuildableEvent[];
 }
 
 function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-async function ingestWorld(plan: WorldPlan, outRoot: string): Promise<Map<string, string[]>> {
+async function ingestWorld(plan: BuildablePlan, outRoot: string): Promise<Map<string, string[]>> {
   const fasti = await Fasti.open({ dataRoot: outRoot });
   // 计划事件 id → 摄入产出的经历 id（保序）。
   const anchorsByEvent = new Map<string, string[]>();
@@ -123,7 +185,7 @@ async function ingestWorld(plan: WorldPlan, outRoot: string): Promise<Map<string
  * 返回系统事件 id → 全组锚点。
  */
 function finalizeEvents(
-  plan: WorldPlan,
+  plan: BuildablePlan,
   anchorsByEvent: Map<string, string[]>,
   openEvents: EventRecord[],
   outRoot: string,
@@ -165,7 +227,7 @@ function finalizeEvents(
 }
 
 /** G7：closed+ready 事件由 key_points 真派生建卡（rules-v2 离线盖章，零别名、零手写 cue）。 */
-async function seedDerivedCards(plan: WorldPlan, outRoot: string, closedAnchors: Map<string, string[]>): Promise<void> {
+async function seedDerivedCards(plan: BuildablePlan, outRoot: string, closedAnchors: Map<string, string[]>): Promise<void> {
   const entries: Array<{ card: MemoryCard }> = [];
   let index = 0;
   for (const [survivorId, anchors] of closedAnchors) {
@@ -243,6 +305,14 @@ async function seedDerivedCards(plan: WorldPlan, outRoot: string, closedAnchors:
   }
 }
 
+/** 建根成功后才落标记：让 `--force-rebuild` 的授权范围严格限于「已成功建成的合成根」。 */
+function writeRootMarker(outRoot: string, schema: string, seed: number, world: 'v1' | 'v2'): void {
+  writeFileAtomic(
+    path.join(outRoot, SYNTHETIC_ROOT_MARKER),
+    `${JSON.stringify({ schema, seed, world, note: '本目录由 build-synthetic-world.ts 生成，可安全删除或 --force-rebuild 重建' }, null, 2)}\n`,
+  );
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (!args.out || !args.blindOut) {
@@ -250,15 +320,42 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  ensureFreshDir(path.resolve(args.out), '--out');
-  ensureFreshDir(path.resolve(args.blindOut), '--blind-out');
+  const outRoot = args.out;
+  const blindRoot = args.blindOut;
+  ensureFreshDir(outRoot, '--out', { allowRebuild: args.forceRebuild });
+  ensureFreshDir(blindRoot, '--blind-out');
+
+  if (args.world === 'v2') {
+    const plan = buildWorldV2();
+    const closedAnchors = await ingestWorld(plan, outRoot);
+    await seedDerivedCards(plan, outRoot, closedAnchors);
+    writeRootMarker(outRoot, plan.schema, plan.seed, 'v2');
+
+    const manifest = buildWorldManifestV2(plan);
+    const blind = buildBlindPackageV2(plan);
+    // 双道门：先用白名单投影（答案侧字段物理不存在），再跑递归违禁键扫描（防未来改投影时手滑）。
+    assertBlindPackageSafe(blind);
+    const shapeErrors = assertBlindPackageV2Shape(blind, manifest);
+    if (shapeErrors.length > 0) {
+      throw new Error(`v2 盲包/清单契约不自洽：\n${shapeErrors.join('\n')}`);
+    }
+    writeFileAtomic(path.join(blindRoot, 'blind-package.json'), `${JSON.stringify(blind, null, 2)}\n`);
+    writeFileAtomic(path.join(blindRoot, 'world-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    process.stdout.write(
+      `合成世界 v2 已生成：${manifest.totalEvents} 事件（封存 ${manifest.sealedEvents}／调参 ${manifest.tuningEvents}）、` +
+        `${manifest.totalEvents} 张真派生卡、复用词 ${manifest.reusedDetailWords.length} 个、高危盘点 ${manifest.highRiskInventory.length} 条\n`,
+    );
+    return;
+  }
+
   const plan = buildWorldPlan(args.seed);
-  const closedAnchors = await ingestWorld(plan, path.resolve(args.out));
-  await seedDerivedCards(plan, path.resolve(args.out), closedAnchors);
+  const closedAnchors = await ingestWorld(plan, outRoot);
+  await seedDerivedCards(plan, outRoot, closedAnchors);
+  writeRootMarker(outRoot, plan.schema, plan.seed, 'v1');
 
   const blind = buildBlindPackage(plan);
   assertBlindPackageSafe(blind);
-  writeFileAtomic(path.join(path.resolve(args.blindOut), 'blind-package.json'), `${JSON.stringify(blind, null, 2)}\n`);
+  writeFileAtomic(path.join(blindRoot, 'blind-package.json'), `${JSON.stringify(blind, null, 2)}\n`);
   const manifest = {
     schema: plan.schema,
     seed: plan.seed,
@@ -270,7 +367,7 @@ async function main(): Promise<void> {
       event.highRiskLabels.map((label) => ({ eventId: event.eventId, label })),
     ),
   };
-  writeFileAtomic(path.join(path.resolve(args.blindOut), 'world-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileAtomic(path.join(blindRoot, 'world-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   process.stdout.write(`合成世界已生成：${manifest.totalEvents} 事件（封存 ${manifest.sealedEvents}／调参 ${manifest.tuningEvents}）、${manifest.totalEvents} 张真派生卡\n`);
 }
 
@@ -282,4 +379,4 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   });
 }
 
-export { buildWorldPlan, ingestWorld, seedDerivedCards, ensureFreshDir, WORLD_REFERENCE_NOW_MS };
+export { buildWorldPlan, ingestWorld, seedDerivedCards, ensureFreshDir, parseArgs, writeRootMarker, WORLD_REFERENCE_NOW_MS };

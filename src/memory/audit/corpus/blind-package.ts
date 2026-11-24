@@ -9,10 +9,24 @@
 import { IntegrityError } from '../../../core/errors.ts';
 import type { PlannedEvent, WorldPlan } from './world-plan.ts';
 
-/** 答案侧违禁键：任一层级出现即视为盲包被污染。 */
+/**
+ * 答案侧违禁键：任一层级出现即视为盲包被污染。
+ *
+ * #179 起扩到覆盖 v2 蓝本新增字段（v1 世界不含这些键，故 v1 盲包零影响）：
+ *  - `hasRef`：标出哪些事件承载 S5 指代句＝直接把 100 条金标的位置整包送给出题人；
+ *  - `reusePlan`：标出「哪个族的哪个槽被换成谁的原生词」＝反推排序压力题答案位置；
+ *  - `familyPoint`/`details`/`noisePlan`：族共享点、族内细节、噪声施加计划，同属答案侧结构。
+ */
 export const BLIND_FORBIDDEN_KEYS: readonly string[] = [
   'keyPoints',
   'key_points',
+  'hasRef',
+  'has_ref',
+  'reusePlan',
+  'reuse_plan',
+  'familyPoint',
+  'details',
+  'noisePlan',
   'cues',
   'cue',
   'displayCues',

@@ -42,6 +42,9 @@ const HEADLESS_PREFIX = path.posix.join('src', 'adapters', 'headless') + '/';
 const CORPUS_LITERAL_ALLOWLIST: readonly string[] = [
   'src/memory/audit/corpus/world-plan.ts',
   'src/memory/audit/corpus/blind-package.ts',
+  // #179：v2 蓝本同属封存语料（事件 channel 字面为 'dsh'，是语料事实而非内核默认值）。
+  'src/memory/audit/corpus/world-plan-v2.ts',
+  'src/memory/audit/corpus/blind-package-v2.ts',
 ];
 
 /** 具体宿主通道 id / 旧默认根段的引号字面量（大写 DSH_HOME 环境变量名不匹配，不误伤）。 */
