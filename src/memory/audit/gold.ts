@@ -9,6 +9,7 @@
  */
 
 import type { RankedCard, SearchQuery } from '../types.ts';
+import type { ConstructionLayer } from './fixtures.ts';
 
 /** 检索回调（读柄 search 为 async；测试可注入同步假检索）。 */
 export type SearchFn = (query: SearchQuery) => RankedCard[] | Promise<RankedCard[]>;
@@ -23,6 +24,8 @@ export interface GoldQuestion {
   coldStart: boolean;
   /** 五类高危金标题（strong/promise/date/verbatim/negation）；供四态高危错认硬约束计数。 */
   highRisk?: boolean;
+  /** P6 查询构造层（v5 §6.2 分层判据用；无层标的旧骨架条目为空）。 */
+  constructionLayer?: ConstructionLayer;
 }
 
 /** 单问回放结果（hit/rank/scoreParts + 接力链 + 分层透传）。 */
@@ -37,6 +40,8 @@ export interface GoldQuestionResult {
   initiation: 'her' | 'user' | 'environment';
   coldStart: boolean;
   source: 'l0' | 'l1' | 'l2';
+  /** 与提问同源的构造层透传（v1 无层标时为空）。 */
+  constructionLayer?: ConstructionLayer;
 }
 
 export interface GoldReplayOptions {
@@ -84,6 +89,7 @@ export async function replayGold(
       initiation: question.initiation,
       coldStart: question.coldStart,
       source: question.source,
+      constructionLayer: question.constructionLayer,
     });
   }
   return results;

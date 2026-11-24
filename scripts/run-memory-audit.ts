@@ -41,8 +41,10 @@ import { aggregateMetrics, mulberry32, DEFAULT_RNG_SEED, P95_REPEATS } from '../
 import type { AggregateInput, MetricsJson, NaEstimate, Rng } from '../src/memory/audit/metrics.ts';
 import { loadFixtures } from '../src/memory/audit/fixtures.ts';
 import type { LoadedFixtures } from '../src/memory/audit/fixtures.ts';
-import { loadAbstainFixtures, abstainHasGold } from '../src/memory/audit/fixtures.ts';
-import type { LoadedAbstainFixtures } from '../src/memory/audit/fixtures.ts';
+import { loadAbstainFixtures, abstainHasGold, PROBES_V2_PATTERN, loadClarifyFixtures } from '../src/memory/audit/fixtures.ts';
+import type { LoadedAbstainFixtures, LoadedClarifyFixtures } from '../src/memory/audit/fixtures.ts';
+import { judgeV2 } from '../src/memory/audit/judgment-v2.ts';
+import type { JudgmentV2, LayerProbeV2, DecoyProbeV2, AbstainProbeV2, ClarifyProbeV2 } from '../src/memory/audit/judgment-v2.ts';
 import { summarizeFourState } from '../src/memory/audit/four-state.ts';
 import type { FourStateProbeInput, FourStateSummary } from '../src/memory/audit/four-state.ts';
 import { assertMissAliasesSensitive, assertP6GoldItem } from '../src/memory/audit/fixture-guard.ts';
@@ -80,13 +82,14 @@ interface CliOptions {
   sealDir: string | undefined;
   unsealReason: string | undefined;
   operator: string | undefined;
+  nowMs: number | undefined;
   holdout: boolean;
   dryRun: boolean;
   json: boolean;
   help: boolean;
 }
 
-function parseArgs(argv: string[]): CliOptions {
+export function parseOptions(argv: string[]): CliOptions {
   const options: CliOptions = {
     dataRoot: undefined,
     out: undefined,
@@ -94,6 +97,7 @@ function parseArgs(argv: string[]): CliOptions {
     sealDir: undefined,
     unsealReason: undefined,
     operator: undefined,
+    nowMs: undefined,
     holdout: false,
     dryRun: false,
     json: false,
@@ -107,7 +111,8 @@ function parseArgs(argv: string[]): CliOptions {
       case '--rules-version':
       case '--seal-dir':
       case '--unseal-reason':
-      case '--operator': {
+      case '--operator':
+      case '--now-ms': {
         const value = argv[i + 1];
         if (value === undefined) {
           throw new Error(`参数 ${arg} 缺少取值`);
@@ -123,6 +128,12 @@ function parseArgs(argv: string[]): CliOptions {
           options.sealDir = value;
         } else if (arg === '--unseal-reason') {
           options.unsealReason = value;
+        } else if (arg === '--now-ms') {
+          const ms = Number(value);
+          if (!Number.isInteger(ms) || ms <= 0) {
+            throw new Error(`--now-ms 须为正整数毫秒（收到「${value}」）`);
+          }
+          options.nowMs = ms;
         } else {
           options.operator = value;
         }
@@ -159,6 +170,9 @@ function usage(): string {
     '  --seal-dir <目录>   已封存夹具目录（G6：先哈希核验，读取即追加解封留痕）',
     '  --unseal-reason <t> 本次解封理由（必填，写入封存目录 unseal-log.jsonl）',
     '  --operator <名>     解封操作人（缺省 offline-cli）',
+    '  --now-ms <毫秒>     审计时钟（缺省墙钟 Date.now()）。终判须钉死到受测世界的参考时钟',
+    '                      （world-plan 的 WORLD_REFERENCE_NOW_MS），否则卡片在其 valid_ms 之前不算生效、',
+    '                      金标会被判「悬空」；报封信封 createdMs 如实记录该值',
     '  --dry-run           只校验夹具/打印报告，不落 audit 库（CI 预检）',
     '  --json              输出 JSON 报告（机器可读）',
     '  --help              本帮助',
@@ -299,6 +313,7 @@ function buildGoldQuestions(fixtures: LoadedFixtures, truth: Truth, includeHoldo
         initiation: 'user',
         coldStart: false,
         highRisk: item.highRiskLabel !== undefined,
+        constructionLayer: item.constructionLayer,
       });
     }
   }
@@ -448,6 +463,10 @@ export interface AuditReport {
   fourState: FourStateSummary | NaEstimate;
   /** abstain.json 是否实际加载（缺失只标注，不硬失败，金标题四态仍可算）。 */
   abstainFixturePresent: boolean;
+  /** clarify.json 是否实际加载（v2 卷 F6 披露节；缺失须显式标注）。 */
+  clarifyFixturePresent: boolean;
+  /** v2 卷判决（PASSED/NOT-PASSED/INCONCLUSIVE）；v1 卷为 undefined。 */
+  judgmentV2?: JudgmentV2;
   provenanceFailed: boolean;
   holdout: { mode: 'holdout' | 'loeo' | 'not-run'; folds: number; loeo?: LoeoResult };
   redLines: { r1: number | null; r2: number | null; r3: number | null };
@@ -537,9 +556,15 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       abstainFixturePresent = false;
     }
     const fourStateProbes: FourStateProbeInput[] = [];
+    /** v2 判据复用同一次 top1 检索：按题目引用登记提交与命中。 */
+    const top1ByQuestionRef = new Map<string, { committed: boolean; top1IsGold: boolean }>();
     for (const question of questions) {
       const top1 = await readHandle.search({ text: question.queryText, atMs: options.nowMs, limit: 1 });
       const resolvedEventId = relayMap.get(question.targetEventId) ?? question.targetEventId;
+      top1ByQuestionRef.set(question.questionRef, {
+        committed: top1.length > 0,
+        top1IsGold: top1[0]?.card.eventId === resolvedEventId,
+      });
       fourStateProbes.push({
         probeRef: question.questionRef,
         hasGold: true,
@@ -563,6 +588,63 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       fourStateProbes.length === 0
         ? { status: 'n-a', reason: 'no-probe' }
         : summarizeFourState(fourStateProbes);
+
+    // ── v2 判据（预注册 v5 §6.2/§6.3）：仅 fasti-p6-probes/v2 卷启用 ──
+    // v1 卷走旧口径（metrics.recallAtK 全量），此处零副作用，保证 v1 成绩单逐字可复现。
+    const isV2Probes = PROBES_V2_PATTERN.test(fixtures.probeSetVersion);
+    let clarifyFixturePresent = true;
+    let clarifyItems: LoadedClarifyFixtures['items'] = [];
+    let judgmentV2: JudgmentV2 | undefined;
+    if (isV2Probes && options.holdout) {
+      // 澄清档只在终判（封存集）路径结算，施工 dry-run 不消化探针。
+      try {
+        clarifyItems = loadClarifyFixtures(fixturesDir).items;
+      } catch (error) {
+        if (!(error instanceof NotFoundError)) throw error;
+        clarifyFixturePresent = false;
+      }
+      const layerProbes: LayerProbeV2[] = [];
+      for (let i = 0; i < gold.length; i += 1) {
+        const result = gold[i]!;
+        const question = questions[i];
+        if (result.constructionLayer === undefined || question === undefined) continue;
+        const top1 = top1ByQuestionRef.get(result.questionRef) ?? { committed: false, top1IsGold: false };
+        layerProbes.push({
+          layer: result.constructionLayer,
+          eventId: result.targetEventId,
+          hit: result.hit,
+          highRisk: question.highRisk ?? false,
+          committed: top1.committed,
+          top1IsGold: top1.top1IsGold,
+        });
+      }
+      const decoyProbes: DecoyProbeV2[] = [];
+      for (let i = 0; i < decoy.length; i += 1) {
+        const result = decoy[i]!;
+        const item = fixtures.decoy[i];
+        if (item === undefined) throw new IntegrityError('v2 判据：诱饵结果与夹具条数不齐，拒绝结算');
+        const kind = item.decoyKind;
+        if (kind === undefined) throw new IntegrityError('v2 判据：诱饵条目缺 decoyKind，无法按三类结算');
+        decoyProbes.push({ kind, correct: result.correct, highRiskError: result.highRiskError });
+      }
+      const abstainV2: AbstainProbeV2[] = abstainItems.map((item, index) => {
+        const probe = fourStateProbes[questions.length + index];
+        if (probe === undefined) throw new IntegrityError('v2 判据：弃权探针与四态探针序列不齐，拒绝结算');
+        return { kind: item.kind, committed: probe.committed, top1IsGold: probe.top1IsGold };
+      });
+      const clarifyProbes: ClarifyProbeV2[] = [];
+      for (const item of clarifyItems) {
+        const top1 = await readHandle.search({ text: item.query, atMs: options.nowMs, limit: 1 });
+        const top1CardId = top1[0]?.card.cardId ?? null;
+        clarifyProbes.push({
+          query: item.query,
+          committed: top1CardId !== null,
+          top1IsGold: false,
+          top1IsDecoy: top1CardId !== null && item.pairCardIds.includes(top1CardId),
+        });
+      }
+      judgmentV2 = judgeV2({ gold: layerProbes, decoy: decoyProbes, abstain: abstainV2, clarify: clarifyProbes }, { seed });
+    }
 
     // consistency：v1 无叙事线，reflection 对来自夹具组织（合成期为空）→ N/A。
     const pairs: ReflectionPair[] = [];
@@ -681,6 +763,8 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       metrics,
       fourState,
       abstainFixturePresent,
+      clarifyFixturePresent,
+      ...(judgmentV2 ? { judgmentV2 } : {}),
       provenanceFailed: provenance.failed,
       holdout: { mode: holdoutMode, folds, ...(lOeo ? { loeo: lOeo } : {}) },
       redLines: { r1, r2, r3 },
@@ -709,6 +793,7 @@ function formatReport(report: AuditReport): string {
   lines.push(`夹具版本    ：${report.run.probeSetVersion}`);
   lines.push(`条目数      ：${report.run.sampleN}`);
   lines.push(`holdout     ：${report.holdout.mode}（folds=${report.holdout.folds}）`);
+  lines.push(`审计时钟    ：${report.run.createdMs}（${new Date(report.run.createdMs).toISOString()}）`);
   lines.push('');
   lines.push('── 三红线（只观测，不卡退出码）─────────────────────────────────');
   lines.push(`R1 召回@3   ：${report.redLines.r1 ?? 'N/A'}`);
@@ -726,6 +811,37 @@ function formatReport(report: AuditReport): string {
     lines.push(`错认率/召回 ：falseCommit=${pct(fs.rates.falseCommitRate)} recallAfterGate=${pct(fs.rates.recallAfterGate)} 高危错认=${fs.highRiskWrongCommits}`);
     lines.push(`弃权探针文件：${report.abstainFixturePresent ? '已加载' : '缺失（金标题四态照算）'}`);
   }
+  if (report.judgmentV2 !== undefined) {
+    const j = report.judgmentV2;
+    const fmt = (e: { status?: 'n-a' } | { point: number; ciLower: number; ciUpper: number; n: number }): string =>
+      'point' in e ? `${e.point.toFixed(4)} [${e.ciLower.toFixed(4)}, ${e.ciUpper.toFixed(4)}] n=${e.n}` : 'N/A';
+    lines.push('── v2 判决（预注册 v5 §6.2 / §6.3）──────────────────────────');
+    lines.push(`R1 宏(S0+S1)：${fmt(j.r1Macro as never)} 簇=${('clusterCount' in j.r1Macro ? j.r1Macro.clusterCount : 0) ?? 0} 门=${j.gates.r1Macro ? '过' : '未过'}`);
+    lines.push(`R1_S0 副条件：${fmt(j.r1S0 as never)} 门=${j.gates.r1S0 ? '过' : '未过'}`);
+    lines.push(`R2 整体200对：${fmt(j.r2 as never)} 高危错认=${j.decoyHighRiskErrors} 门=${j.gates.r2 ? '过' : '未过'}`);
+    for (const kind of ['same-family', 'cross-family-collision', 'cross-family-detail-reuse'] as const) {
+      lines.push(`R2 ${kind}：${fmt(j.r2ByKind[kind] as never)}（明细必报，整体作门）`);
+    }
+    for (const layer of ['S2', 'S3', 'S4', 'S5'] as const) {
+      const gate = j.layers[layer];
+      lines.push(
+        `L_${layer}：n=${gate?.n ?? 0} wc=${gate?.wrongCommit ?? 0} 高危wc=${gate?.highRiskWrongCommit ?? 0}` +
+          `${layer === 'S5' ? ` wa(仅登记)=${gate?.wrongAbstain ?? 0}` : ''} 门=${j.gates[`L_${layer}`] ? '过' : '未过'}`,
+      );
+    }
+    lines.push(
+      `弃权：unanswerable ca=${j.abstain.unanswerable.correctAbstain}/${j.abstain.unanswerable.n} 门=${j.gates.abstain ? '过' : '未过'}` +
+        `；noise cc=${j.abstain.noise.correctCommit} wc=${j.abstain.noise.wrongCommit} wa=${j.abstain.noise.wrongAbstain}（三态只登记）`,
+    );
+    lines.push('── 澄清档披露（F6，只作描述性统计，不进 R1/R2 分母）────────────');
+    lines.push(`汇总：澄清/低置信=${j.clarify.clarified} 自信给卡=${j.clarify.confidentCard} 其中诱饵置顶=${j.clarify.decoyTop1}（文件${report.clarifyFixturePresent ? '已加载' : '缺失'}）`);
+    for (const row of j.clarify.rows) {
+      lines.push(`  · ${row.query} → ${row.behavior === 'clarify-or-low-confidence' ? '澄清/低置信' : '自信给卡'}${row.decoyTop1 ? '（诱饵置顶）' : ''}`);
+    }
+    lines.push(`精度闭环：${j.gates.precision ? '通过' : '未通过'}`);
+    lines.push(`判决      ：${j.verdict}`);
+    for (const note of j.notes) lines.push(`  · ${note}`);
+  }
   lines.push('══════════════════════════════════════════════════════════════');
   return lines.join('\n');
 }
@@ -733,7 +849,7 @@ function formatReport(report: AuditReport): string {
 async function main(): Promise<void> {
   let options: CliOptions;
   try {
-    options = parseArgs(process.argv.slice(2));
+    options = parseOptions(process.argv.slice(2));
   } catch (error) {
     process.stderr.write(`错误：${(error as Error).message}\n${usage()}`);
     process.exit(2);
@@ -767,7 +883,7 @@ async function main(): Promise<void> {
       fixturesDir: defaultFixturesDir(),
       holdout: options.holdout,
       dryRun: options.dryRun,
-      nowMs: Date.now(),
+      nowMs: options.nowMs ?? Date.now(),
       ...(options.rulesVersion === undefined ? {} : { rulesVersion: options.rulesVersion }),
       ...(options.sealDir === undefined ? {} : { sealedDir: options.sealDir }),
       ...(options.unsealReason === undefined ? {} : { unsealReason: options.unsealReason }),

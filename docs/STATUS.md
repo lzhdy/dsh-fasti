@@ -95,6 +95,8 @@
 
 **probes-v2 已封存（同日主控授权「可以」）**：`/home/user/fasti-p6-sealed/probes-v2`，六件套 480K，`probeSetVersion=fasti-p6-probes/v2`、`layerQuotas` 六层、`sealedAtMs=1795516180050`、`sealedBy=lzhdy`；`verifySeal` ok=true／errors=0，manifest sha256 `eb9dcdeb…7fdf`。该卷自此只读，变更一律新立卷。登记见正本 11.13.19 十三。
 
+**#185 终判 harness v2 升级与 rules-v2 首次权威终判（2026-11-24，主控两次授权「可以」，verify 1686→1697）**：新立纯函数判决 `judgment-v2.ts`（R2 以整体 200 对错误率作门＋same-family/cross-family-collision/cross-family-detail-reuse 三类明细必报＋越线告警；S2–S5 只判 wc=0/高危 wc=0；INCONCLUSIVE 精度闸），harness 增 v2 判决与 F6 披露两节、`gold.ts` 透传 constructionLayer；修时钟锚点缺口（新增 `--now-ms`，信封与报告头留痕，终判钉世界参考时钟 1810976400000）；新测 11 条先红后绿、M1–M6 变异全转红。真机首跑确认封存卷与母根为孪生资产（ULID 绑建根墙钟、装配可从任意根等价重装配）、`--rules-version` 仅信封标签（几何只由冻结常量分派，bm25.ts:446）。采甲一：旧卷 tar 留档（`probes-v2-superseded-20261124.tar.gz`）、永久母根 `/home/user/fasti-p6-worlds/v2`（v2 几何、seed 20261124、500 卡）、重封 probes-v2（新 manifest `rulesVersion=rules-v2`、sealedAtMs=1795523275641、manifest sha256 `0c0c1fb6…d497b`）；采乙一：仓外副本翻常量受测不入库、跑完即删，生产常量仍 rules-v1（types.ts:19）。权威终判 runId `01M86WYAH6M2VC6S4WBXZARNNF` exit=0、1250 条目、unseal-log 已留痕；R1 宏 1.0/R1_S0 1.0/R2 0/200/弃权 ca 100/100 全过，L_S2–S5 四层全未过（wc 47/50、50/50、10/50、93/100，层内高危 wc 1/1/0/2；四态口径高危错认=5，两口径分母不同各自登记）、高危错认=5、clarify 18/18 诱饵置顶，**判决 NOT-PASSED**：v2 宽召回缺相关性判别/弃权门，切生产前置为 #176 施工，三条件未齐前常量不切。受测在母根本地 sha256 校验副本上进行（/home 挂载点 node:sqlite FUSE 开销约 177 倍），母根只读。登记见正本 11.13.19 十四。
+
 其余 #88–#113 多为 ③待方案。**下一空号暂按 #180**（#179 盲包生成器 v2 已取用；#133–#178 区间登记滞后，其中 #134–#152／#163–#169／#174–#177 是否真空号尚未逐号核实；取号前必查 11.4.0，禁止 +1）。
 
 ## 五、想自己核对？三条命令
