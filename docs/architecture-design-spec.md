@@ -2790,6 +2790,14 @@ node 两个 OpenAI 兼容出口（摘要口 `openai-llm.ts`、对话口 `openai-
 
 5. **结论边界**：本次只让实现与合取式回归一张早已冻结的表，**未放宽、未新增任何判据**；`CURRENT_RULES_VERSION` 仍 `rules-v1`（`src/memory/types.ts:19`），NOT-PASSED 为唯一权威判决，本批不产生任何放行依据。commit `24c55b6` 已入库（未 push）。
 
+**十八、P0 分级词面信号留痕底座（2026-11-25，#193，主控「都同意」授权，verify 1707→1715，不接判据）**：194 号设计稿三阶段路线（P0 留痕／P1 调参卷改造／P2 cutoff 进门）的第一阶段落地，信号与判据严格解耦，本阶段不触预注册 §9。
+
+1. **纯函数模块 `src/memory/lexical-signals.ts`**：输入查询原文与候选卡 `lexicalFields`，输出全整数 `GradedSignals`——最长公共连续码点 `lcs`（码点 O(n·m) DP）、查询单元覆盖 `unitCovered/unitTotal`（emitUnits 口径，分子分母都留痕、不做浮点 cutoff）、字段分布 `hitFields/strongFields`（LCS≥3）/`minHitFieldLength/maxHitFieldLength`。归一化与切词只复用 `bigram.ts` 的 `normalizeBigramText/emitUnits`，不 import gate/bm25/store/装配层，无随机、无时钟、无权重；已加入 `layer-imports.test.ts` 的 `ACYCLIC_LEAF_FILES` 无环白名单，若将来被 store/bm25 反向拉入即标红。
+2. **DTO 与接线（生产零几何改动）**：`GradedSignals` 类型定义入 `src/memory/types.ts`；`GatedRankedCard` 增可选 `gradedSignals?`，**生产门路径恒 undefined、零热路径开销**，只允许审计侧按需附加。`scripts/run-memory-audit.ts` 在门后栈同一趟回放内（不额外检索）对每题取门后第一名卡（accepted[0] 优先，否则 rejected[0]）与金标事件卡（候选内匹配 resolvedEventId，未召回为 null）的信号，`AuditReport.gatedSignalRows` 落 JSON；报告门后段增 4 行整数直方图（行数/提交数、金标卡 LCS 分桶、门后第一名 LCS 分桶），明细逐题在 JSON。
+3. **不耦合门锁（变异反证）**：新测 `tests/memory/lexical-signals.test.ts` 8 条——7 条信号算法（CJK 截断 4/4 全覆盖形态、拉丁整词含空格码点、空格变体 LCS 断开、空查询/空字段零结构、单字 unigram、字段分布、字段顺序确定性），1 条门锁：人为向候选注入伪造 `gradedSignals`（lcs=999）后 `applyGateV2` 的 accepted/rejected 的 cardId 与 reasons 与无注入逐字相等，且断言生产输出该字段恒 undefined。变异演练（故意令 `toGated` 填该字段）门锁即时抓红，还原后回绿。
+4. **端到端复核（实验副本 rules-v2，/tmp 母根/封存卷副本，双向 sha256）**：门后四态 cc201/wc4/wa345/ca200 高危1、`L_S0 wc=4 高危1 未过`、`L_S1 wc=0 过`、判决 NOT-PASSED，与 193/十七号留账逐字一致；v1 段 R1=0.6781818181818182、cc354/wcG296/wa0/ca100、高危5 零漂移；母根 memory-index.sqlite 与永久封存卷 unseal-log 哈希受测前后不变，/tmp 当轮清理。留痕实测复现 194 三条硬结论：550 金标题信号行中金标卡 LCS 分布 `2=250、3+=300`（S0+S1 三百题强命中、S2–S5 二百题恒 2，连续码点信号在改写层结构失效）；550 行中仅 5 行门后第一名与金标信号不同，恰对应 4 wc＋1 高危错认，其余 545 行同值（门后第一名即金标）。
+5. **边界**：本阶段不接 accept/reject、不接排序键、不新增数值门、不切 `CURRENT_RULES_VERSION`（`src/memory/types.ts:19` 仍 `rules-v1`）；任何把信号接进裁决的改动必须另走预注册 §9（即 P2）。后续 P1（调参 fixture 梯度负样本改造）与 P2（cutoff 进门）均未立项，挂账待主控拍板。
+
 ---
 
 > 本文件是规范而非进度报告：它描述系统必须被建成的形状，并在第 11 章登记施工排期。凡标注"待设计／待评审／待标定"处，禁止在实现中先斩后奏；定稿后以加法方式回写正文，并同步更新第 11.4 节对应卡的阶段与状态。
