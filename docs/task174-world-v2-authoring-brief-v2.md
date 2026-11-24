@@ -25,7 +25,7 @@
 
 1. **输入白名单**：只允许使用交付给你的 `blind-package.json` 与 `world-manifest.json`。禁止读取、索要、推测任何代码库、卡片库、派生规则、旧卷或本文之外的工程文档。
 2. **禁止反推答案面**：key_points、cue、别名、判别词、卡片 id、规则版本等盲包中不存在的字段，不得以任何方式重建或猜测字面值。
-3. **题面只许来自原话与摘要**：每条金标题必须能在对应事件的 `turns[*].rawText` 或 `summary` 定位到撰写源，禁止引入盲包中不存在的"事实"。
+3. **题面只许来自原话与摘要**：每条金标题必须能在对应事件的 `turns[*].rawText` 或 `summary` 定位到撰写源，禁止引入盲包中不存在的"事实"。**唯一例外（外审 F2 方案丁）**：`world-manifest.json` 的 `collisionWords` 撞词允许、且仅允许出现在 §7.2 `cross-family-collision` 诱饵题的 `discriminatorQuery` 中——撞词是答案侧族共享点、本就不在盲包文本里，属清单显式交付的设计词；该题其余成分（尤其 gold 的独有细节）仍必须能在 pair 事件原话定位。S0–S5 金标题与其他诱饵档不得使用任何盲包外成分。
 4. **层归属一次性定格**：每条题在交付时写死属于 S0–S5 哪一层，不允许一题挂多层、不允许交付后口头改层。
 5. **原样交付 JSON**：UTF-8、无 BOM、标准 JSON（无注释、无尾逗号）、2 空格缩进；字段名与枚举逐字照抄本文，**多一个字段都会被拒收**。
 6. **全部中文题面**；只使用盲包中出现的虚构人名与场景，禁止真实个人信息，禁止政治、医疗诊断、色情等越界内容。
@@ -65,6 +65,8 @@
 ### 3.2 `world-manifest.json`
 
 含总量、分区计数、高危清单 `highRiskInventory`（封存前若干事件 eventId→label），以及 **`reusedDetailWords`（18 个跨族共享细节词清单，P-c 新增）**。清单里的词各自恰好被 2 个族共享，是 §7.3／§7.4 两类题的**唯一取材来源**；清单外的细节词都是唯一词，做不出这两档题。
+
+另含 **`collisionWords`（24 项，外审 F2 新增）**：每项形如 `{ "word": "预约", "familyIds": ["f001-s", "f005-s", …] }`，给出每个 2 字设计撞词及其**封存族**映射（只给族 id、不给事件 id、不给 key_points/hasRef）。这些撞词只存在于系统答案侧、**不会出现在你拿到的盲包原话里**（自行从盲包挖跨族 2 字词会得到上千个无关串、挖不到这 24 个，故不要自挖），是 §7.2 跨族撞词题的**唯一取材来源**。
 
 五类标签含义照 v1 不变：
 
@@ -122,6 +124,8 @@ sourceCharShare = Array.from(片段).length / Array.from(原句rawText).length
 ```
 
 **S2/S3/S4/S5 的共同语义底线**：读完 query 必须仍能明确指出问的是**哪一个封存事件**（它们是有金标题，不是无答案题）；只是用字越来越远离原句。S2/S3/S4/S5 **禁止出现该事件的 `sensitiveTerms`**。
+
+> **G4-2 出题端不可自检——如实声明（外审 F3）**：S2–S5 的「与 key_points ≥3 连续码点重合即退回（G4-2）」是一条**只有收卷方掌握答案侧、出题端无法自检**的规则：key_points 不在盲包，铁律 2 也禁止你反推。你不需要、也无法预判是否触线；**出题端唯一可执行的操作口径＝不照抄任何 rawText 的连续短语**（整句改写、换词、换句式，S1 的连续截取除外且受 0.25 约束）。是否真触线一律以收卷方校验器为准，触线按 G4-2 编号退回，属机械校验结果而非对你命题能力的否定。
 
 ### 5.1 S5 怎么识别（可操作判定）
 
@@ -206,6 +210,8 @@ sourceCharShare = Array.from(片段).length / Array.from(原句rawText).length
 
 每条 query 全局唯一（跨事件、跨层、跨文件都不得复用同一句）。S0 两条配额可来自同事件不同 turns。
 
+> **金标并集覆盖（外审 F4 明文化）**：S0–S5 五层金标题的目标事件**并集必须覆盖全部 400 个封存事件**（`syn-sealed-001..400` 一个不漏）。`author-manifest.json` 里的 `goldEventsCovered: 400` 是这一硬要求的计数定值，不是可协商的下限。
+
 ---
 
 ## 7. 诱饵判别题 `sealed/decoy-authored.json`
@@ -238,12 +244,13 @@ sourceCharShare = Array.from(片段).length / Array.from(原句rawText).length
 
 - `decoyKind = "same-family"`，`pairEventIds` 二者 `familyId` **相同**；
 - 判别落点必须是 gold 的专属细节，不能是两事件通用的空话；
-- 覆盖 ≥100 个不同参与事件，每参与事件 ≥2 对。
+- 覆盖 ≥100 个不同参与事件，**每参与事件 ≥1 对**（与 §11 第 10 条同口径；114 对摊到 ≥100 个事件，不可能每事件 ≥2 对，外审 F4 已消除该矛盾）。
 
 ### 7.2 跨族撞词题（50 条，**v2 新增，重点**）
 
 - `decoyKind = "cross-family-collision"`，`pairEventIds` 二者 `familyId` **必须不同**；
-- 构造方法：从两个不同族的事件里，找出**共享同一个 2 字撞词**的那一对（例如 A 族"预约"指理发叫号、B 族"预约"指体检排期），query 要用上该共享词，但**判别落点必须落在 gold 的独有细节上**；只靠共享词无法区分，必须给出更具体的细节才能选对；
+- 构造方法（外审 F2 定稿）：**不要从盲包文本自挖撞词**（挖不到，见 §3.2），改为从 `world-manifest.json` 的 `collisionWords` 取一个 `word`，在它的 `familyIds` 里任取**两个不同封存族**，再从这两个族各选一个事件组成 pair；
+- `discriminatorQuery` 必须**同时**包含：①该共享撞词 `word`（铁律 3 的唯一豁免成分，允许不在原话中）；②gold 事件的**独有细节**，且这部分必须能在 gold 事件的 `turns/summary` 定位。**判别落点必须落在 gold 的独有细节上**——只靠共享撞词无法区分两族，必须给出更具体的细节才能选对（例如撞词「预约」＋gold 独有的「门锁锁芯」）；
 - 覆盖 ≥50 个不同封存事件；`discriminatorQuery` 全局唯一。
 
 > 为什么新增：宽召回会把"字面相似但内容不同"的卡一起带进候选，这类题正是检验排序层能否顶住。旧卷没有这一类。
@@ -336,6 +343,8 @@ sourceCharShare = Array.from(片段).length / Array.from(原句rawText).length
 
 tuning 目录 `partition` 填 `"tuning"`，counts 只填 `goldByLayer: {"S0":100,"S2":100}`、`goldQuestionsTotal: 200`、`goldEventsCovered: 100`。
 
+> **模板计数与正文「≥」的关系（外审 F4）**：本模板 `counts` 里写的是**交付时必须恰好相等的目标定值**（收卷方逐字段核对，§11 第 13 条）；正文各档出现的「≥N」是**分布下限约束**（允许超过、不得低于），两者不矛盾。其中 `goldEventsCovered: 400`、`decoyEventsCovered: 200`、`highRiskLabeledItems: 10` 三个值同时也是下限即目标值，理由分别见 §6.3（金标并集覆盖全部封存事件）、§7（诱饵参与事件 ≥200）、§8 高危清单（五类各 ≥2、共 10）。
+
 ---
 
 ## 11. 交付前自检清单（任何一条不过不要交）
@@ -349,17 +358,21 @@ tuning 目录 `partition` 填 `"tuning"`，counts 只填 `goldByLayer: {"S0":100
 7. S2/S3/S4/S5 题面不含敏感称呼；语义仍唯一指向目标事件，不是无答案题。
 8. S5 条条满足 §5.1 三条件（有指代标记词、后接具体细节名词、细节属本事件）。
 9. 封存高危事件每个至少有 1 条带匹配 `highRiskLabel`（合计 ≥10，五类各 ≥2）。
-10. 诱饵 200 对：同族 114（`same-family`）＋跨族撞词 50（`cross-family-collision`）＋跨族共享细节词 36（`cross-family-detail-reuse`，取材只用 `reusedDetailWords` 18 词、每词 2 方向）；goldEventId 属于配对；参与事件 ≥200 且每事件 ≥1 对；判别 query 全局唯一。
+10. 诱饵 200 对：同族 114（`same-family`）＋跨族撞词 50（`cross-family-collision`，撞词与 pair 族必须取自 manifest `collisionWords`、query 含该撞词且含 gold 独有细节）＋跨族共享细节词 36（`cross-family-detail-reuse`，取材只用 `reusedDetailWords` 18 词、每词 2 方向）；goldEventId 属于配对；参与事件 ≥200 且每事件 ≥1 对；判别 query 全局唯一。
 11. 弃权 200：unanswerable 不撞盲包任何词表、含 ≥20 条裸指代；noise 的 goldEventId 分散 ≥60 事件。
-11-bis. 澄清 18：`clarify-authored.json` 覆盖 18 个共享细节词各 1 条，query 只含该共享词、不含任何一方独有细节；不计入任何判别分母。
-12. 全量 query 去重（含跨文件）后数量不变；无空串、无纯标点句。
-13. manifest 计数与 items 逐字段相等。
+12. 澄清 18：`clarify-authored.json` 覆盖 18 个共享细节词各 1 条，query 只含该共享词、不含任何一方独有细节；不计入任何判别分母。
+13. 全量 query 去重（含跨文件）后数量不变；无空串、无纯标点句。
+14. manifest 计数与 items 逐字段相等。
 
 ---
 
 ## 12. 退回协议
 
-- 收卷方跑确定性校验器，覆盖：JSON 形状与白名单、配额与分布、S1 码点复算、零别名、id 存在性与分区隔离、高危覆盖、诱饵两类同族／跨族判定与覆盖、S5 三条件抽查、unanswerable 撞词、防自证 G3/G4。
+- 收卷方跑确定性校验器，覆盖：JSON 形状与白名单、配额与分布、S1 码点复算、零别名、id 存在性与分区隔离、高危覆盖、诱饵两类同族／跨族判定与覆盖、unanswerable 撞词、防自证 G3/G4，以及外审 F1 补齐的下列三项**全量机检**（不再抽查）：
+  - **C-7.3 线索充分性**（§7.3 专用）：每条 `cross-family-detail-reuse` 的 `discriminatorQuery` 必须含 **≥1 个仅出现在 gold 事件、且不属于该 pair 共享细节词的 token**；只含共享词即判串层到 §7.4，整项退回。校验口径：以盲包 token 集合与 `reusedDetailWords` 清单机械比对，无需答案侧材料。
+  - **C-7.4 澄清纯度**（§7.4 专用）：每条 clarify 的 `query` **不得含 pair 任一方事件的独有 token**（语气词除外）；混入任一方独有细节即判串层到 §7.3，整项退回。
+  - **C-7.2 撞词合规**（§7.2 专用）：`cross-family-collision` 的 pair 两族必须都在该 `word` 的 manifest `collisionWords.familyIds` 内且互不相同；`discriminatorQuery` 须含该 `word`，并含 ≥1 个可在 gold 事件原话定位、不在另一族事件出现的独有 token；撞词只能取自 `collisionWords`，自造撞词整项退回。
+  - **C-S5 三条件全量检**：对全部 100 条 S5 逐条机检 §5.1 三条件（含封闭的 6 个指代标记词之一、后接具体细节名词、该细节属本事件）。标记词表封闭（§5.1 实列 **7 个**：上次／前面／之前／那个／那事／还提到过／刚才说的；外审意见作「6 词」系计数偏差，以本任务书词表为准）、全量成本极低，故不再保留抽查口径。
 - 结果只有两种：**全量通过并封存**；或**整包拒收**，退回按条目定位的规则编号清单（例：`gold-l0.json items[17].queries[0] 命中 G4-2`）。
 - 退回不提供任何答案侧字面值、不提供替你写好的句子。按编号修订后整包重交，manifest 同步更新。
 

@@ -12,7 +12,14 @@
  */
 
 import type { HighRiskLabelV2, PlannedEventV2, WorldPlanV2 } from './world-plan-v2.ts';
-import { FAMILY_SIZE_V2, SEED_V2, TOTAL_EVENT_COUNT_V2, WORLD_SCHEMA_V2, reusedDetailWordsV2 } from './world-plan-v2.ts';
+import {
+  COLLIDE_WORDS_V2,
+  FAMILY_SIZE_V2,
+  SEED_V2,
+  TOTAL_EVENT_COUNT_V2,
+  WORLD_SCHEMA_V2,
+  reusedDetailWordsV2,
+} from './world-plan-v2.ts';
 
 export interface BlindTurnV2 {
   readonly speaker: 'user';
@@ -84,6 +91,14 @@ export interface WorldManifestV2 {
   readonly highRiskInventory: readonly { readonly eventId: string; readonly label: string }[];
   /** 18 个跨族共享细节词（原样字符串）。出题任务书 §7.3/§7.4 按它出 54 条题。 */
   readonly reusedDetailWords: readonly string[];
+  /**
+   * 24 个设计撞词及其**封存族**映射（外审 F2，方案丁）。撞词只存在于答案侧 key_points
+   * 族共享点、不进盲包文本，出题人无法自挖（实测盲包自挖 1029 个跨族 2 字词、24 个设计词
+   * 0 命中），故由清单显式交付「词→承载族」。只给族 id、不给事件 id、不给要点/hasRef：
+   * 出题人据此选跨族 pair，gold 仍由族内事件的独有细节决定，不构成金标泄漏。
+   * 调参族不列入（封存卷禁止互混）。
+   */
+  readonly collisionWords: readonly { readonly word: string; readonly familyIds: readonly string[] }[];
 }
 
 /**
@@ -103,6 +118,19 @@ export function buildWorldManifestV2(plan: WorldPlanV2): WorldManifestV2 {
       event.highRiskLabels.map((label) => ({ eventId: event.eventId, label })),
     ),
     reusedDetailWords: reusedDetailWordsV2(plan),
+    collisionWords: COLLIDE_WORDS_V2.map((word) => ({
+      word,
+      // keyPoints[0] 是族共享点（撞词＋后缀），前 2 码点即撞词；只取封存族、去重、按族序。
+      familyIds: plan.events
+        .filter(
+          (event) =>
+            event.partition === 'sealed' &&
+            Array.from(event.keyPoints[0]!).slice(0, 2).join('') === word,
+        )
+        .map((event) => event.familyId)
+        .filter((familyId, i, arr) => arr.indexOf(familyId) === i)
+        .sort(),
+    })),
   };
 }
 
@@ -116,6 +144,16 @@ export function assertBlindPackageV2Shape(pkg: BlindPackageV2, manifest: WorldMa
   if (manifest.totalEvents !== TOTAL_EVENT_COUNT_V2) errs.push(`清单总量 ${manifest.totalEvents}`);
   if (manifest.sealedEvents + manifest.tuningEvents !== manifest.totalEvents) errs.push('分区计数不自洽');
   if (manifest.reusedDetailWords.length !== 18) errs.push(`复用词 ${manifest.reusedDetailWords.length} ≠ 18`);
+  if (manifest.collisionWords.length !== COLLIDE_WORDS_V2.length) {
+    errs.push(`撞词表 ${manifest.collisionWords.length} ≠ ${COLLIDE_WORDS_V2.length}`);
+  }
+  for (const entry of manifest.collisionWords) {
+    if (!COLLIDE_WORDS_V2.includes(entry.word)) errs.push(`撞词表含非设计词「${entry.word}」`);
+    if (entry.familyIds.length === 0) errs.push(`撞词「${entry.word}」无承载族`);
+    for (const familyId of entry.familyIds) {
+      if (!familyId.endsWith('-s')) errs.push(`撞词「${entry.word}」映射了非封存族 ${familyId}`);
+    }
+  }
   for (const event of pkg.events) {
     const expectedTurns = event.highRiskLabels.length > 0 ? 7 : 6;
     if (event.turns.length !== expectedTurns) errs.push(`${event.eventId} turns ${event.turns.length} ≠ ${expectedTurns}`);

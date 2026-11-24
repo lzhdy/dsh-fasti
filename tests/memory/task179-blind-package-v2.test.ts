@@ -20,7 +20,7 @@ import {
   buildWorldManifestV2,
   toBlindEventV2,
 } from '../../src/memory/audit/corpus/blind-package-v2.ts';
-import { buildWorldV2, reusedDetailWordsV2 } from '../../src/memory/audit/corpus/world-plan-v2.ts';
+import { COLLIDE_WORDS_V2, buildWorldV2, reusedDetailWordsV2 } from '../../src/memory/audit/corpus/world-plan-v2.ts';
 
 const plan = buildWorldV2();
 const blind = buildBlindPackageV2(plan);
@@ -82,6 +82,39 @@ test('B4 manifest：总量/分区/高危 10 条/复用词 18 且与蓝本一致'
   }
 });
 
+test('B4b collisionWords：24 个设计撞词逐个给封存族映射，只给族不给事件/不给要点', () => {
+  assert.equal(manifest.collisionWords.length, 24, '撞词表必须恰好 24 项');
+  assert.deepEqual(
+    manifest.collisionWords.map((c) => c.word),
+    [...COLLIDE_WORDS_V2],
+    '顺序与词面须与蓝本撞词表逐字一致',
+  );
+  const sealedFamilies = new Set(
+    plan.events.filter((e) => e.partition === 'sealed').map((e) => e.familyId),
+  );
+  for (const entry of manifest.collisionWords) {
+    assert.equal(entry.word.length, 2, '撞词恒为 2 码点');
+    assert.ok(entry.familyIds.length >= 3 && entry.familyIds.length <= 4, `「${entry.word}」封存族数 ${entry.familyIds.length} 应在 3–4`);
+    for (const familyId of entry.familyIds) {
+      assert.match(familyId, /-s$/, `撞词映射只给封存族：${familyId}`);
+      assert.ok(sealedFamilies.has(familyId), `「${entry.word}」映射了不存在的族 ${familyId}`);
+    }
+    assert.deepEqual(entry.familyIds, [...new Set(entry.familyIds)].sort(), '族 id 去重且有序');
+    // 映射只许有 word/familyIds 两键，不得夹带事件 id、要点、hasRef。
+    assert.deepEqual(Object.keys(entry).sort(), ['familyIds', 'word']);
+  }
+  // 与蓝本真实归属对拍：抽三个词逐族核对。
+  for (const word of ['预约', '报价', '尾款']) {
+    const expected = plan.events
+      .filter((e) => e.partition === 'sealed' && Array.from(e.keyPoints[0]!).slice(0, 2).join('') === word)
+      .map((e) => e.familyId)
+      .filter((v, i, arr) => arr.indexOf(v) === i)
+      .sort();
+    const got = manifest.collisionWords.find((c) => c.word === word)!.familyIds;
+    assert.deepEqual([...got].sort(), expected, `撞词「${word}」族映射与蓝本不符`);
+  }
+});
+
 test('B5 高危可见性：盲包里高危 7 条 turns、非高危 6 条，且第 7 条含高危话头', () => {
   const hr = blind.events.filter((e) => e.highRiskLabels.length > 0);
   assert.equal(hr.length, 10);
@@ -99,7 +132,7 @@ test('B6 manifest 不得含结构统计（族覆盖/周桶/唯一度），只给
     assert.equal(text.includes(forbidden), false, `manifest 泄漏结构统计「${forbidden}」`);
   }
   assert.deepEqual(Object.keys(manifest).sort(), [
-    'baseEpochMs', 'highRiskInventory', 'referenceNowMs', 'reusedDetailWords',
+    'baseEpochMs', 'collisionWords', 'highRiskInventory', 'referenceNowMs', 'reusedDetailWords',
     'schema', 'sealedEvents', 'seed', 'totalEvents', 'tuningEvents',
   ]);
   assert.deepEqual(assertBlindPackageV2Shape(blind, manifest), []);
