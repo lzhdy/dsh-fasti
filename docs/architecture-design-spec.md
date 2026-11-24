@@ -2763,6 +2763,8 @@ node 两个 OpenAI 兼容出口（摘要口 `openai-llm.ts`、对话口 `openai-
 
 红测 `tests/memory/sealed-assembly-v2.test.ts` 8 条先红后绿；五条变异反证（G4② 去除 S5、decoyKind 不强制、v2 版本形态不认、clarify 翻成事件 id、不区分调参分区）均使新测转红。`npm run verify` = **1686/1686 fail 0**（原 1678＋8）。真机 500 事件根 dry-run 全量实跑：装配 gold 550／decoy 200／clarify 18／abstain 200，层分布 S0 150·S1 150·S2 50·S3 50·S4 50·S5 100，覆盖 400 事件，诱饵 114/50/36，弃权 100/100，**syn 零残留**，六层配额逐层相等、G4② 对 250 条 S2–S5 零误伤零漏网。**封存动作（写 `probes-v2` 目录）本次未执行，待主控另行授权**；`CURRENT_RULES_VERSION` 仍 `rules-v1`（预注册 §10），终判 harness 认 clarify/S5/decoyKind 的升级另立一卡。
 
+**十三、`probes-v2` 封存落地（2026-11-24，主控授权「可以」）**：以润色版考卷（`q2-output-polished-20261124.zip`，复检 0 BLOCK/0 WARN）为输入、`--world v2` 500 事件根为同源蓝本，经 `assemble-sealed-fixtures-v2.ts --seal-dir` 封存至仓外 `/home/user/fasti-p6-sealed/probes-v2`（480K、六件套）。清单要素：`schema=fasti-p6-seal/v1`、`probeSetVersion=fasti-p6-probes/v2`、`rulesVersion=rules-v1`、`rngSeed=20261111`（沿用全局默认，与 v1 卷同源可比）、`sealedAtMs=1795516180050`、`sealedBy=lzhdy`、`decoyPairCount=200`、`layerQuotas=S0 150·S1 150·S2 50·S3 50·S4 50·S5 100`；files 六件（abstain 27771B／clarify 4693B／decoy 67205B／gold-l0 367851B／gold-l1 78B／holdout 78B）。`verifySeal` 重算全文件哈希：**ok=true、errors=0**；manifest sha256=`eb9dcdeb…7fdf`、gold-l0 sha256=`c27983ed…8315`。封存卷此后只读：任何变更只能新立卷，不得就地改。
+
 ---
 
 > 本文件是规范而非进度报告：它描述系统必须被建成的形状，并在第 11 章登记施工排期。凡标注"待设计／待评审／待标定"处，禁止在实现中先斩后奏；定稿后以加法方式回写正文，并同步更新第 11.4 节对应卡的阶段与状态。

@@ -93,6 +93,8 @@
 
 **#183 v2 封存装配机落地（N3，2026-11-24，方案 A，verify 1678→1686）**：预注册 v5 §8.2 的 N1–N5 中最后未落地的一项（N3）已完成施工。**v1 装配脚本与其红测一字未动**，新立 `scripts/p6/assemble-sealed-fixtures-v2.ts` 接 `buildWorldV2()`、六层配额（150/150/50/50/50/100）、只读 sealed 四文件（**不读 tuning/**）、落六件套（多出 clarify.json）。共享层加法扩展：`fixtures.ts` 认 `fasti-p6-probes/v2`、增 `S5` 构造层与 `clarify` 文件类型＋独立 `loadClarifyFixtures`、`DecoyItem` 增 `decoyKind`（v2 强制三枚举、v1 可缺省）；`fixture-guard.ts` 把 G4② 扩到 S5 而 G4① 仍限 S2–S4（任务书 C-S5 只要求 G4-2）。`sealing.ts` 零改动（封装仍 `fasti-p6-seal/v1`，卷版本靠 manifest 的 `probeSetVersion` 区分）。红测 `tests/memory/sealed-assembly-v2.test.ts` 8 条先红后绿，五条变异反证全部转红。真机 500 事件根 dry-run：装配 550/200/18/200、层分布逐层吻合、覆盖 400 事件、诱饵 114/50/36、弃权 100/100、syn 零残留。**封存动作与 `CURRENT_RULES_VERSION` 切换均未执行**（前者待主控另行授权、后者仍 rules-v1）。登记见正本 11.13.19 十二。
 
+**probes-v2 已封存（同日主控授权「可以」）**：`/home/user/fasti-p6-sealed/probes-v2`，六件套 480K，`probeSetVersion=fasti-p6-probes/v2`、`layerQuotas` 六层、`sealedAtMs=1795516180050`、`sealedBy=lzhdy`；`verifySeal` ok=true／errors=0，manifest sha256 `eb9dcdeb…7fdf`。该卷自此只读，变更一律新立卷。登记见正本 11.13.19 十三。
+
 其余 #88–#113 多为 ③待方案。**下一空号暂按 #180**（#179 盲包生成器 v2 已取用；#133–#178 区间登记滞后，其中 #134–#152／#163–#169／#174–#177 是否真空号尚未逐号核实；取号前必查 11.4.0，禁止 +1）。
 
 ## 五、想自己核对？三条命令
