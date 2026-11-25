@@ -80,6 +80,22 @@ const ACYCLIC_LEAF_FILES = [
   // clarify-policy.ts（#194 乙机制澄清决策器离线内核）仅 type-only import types，无运行时依赖；
   // 生产门不得反向拉入，保持 leaf 才能用静态门锁死「只模拟不生效」。
   'clarify-policy.ts',
+  // ordered-proximity.ts（ORD-γ/215）有序连续命中 0/1 排序特征，只依赖 locality→bigram  leaf 链；
+  // 默认不接排序键，gate/rank/bm25 反向拉入即报红，另由 OP-9 源码断言双向锁死零接线。
+  'ordered-proximity.ts',
+  // term-idf.ts（ORD-α/215）整数定点 IDF 冻结快照，依赖 bigram-null-model→bigram leaf 链；
+  // 浮点封闭在离线建表函数，gate/rank/bm25 反向拉入即报红，另由 TI-9 源码断言锁死零接线。
+  'term-idf.ts',
+  // #227 rules-v3 候选门链（P2 局部聚集度），全链必须保持 leaf：
+  // locality.ts 依赖 bigram/lexical-signals；两张 null-model 依赖 bigram/locality；
+  // locality-frozen.ts 汇总上述 leaf 且仅 type-only 依赖 types；gate-v3.ts 复用 gate.ts
+  // （同列 leaf）与 serial.ts，注入三表不持库。store/builder/bm25 反向可达即报红，
+  // 另由 GV3-10/LF-11 源码断言锁死零接线与占位表隔离。
+  'locality.ts',
+  'bigram-null-model.ts',
+  'locality-null-model.ts',
+  'locality-frozen.ts',
+  'gate-v3.ts',
 ] as const;
 
 /** 显式直接拉黑（闭包判定的双保险，意图清晰且不依赖图计算正确性）。 */

@@ -231,3 +231,53 @@ export function lookupKMin(table: FrozenKMinTable, m: number, qLen: number): num
   const cell = table.grid.find((c) => c.m === m && c.qLen === qLen);
   return cell === undefined ? m + 1 : cell.kMin;
 }
+
+/**
+ * W3-2a 配套冻结件（#227 接线弥合）：bigram→稀有桶号快照。
+ * FrozenKMinTable 只冻结 dfCutpoints，而门热路径的 rareBigramHitCount 需要逐 bigram 桶号；
+ * 门是不持库纯函数、无法现场重算 df，故桶映射作为随根独立快照注入（与 bMin 档位无关，全根一件）。
+ *  entries 按 gram 字典序排列，保证 JSON 逐字节可重放；门内消费只经 rarityBucketMapOf 读整数。
+ */
+export const RARITY_SNAPSHOT_SCHEMA = 'fasti-null-model-rarity/v1';
+
+export interface FrozenRarityEntry {
+  readonly gram: string;
+  readonly bucket: number;
+}
+
+export interface FrozenRaritySnapshot {
+  readonly schema: typeof RARITY_SNAPSHOT_SCHEMA;
+  readonly rarityBuckets: number;
+  readonly dfCutpoints: readonly number[];
+  readonly entries: readonly FrozenRarityEntry[];
+}
+
+function assertRaritySnapshot(table: FrozenRaritySnapshot): void {
+  if (table.schema !== RARITY_SNAPSHOT_SCHEMA) throw new Error(`非法稀有桶快照 schema：${table.schema}`);
+  if (table.rarityBuckets !== RARITY_BUCKET_COUNT) throw new Error('稀有桶快照桶数与建表器不一致，拒绝读取');
+  if (table.dfCutpoints.length !== RARITY_BUCKET_COUNT - 1) throw new Error('稀有桶快照 cutpoints 形状非法');
+}
+
+/** 离线构建稀有桶快照：纯确定性，同语料逐字节一致。 */
+export function buildRaritySnapshot(fieldDocuments: readonly string[]): FrozenRaritySnapshot {
+  if (fieldDocuments.length === 0) throw new Error('字段文档为空：无法在空语料上冻结稀有桶快照');
+  const stats = collectBigramStats(fieldDocuments);
+  const rarity = buildRarityBuckets(stats.documentFrequency);
+  const entries = [...rarity.bucketOf.entries()]
+    .map(([gram, bucket]) => ({ gram, bucket }))
+    .sort((a, b) => (a.gram < b.gram ? -1 : a.gram > b.gram ? 1 : 0));
+  return {
+    schema: RARITY_SNAPSHOT_SCHEMA,
+    rarityBuckets: RARITY_BUCKET_COUNT,
+    dfCutpoints: [...rarity.cutpoints],
+    entries,
+  };
+}
+
+/** 门内只读：把冻结快照还原为 rareBigramHitCount 同构的桶号映射；未登录 gram 不在 Map 中。 */
+export function rarityBucketMapOf(snapshot: FrozenRaritySnapshot): ReadonlyMap<string, number> {
+  assertRaritySnapshot(snapshot);
+  const map = new Map<string, number>();
+  for (const entry of snapshot.entries) map.set(entry.gram, entry.bucket);
+  return map;
+}

@@ -363,6 +363,17 @@ export interface GatedRankedCard extends ExplainedRankedCard {
    * 任何把它接进 accept/reject 或排序键的用法都属判据变更，必须另走预注册 §9。
    */
   gradedSignals?: GradedSignals;
+  /**
+   * rules-v3 局部聚集度见证五元组（#227，仅 applyGateV3 的 locality-pass 路径填充）：
+   * 全整数、可逐题手算复核；v1/v2 路径恒缺省，加字段不删字段保证旧信封零漂移。
+   */
+  localityDetail?: {
+    readonly fieldIndex: number;
+    readonly m: number;
+    readonly rareCount: number;
+    readonly span: number;
+    readonly gap: number;
+  };
 }
 
 /** 布尔门一次检索的完整裁决结果（含被拒候选，不静默丢弃，供可解释与漏召统计）。 */
@@ -381,8 +392,8 @@ export interface GatedSearchOutcome {
   accepted: GatedRankedCard[];
   /** 被拒候选全集（不截断），每张附原因码。 */
   rejected: GatedRankedCard[];
-  /** 仅 no-match/abstain 携带的汇总原因；hit 时为 undefined。tie-no-strict-leader 仅历史 v2 严格优超期产出，#129 起 V2 不可达。 */
-  reason?: 'empty-query' | 'zero-lexical-hit' | 'all-rejected' | 'tie-no-strict-leader';
+  /** 仅 no-match/abstain 携带的汇总原因；hit 时为 undefined。tie-no-strict-leader 仅历史 v2 严格优超期产出，#129 起 V2 不可达。locality-conflict 仅 rules-v3 组级冲突弃权产出（#227）。 */
+  reason?: 'empty-query' | 'zero-lexical-hit' | 'all-rejected' | 'tie-no-strict-leader' | 'locality-conflict';
   /** 对截断后 accepted 建的请求级 1..n 私有序号（复用 serial.ts，不落库）。 */
   serialMap: SerialMap;
   /** #130 截窗槽位汇总：仅 applyGateV2 hit 时产出；v1 与非 hit 分支恒 undefined。 */
