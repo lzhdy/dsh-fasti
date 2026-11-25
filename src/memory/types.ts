@@ -303,7 +303,11 @@ export type GateReasonCode =
   // WINDOW/CANDIDATES 词面合格卡一律留痕放行（time-window-ignored），UNCERTAIN 仍 time-uncertain-ignored。
   | 'time-conflict'
   | 'time-uncertain-ignored'
-  | 'time-window-ignored';
+  | 'time-window-ignored'
+  // W3-1（#213）P2 局部聚集度谓词原因码：locality.ts 纯函数已就位但默认不接线，
+  // applyGateV2 当前不产出这两个码；待随机空模型冻结表与预注册 §9 放行后方可上热路径。
+  | 'locality-pass'
+  | 'conflict-abstain';
 
 /**
  * #130 截窗槽位标记（与 rank.ts SlotTag 同字面量联合，结构同形不互引：types 是无环纯类型基座，
