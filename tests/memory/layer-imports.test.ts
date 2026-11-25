@@ -77,6 +77,9 @@ const ACYCLIC_LEAF_FILES = [
   // lexical-signals.ts（#193/P0 分级词面信号留痕）只依赖 bigram 与全局字符串，必须保持 leaf：
   // 若将来被 store/bm25 反向拉入即报红，防止留痕仪表变成判据耦合点。
   'lexical-signals.ts',
+  // clarify-policy.ts（#194 乙机制澄清决策器离线内核）仅 type-only import types，无运行时依赖；
+  // 生产门不得反向拉入，保持 leaf 才能用静态门锁死「只模拟不生效」。
+  'clarify-policy.ts',
 ] as const;
 
 /** 显式直接拉黑（闭包判定的双保险，意图清晰且不依赖图计算正确性）。 */

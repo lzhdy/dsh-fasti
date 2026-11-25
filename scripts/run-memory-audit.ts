@@ -48,7 +48,9 @@ import type { JudgmentV2, LayerProbeV2, DecoyProbeV2, AbstainProbeV2, ClarifyPro
 import { buildLayerProbesV2, collectTop1Records } from '../src/memory/audit/top1-alignment.ts';
 import { gatedVerdictCaveat } from '../src/memory/audit/gated-caveat.ts';
 import { gradedLexicalSignals } from '../src/memory/lexical-signals.ts';
-import type { GradedSignals } from '../src/memory/types.ts';
+import { decideClarify } from '../src/memory/clarify-policy.ts';
+import type { ClarifyAction, ClarifyCandidate, ClarifyReason } from '../src/memory/clarify-policy.ts';
+import type { GatedSearchOutcome, GradedSignals } from '../src/memory/types.ts';
 import type { Top1Record } from '../src/memory/audit/top1-alignment.ts';
 import { applyGate, normalizeLexicalText } from '../src/memory/gate.ts';
 import { summarizeFourState } from '../src/memory/audit/four-state.ts';
@@ -480,6 +482,31 @@ function lexicalFieldsOf(card: { lexicalFields?: string[]; cueText?: string }): 
   return card.cueText !== undefined ? [card.cueText] : [];
 }
 
+/**
+ * 乙机制澄清决策器离线模拟行（#194）：每题一条，只在审计侧产出，生产门零消费。
+ * cohort 区分金标题/弃权题/澄清题三个队列；goldInTieGroup 仅金标题有语义
+ * （金标未入候选为 null），pairLocked 仅澄清题有语义（配对双卡是否同在打平组）。
+ */
+export interface ClarifyPolicyRow {
+  probeRef: string;
+  layer?: string;
+  cohort: 'gold' | 'abstain' | 'clarify';
+  action: ClarifyAction;
+  reason: ClarifyReason;
+  candidateCount: number;
+  tiedCardIds: readonly string[];
+  goldInTieGroup: boolean | null;
+  pairLocked: boolean | null;
+}
+
+/** 全过门卡 → 决策器输入：同一趟回放内顺手算信号，不额外检索。 */
+function clarifyCandidatesOf(qNorm: string, outcome: GatedSearchOutcome): ClarifyCandidate[] {
+  return outcome.accepted.map((gated) => ({
+    cardId: gated.card.cardId,
+    signals: gradedLexicalSignals(qNorm, lexicalFieldsOf(gated)),
+  }));
+}
+
 export interface AuditReport {
   run: AuditRunRecord;
   items: AuditItemRecord[];
@@ -500,6 +527,8 @@ export interface AuditReport {
   gatedVerdictCaveat?: string | null;
   /** P0 分级词面信号逐题留痕（#193）：仅 v2 门后栈路径产出，只披露不判分。 */
   gatedSignalRows?: readonly GatedSignalRow[];
+  /** 乙机制澄清决策器离线模拟逐题行（#194）：仅 v2 门后栈路径产出，不接生产裁决。 */
+  clarifyPolicyRows?: readonly ClarifyPolicyRow[];
   provenanceFailed: boolean;
   holdout: { mode: 'holdout' | 'loeo' | 'not-run'; folds: number; loeo?: LoeoResult };
   redLines: { r1: number | null; r2: number | null; r3: number | null };
@@ -638,6 +667,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
     let fourStateGated: FourStateSummary | undefined;
     let gatedCaveat: string | null = null;
     const gatedSignalRows: GatedSignalRow[] = [];
+    const clarifyPolicyRows: ClarifyPolicyRow[] = [];
     if (isV2Probes && options.holdout) {
       // 澄清档只在终判（封存集）路径结算，施工 dry-run 不消化探针。
       try {
@@ -668,6 +698,27 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
           committed: topCard !== null,
           top1Signals: firstGated !== null ? gradedLexicalSignals(qNorm, lexicalFieldsOf(firstGated)) : null,
           goldSignals: goldCard !== null ? gradedLexicalSignals(qNorm, lexicalFieldsOf(goldCard)) : null,
+        });
+        // #194 澄清决策器离线模拟：对同一候选全集重跑一次纯函数门（无 IO）取全过门卡，
+        // 只记录「若当时有澄清机制会如何分」，不改上方生产等价回放的任何结果。
+        const fullOutcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
+        const clarifyVerdict = decideClarify(clarifyCandidatesOf(qNorm, fullOutcome));
+        const goldInTieGroup = goldCard === null
+          ? null
+          : clarifyVerdict.tiedCardIds.some((cardId) => {
+              const tied = fullOutcome.accepted.find((gated) => gated.card.cardId === cardId);
+              return tied?.card.eventId === resolvedEventId;
+            });
+        clarifyPolicyRows.push({
+          probeRef: question.questionRef,
+          ...(question.constructionLayer !== undefined ? { layer: question.constructionLayer } : {}),
+          cohort: 'gold',
+          action: clarifyVerdict.action,
+          reason: clarifyVerdict.reason,
+          candidateCount: fullOutcome.accepted.length,
+          tiedCardIds: [...clarifyVerdict.tiedCardIds],
+          goldInTieGroup,
+          pairLocked: null,
         });
         return { committed: topCard !== null, top1IsGold: topCard !== null && topCard.eventId === resolvedEventId };
       });
@@ -709,6 +760,19 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
           highRisk: false,
           probeKind: item.kind,
         });
+        // #194：弃权队列离线模拟，看点是 ASK_MULTI 误触发数（期望 0，不该反问时不打扰）。
+        const abstainFull = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
+        const abstainVerdict = decideClarify(clarifyCandidatesOf(qNorm, abstainFull));
+        clarifyPolicyRows.push({
+          probeRef: `abstain:${item.kind}:${clarifyPolicyRows.length}`,
+          cohort: 'abstain',
+          action: abstainVerdict.action,
+          reason: abstainVerdict.reason,
+          candidateCount: abstainFull.accepted.length,
+          tiedCardIds: [...abstainVerdict.tiedCardIds],
+          goldInTieGroup: null,
+          pairLocked: null,
+        });
       }
       const gatedClarifyProbes: ClarifyProbeV2[] = [];
       for (const item of clarifyItems) {
@@ -729,6 +793,21 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
           committed: gatedCardId !== null,
           top1IsGold: false,
           top1IsDecoy: gatedCardId !== null && item.pairCardIds.includes(gatedCardId),
+        });
+        // #194：澄清题主战场——配对双卡信号全等时应落 ASK_MULTI 且 pairLocked=true。
+        const clarifyFull = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
+        const clarifyVerdict = decideClarify(clarifyCandidatesOf(qNorm, clarifyFull));
+        clarifyPolicyRows.push({
+          probeRef: `clarify:${clarifyPolicyRows.length}`,
+          cohort: 'clarify',
+          action: clarifyVerdict.action,
+          reason: clarifyVerdict.reason,
+          candidateCount: clarifyFull.accepted.length,
+          tiedCardIds: [...clarifyVerdict.tiedCardIds],
+          goldInTieGroup: null,
+          pairLocked:
+            item.pairCardIds.length >= 2 &&
+            item.pairCardIds.every((cardId) => clarifyVerdict.tiedCardIds.includes(cardId)),
         });
       }
       // 门后四态汇总（金标题＋弃权题），供报告与 notes 留档；粗召回四态仍以前文 fourState 为准。
@@ -881,6 +960,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       ...(fourStateGated ? { fourStateGated } : {}),
       ...(judgmentV2Gated ? { gatedVerdictCaveat: gatedCaveat } : {}),
       ...(judgmentV2Gated ? { gatedSignalRows } : {}),
+      ...(judgmentV2Gated ? { clarifyPolicyRows } : {}),
       provenanceFailed: provenance.failed,
       holdout: { mode: holdoutMode, folds, ...(lOeo ? { loeo: lOeo } : {}) },
       redLines: { r1, r2, r3 },
@@ -971,6 +1051,34 @@ function formatReport(report: AuditReport): string {
         lines.push(`行数        ：${rows.length}（门后提交=${rows.filter((row) => row.committed).length}）`);
         lines.push(`金标卡 LCS  ：${bucketize((row) => row.goldSignals)}`);
         lines.push(`门后第一名  ：${bucketize((row) => row.top1Signals)}`);
+      }
+      // #194 乙机制澄清决策器离线模拟：只报告结构性打平判定的分流分布，不接生产裁决；
+      // NOMINATE_SINGLE 弱证据档未启用（枚举不可达），近邻非全等档等待 P1 梯度卷标定。
+      const policyRows = report.clarifyPolicyRows;
+      if (policyRows !== undefined) {
+        const countBy = (cohort: ClarifyPolicyRow['cohort'], action: ClarifyAction): number =>
+          policyRows.filter((row) => row.cohort === cohort && row.action === action).length;
+        const goldRows = policyRows.filter((row) => row.cohort === 'gold');
+        const goldTie = goldRows.filter((row) => row.action === 'ASK_MULTI').length;
+        const goldInTie = goldRows.filter((row) => row.goldInTieGroup === true).length;
+        const goldMissing = goldRows.filter((row) => row.goldInTieGroup === null).length;
+        const clarifyRows = policyRows.filter((row) => row.cohort === 'clarify');
+        const pairLocked = clarifyRows.filter((row) => row.pairLocked === true).length;
+        const abstainRows = policyRows.filter((row) => row.cohort === 'abstain');
+        const abstainFalseAsk = abstainRows.filter((row) => row.action === 'ASK_MULTI').length;
+        lines.push('── 澄清决策器离线模拟（#194，结构性打平判定，仅审计模拟不生效；NOMINATE_SINGLE 未启用）──');
+        lines.push(
+          `金标题 N=${goldRows.length}：COMMIT=${countBy('gold', 'COMMIT')} ` +
+            `ASK_MULTI=${goldTie}（金标在打平组=${goldInTie}，金标未入候选=${goldMissing}）ABSTAIN=${countBy('gold', 'ABSTAIN')}`,
+        );
+        lines.push(
+          `澄清题 N=${clarifyRows.length}：ASK_MULTI=${countBy('clarify', 'ASK_MULTI')}（配对双卡同组=${pairLocked}） ` +
+            `COMMIT=${countBy('clarify', 'COMMIT')} ABSTAIN=${countBy('clarify', 'ABSTAIN')}`,
+        );
+        lines.push(
+          `弃权题 N=${abstainRows.length}：ABSTAIN=${countBy('abstain', 'ABSTAIN')} COMMIT=${countBy('abstain', 'COMMIT')} ` +
+            `ASK_MULTI=${abstainFalseAsk}（非零即误触发反问，期望 0）`,
+        );
       }
     }
     lines.push('── 澄清档披露（F6，只作描述性统计，不进 R1/R2 分母）────────────');
