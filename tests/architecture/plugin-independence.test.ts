@@ -45,6 +45,10 @@ const CORPUS_LITERAL_ALLOWLIST: readonly string[] = [
   // #179：v2 蓝本同属封存语料（事件 channel 字面为 'dsh'，是语料事实而非内核默认值）。
   'src/memory/audit/corpus/world-plan-v2.ts',
   'src/memory/audit/corpus/blind-package-v2.ts',
+  // task206：v3 调参世界蓝本同为封存合成语料，channel 'dsh' 是模拟来源数据内容。
+  'src/memory/audit/corpus/world-plan-v3.ts',
+  // task210：v3 盲包同为封存语料投影，BlindEventV3.channel 的 'dsh' 是数据内容而非内核默认。
+  'src/memory/audit/corpus/blind-package-v3.ts',
 ];
 
 /** 具体宿主通道 id / 旧默认根段的引号字面量（大写 DSH_HOME 环境变量名不匹配，不误伤）。 */

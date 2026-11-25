@@ -38,7 +38,8 @@ test('S2 v2 的 seed 冻结：给对通过、给错必抛、--world 取值有限
     'v2',
   );
   assert.throws(() => parseArgs(['--out', '/tmp/a', '--blind-out', '/tmp/b', '--world', 'v2', '--seed', '7']), /seed 已冻结/);
-  assert.throws(() => parseArgs(['--out', '/tmp/a', '--blind-out', '/tmp/b', '--world', 'v3']), /只接受 v1\|v2/);
+  // W2-3（task208）把 v3 接进 CLI 后，本行随之调整：v3 合法，未知值 v4 才拒（详见 task208-world-v3-build.test.ts）。
+  assert.throws(() => parseArgs(['--out', '/tmp/a', '--blind-out', '/tmp/b', '--world', 'v4']), /只接受 v1\|v2\|v3/);
 });
 
 test('S3 无取值开关不吃下一个 token', () => {

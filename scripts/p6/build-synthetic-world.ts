@@ -36,6 +36,9 @@ import { openMemoryWrite } from '../../src/memory/store.ts';
 import type { AliasRow, DecisionRecord, MemoryCard, RevisionRecord } from '../../src/memory/types.ts';
 import { buildWorldPlan, WORLD_REFERENCE_NOW_MS } from '../../src/memory/audit/corpus/world-plan.ts';
 import { SEED_V2, buildWorldV2 } from '../../src/memory/audit/corpus/world-plan-v2.ts';
+import { SEED_V3, buildWorldV3 } from '../../src/memory/audit/corpus/world-plan-v3.ts';
+import type { WorldPlanV3 } from '../../src/memory/audit/corpus/world-plan-v3.ts';
+import { buildWorldManifestV3 } from '../../src/memory/audit/corpus/world-manifest-v3.ts';
 import { assertBlindPackageSafe, buildBlindPackage } from '../../src/memory/audit/corpus/blind-package.ts';
 import {
   assertBlindPackageV2Shape,
@@ -47,8 +50,8 @@ interface CliArgs {
   out: string | undefined;
   blindOut: string | undefined;
   seed: number | undefined;
-  /** #179：'v1'（默认，100 事件，行为与改造前逐字节一致）| 'v2'（500 事件）。 */
-  world: 'v1' | 'v2';
+  /** #179：'v1'（默认，100 事件，行为与改造前逐字节一致）| 'v2'（500 事件）| 'v3'（1920 事件纯调参卷）。 */
+  world: 'v1' | 'v2' | 'v3';
   /** 仅对 --out 生效：目录带合成根标记时允许清空重建（无标记一律拒绝，防误删真实根）。 */
   forceRebuild: boolean;
 }
@@ -76,7 +79,7 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (flag === '--seed') {
       args.seed = Number(value);
     } else if (flag === '--world') {
-      if (value !== 'v1' && value !== 'v2') throw new Error(`--world 只接受 v1|v2，收到 ${value}`);
+      if (value !== 'v1' && value !== 'v2' && value !== 'v3') throw new Error(`--world 只接受 v1|v2|v3，收到 ${value}`);
       args.world = value;
     } else {
       throw new Error(`未知参数 ${flag}`);
@@ -85,9 +88,12 @@ function parseArgs(argv: string[]): CliArgs {
   if (args.seed !== undefined && (!Number.isInteger(args.seed) || args.seed <= 0)) {
     throw new Error('--seed 须为正整数');
   }
-  // v2 蓝本的 seed 冻结在预注册里（改 seed 即改蓝图、N1h 结论脱节），不允许覆盖。
+  // v2/v3 蓝本的 seed 冻结在预注册里（改 seed 即改蓝图、N1h 结论脱节），不允许覆盖。
   if (args.world === 'v2' && args.seed !== undefined && args.seed !== SEED_V2) {
     throw new Error(`--world v2 的 seed 已冻结为 ${SEED_V2}，不接受 --seed ${args.seed}`);
+  }
+  if (args.world === 'v3' && args.seed !== undefined && args.seed !== SEED_V3) {
+    throw new Error(`--world v3 的 seed 已冻结为 ${SEED_V3}，不接受 --seed ${args.seed}`);
   }
   return args;
 }
@@ -140,6 +146,40 @@ export interface BuildableEvent {
 export interface BuildablePlan {
   readonly referenceNowMs: number;
   readonly events: readonly BuildableEvent[];
+}
+
+/**
+ * v3 蓝本 → 建根可食 plan 的**纯投影**（W2-3）。
+ *
+ * 只做两处形状对齐，其余一律原样搬运：
+ *  1. `partition`：v3 的 `tuning-a | tuning-b` 折叠为 `'tuning'`——v3 是纯调参卷、永不含封存分区，
+ *     A/B 的区分留在蓝本与世界清单里，不进共享建根类型（`BuildableEvent` 一字不动，v1/v2 零风险）；
+ *  2. `endedAtMs` → `endedMs`：字段名对齐共享摄入链。
+ *
+ * 不改写入参、不读时钟、不派生新内容：输出与蓝本同序同 id，`seedDerivedCards` 的
+ * 「closedAnchors 插入序 == plan.events 序」前提因此继续成立。
+ */
+export function toBuildablePlanV3(plan: WorldPlanV3): BuildablePlan {
+  return {
+    referenceNowMs: plan.referenceNowMs,
+    events: plan.events.map((event) => ({
+      eventId: event.eventId,
+      partition: 'tuning' as const,
+      startedAtMs: event.startedAtMs,
+      endedMs: event.endedAtMs,
+      keyPoints: event.keyPoints,
+      summary: event.summary,
+      turns: event.turns,
+    })),
+  };
+}
+
+/**
+ * `--blind-out` 是否强制（W2-3）：v1/v2 的盲包契约已立卷，必须给；
+ * v3 的 `blind-package-v3` 尚未立卷，给了目录也只落世界清单，故允许省略。
+ */
+export function requiresBlindOut(world: 'v1' | 'v2' | 'v3'): boolean {
+  return world !== 'v3';
 }
 
 function iso(ms: number): string {
@@ -306,7 +346,7 @@ async function seedDerivedCards(plan: BuildablePlan, outRoot: string, closedAnch
 }
 
 /** 建根成功后才落标记：让 `--force-rebuild` 的授权范围严格限于「已成功建成的合成根」。 */
-function writeRootMarker(outRoot: string, schema: string, seed: number, world: 'v1' | 'v2'): void {
+function writeRootMarker(outRoot: string, schema: string, seed: number, world: 'v1' | 'v2' | 'v3'): void {
   writeFileAtomic(
     path.join(outRoot, SYNTHETIC_ROOT_MARKER),
     `${JSON.stringify({ schema, seed, world, note: '本目录由 build-synthetic-world.ts 生成，可安全删除或 --force-rebuild 重建' }, null, 2)}\n`,
@@ -315,15 +355,43 @@ function writeRootMarker(outRoot: string, schema: string, seed: number, world: '
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.out || !args.blindOut) {
-    process.stderr.write('用法：build-synthetic-world.ts --out <数据根> --blind-out <盲包目录> [--seed n]\n');
+  if (!args.out || (requiresBlindOut(args.world) && !args.blindOut)) {
+    process.stderr.write(
+      '用法：build-synthetic-world.ts --out <数据根> --blind-out <盲包目录> [--seed n] [--world v1|v2|v3]\n' +
+        '（--world v3 的 --blind-out 可省：v3 盲包契约未立卷，给了也只落 world-manifest-v3.json）\n',
+    );
     process.exitCode = 2;
     return;
   }
   const outRoot = args.out;
   const blindRoot = args.blindOut;
   ensureFreshDir(outRoot, '--out', { allowRebuild: args.forceRebuild });
-  ensureFreshDir(blindRoot, '--blind-out');
+  if (blindRoot !== undefined) ensureFreshDir(blindRoot, '--blind-out');
+
+  if (args.world === 'v3') {
+    // v3 是纯调参卷：蓝本经纯投影喂同一套摄入/闭合/建卡链，A/B 分区只在蓝本与清单里。
+    const plan = buildWorldV3();
+    const buildable = toBuildablePlanV3(plan);
+    const closedAnchors = await ingestWorld(buildable, outRoot);
+    await seedDerivedCards(buildable, outRoot, closedAnchors);
+    writeRootMarker(outRoot, plan.schema, plan.seed, 'v3');
+
+    const manifest = buildWorldManifestV3(plan);
+    if (blindRoot !== undefined) {
+      writeFileAtomic(path.join(blindRoot, 'world-manifest-v3.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    }
+    process.stdout.write(
+      `合成世界 v3 已生成：${manifest.totalEvents} 事件（调参 A ${manifest.partitionEvents['tuning-a']}／B ${manifest.partitionEvents['tuning-b']}）、` +
+        `${manifest.totalEvents} 张真派生卡、复用词 ${manifest.reusedDetailWords.length} 个、` +
+        `高危盘点 ${manifest.highRiskInventory.length} 条、撞词 ${manifest.collisionWords.length} 个` +
+        (blindRoot === undefined ? '；未指定 --blind-out，只出根未出清单' : '') +
+        '\n',
+    );
+    return;
+  }
+
+  // 入口守卫已挡死「v1/v2 缺 --blind-out」，此处只为收窄类型。
+  if (blindRoot === undefined) throw new Error('内部错误：v1/v2 分支缺少 --blind-out');
 
   if (args.world === 'v2') {
     const plan = buildWorldV2();
