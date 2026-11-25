@@ -317,15 +317,19 @@ function pairFacts(row: CandidateCalibrationRowV3, bMin: number): {
     goldTop1,
     // 回收：v2 零合格卡，v3 救回且 top1 正是金标。
     recovered: reading.v2AcceptedCount === 0 && v3Hit && goldTop1,
-    // 新增 wc：v2 top1 不是金标（含 v2 no-match），v3 hit 却把非金标顶到第一。
-    newWrongCommit: !reading.v2Top1Gold && v3Hit && !goldTop1,
+    // 新增 wc（蓝图「wc 零新增」增量口径）：仅当 v2 本就零合格卡，v3 分叉把非金标顶到第一。
+    // v2 自己已错误放行的存量 wc 经透传原样保留，开关 v3 边际错误为零，记 inheritedWrongCommit 披露而非灭档。
+    newWrongCommit: reading.v2AcceptedCount === 0 && v3Hit && !goldTop1,
     // 冲突弃权成本：v2 本已金标 top1，v3 反而不给合格卡。
     conflictCost: reading.v2Top1Gold && !v3Hit,
-    // 诱饵误收：decoy 题对手进门，或金标未能守住第一。
-    decoyFalseAccept: row.layer === 'tuning-decoy' && (v3Hit && (!goldTop1 || rivalIn)),
-    // 弃权题误收：abstain 题任何 v3 合格卡都算破闸。
-    abstainFalseAccept: row.layer === 'tuning-abstain' && reading.v3AcceptedCount > 0,
-    // 高危误伤：带 highRiskLabel 的题发生 v3 错误命中。
+    // 诱饵误收（增量）：v2 零合格卡的 decoy 题，被 v3 放进对手或未让金标守住第一。
+    decoyFalseAccept:
+      row.layer === 'tuning-decoy' && reading.v2AcceptedCount === 0 && v3Hit && (!goldTop1 || rivalIn),
+    // 弃权题误收（增量）：v2 零合格卡的 abstain 题出现任何 v3 合格卡即破闸。
+    abstainFalseAccept:
+      row.layer === 'tuning-abstain' && reading.v2AcceptedCount === 0 && reading.v3AcceptedCount > 0,
+    // 高危 wc 按蓝图硬闸门第一条保持绝对口径（v3 输出面高危题错误命中即灭，不分存量/增量）；
+    // A/B 调参卷 highRiskLabel 样本为 0，该门当前空转，终考卷高危层背书。
     highRiskWrong: row.highRiskLabel !== undefined && v3Hit && !goldTop1,
   };
 }

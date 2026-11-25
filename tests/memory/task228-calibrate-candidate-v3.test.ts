@@ -516,6 +516,36 @@ test('CV3-12 五表投影与配对统计：v3 读数可无损投影复用 summar
   assert.equal(stats.hardGate.passed, hardGateForBMin(rows, 2).passed);
 });
 
+test('CV3-13 硬闸门只审 v3 增量错误：v2 存量 wrong-commit 透传不计新 wc（蓝图 wc 零新增）', () => {
+  // v2 已错误放行（accepted=10、top1 非金标），v3 五档忠实透传 passthrough-hit：
+  // 开关 v3 的边际错误为零，硬闸门不得为 v2 库存错误灭档。
+  const inherited = [fakeRow({
+    probeId: 'inherited-wc', layer: 'tuning-gold',
+    b: (m) => {
+      for (const b of [0, 1, 2, 3, 4]) {
+        m.set(b, { v3Status: 'hit', goldTop1: false, v2Top1: false, v2Accepted: 10 });
+      }
+    },
+  })];
+  // fakeRow 默认 verdict 按 v2Accepted>0 标 passthrough-hit，与真机 B 卷 014 同构。
+  for (const b of [0, 1, 2, 3, 4]) {
+    const reading = inherited[0]!.v3.find((r) => r.bMin === b)!;
+    assert.equal(reading.localityVerdict, 'passthrough-hit');
+    const gate = hardGateForBMin(inherited, b);
+    assert.equal(gate.newWrongCommit, 0, `b${b} 存量透传不是新增 wc`);
+    assert.equal(gate.passed, true, `b${b} 不应为 v2 存量错误灭档`);
+  }
+  // 对照：v2 零合格卡而 v3 分叉错收，仍是必须灭档的新增 wc。
+  const fresh = [fakeRow({
+    probeId: 'fresh-wc', layer: 'tuning-gold',
+    b: (m) => {
+      for (const b of [0, 1, 2, 3, 4]) m.set(b, { v3Status: 'hit', goldTop1: false, v2Top1: false, v2Accepted: 0 });
+    },
+  })];
+  assert.equal(hardGateForBMin(fresh, 3).newWrongCommit, 1);
+  assert.equal(hardGateForBMin(fresh, 3).passed, false);
+});
+
 // ---- 手造行夹具：直接按档位填 v3 读数，绕开检索库，专测定档纯算术 ----
 interface FakeReading {
   v3Status: string;
