@@ -23,3 +23,9 @@ raw-data/
 *.log
 # 探针/真机运行日志的 .log.txt 变体（补 *.log 漏网，含测试桥段与真模型调用记录）
 *.log.txt
+
+# 挂件本地素材（#240）：启动视频与壁纸只存本机 ~/.dsh/fasti-ui，绝不进公开仓库
+*.mp4
+*.webm
+src/adapters/node/web/media/
+src/adapters/node/web/wallpapers/

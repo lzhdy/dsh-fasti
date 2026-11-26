@@ -10,6 +10,13 @@
 </head>
 <body>
 
+  <!-- 壁纸层与可读性遮罩（纯装饰，本地挂件目录读取；无内容时保持主题底色） -->
+  <div id="wallpaper-layer" aria-hidden="true"></div>
+  <div id="wallpaper-scrim" aria-hidden="true"></div>
+
+  <!-- 启动视频层（/ui/media 本地文件；无视频时直接略过，绝不白屏） -->
+  <div id="splash-root"></div>
+
   <!-- 主控制台外壳：启动序列完成后才显示 -->
   <div id="app" hidden>
     <header id="topbar">

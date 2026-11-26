@@ -33,7 +33,7 @@ FasTI 是一个**本机优先、本地单用户**的 AI 记忆内核：node 后�
 
     ```
     Content-Security-Policy: default-src 'none'; script-src 'self' 'nonce-<每次响应随机>'; style-src 'self';
-      img-src 'self' data:; font-src 'self'; connect-src 'self';
+      img-src 'self' data: blob:; media-src 'self'; font-src 'self'; connect-src 'self';
       base-uri 'none'; frame-ancestors 'none'
     X-Content-Type-Options: nosniff
     Referrer-Policy: no-referrer
@@ -44,7 +44,8 @@ FasTI 是一个**本机优先、本地单用户**的 AI 记忆内核：node 后�
   由此必然要求：
   - 全仓唯一允许的内联 `<script>` 是**后端注入的那段引导脚本**；你自己的代码仍不得写任何内联 `<script>`、内联 `<style>`、内联事件属性（`onclick="..."`），全部走独立文件 + `addEventListener`，也不要在 HTML 里手写或硬编码 nonce（nonce 由后端每响应现场生成、每次不同）；
   - JS 只能 `fetch` 同源地址（`connect-src 'self'`）；
-  - 图片只允许同源或 `data:` URI；图标建议内联 SVG（作为独立 `.svg` 文件或 JS 里的 data URI）；
+  - 图片只允许同源、`data:` 或本地 `blob:`（#240 上传壁纸后的本地预览）；图标建议内联 SVG（作为独立 `.svg` 文件或 JS 里的 data URI）；
+  - **启动视频与壁纸不放在 `/app` 白名单里**：它们由挂件私有面 `/ui/media/*` 同源直读（免 Bearer，因为 `<video src>` 与 CSS 背景带不了请求头），该面由 `media-src 'self'` 放行；
   - 不要用自定义在线字体，用系统字体栈（占位页已示范 `system-ui, -apple-system, "Segoe UI", sans-serif`）。
 
 ### 2.2 文件清单与放置路径
@@ -84,6 +85,7 @@ window.__FASTI_BOOTSTRAP__ = {
   token: "<一次性 Bearer token>",
   bootId: "<12 字符 hex，本次启动实例 id>",
   channel: "<默认通道 id>",
+  splash: "full" | "mini",   // #240 启动视频槽位：本进程第一份入口 HTML 为 full，其后（含刷新/新标签）一律 mini
 };
 ```
 

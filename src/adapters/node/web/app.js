@@ -15,6 +15,8 @@ import { startPulse, stopPulse } from './js/pulse.js';
 import { initShell, renderNav, showReconnectOverlay, updateUptime } from './js/shell.js';
 import { initDrawer } from './js/drawer.js';
 import { startRouter, VIEWS } from './js/router.js';
+import { loadAppearance } from './js/appearance.js';
+import { playSplash } from './js/splash.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -135,7 +137,34 @@ function buildBootOverlay() {
 
 let booted = false;
 
+/**
+ * 启动视频层（#240 纯净播放）：槽位由引导字段 splash 决定（full＝进程首屏，mini＝刷新）。
+ * 视频阶段画面里只有视频、不渲染任何程序 UI；播放器自身兜底全部失败路径，
+ * 本 Promise resolve（播完/被收层/无文件略过）之后，调用方才构建启动序列卡片。
+ */
+async function startSplashLayer(appearanceReady) {
+  const bs = readBootstrap();
+  if (!bs) return;
+  const state = await appearanceReady;
+  if (!state) return;
+  const slot = bs.splash === 'mini' ? 'mini' : 'full';
+  const s = state.settings.splash;
+  if (!s[slot]) return;
+  const file = state.splashFiles ? state.splashFiles[slot] : null;
+  if (!file) return;
+  await playSplash(file, s.sound);
+}
+
 async function boot() {
+  // ⓪ 引导 + 外观 + 启动视频（#240 纯净播放口径）：视频阶段画面里只有视频，
+  //    不构建启动卡片、不跑探测序列；视频自然播完或被收层后，才 buildBootOverlay。
+  //    播放器自带全部兜底（无文件/解码失败/硬超时），无视频时这里立即放行。
+  const bs0 = readBootstrap();
+  if (bs0) initApi(bs0.token);
+  const appearanceReady = loadAppearance();
+  const splashDone = startSplashLayer(appearanceReady);
+  await splashDone;
+
   const overlay = buildBootOverlay();
 
   // ① 探测内核服务
@@ -213,7 +242,9 @@ async function boot() {
   });
 
   // ---- 过渡到主控制台 ----
+  // 视频已在进入启动序列前收层，这里只需等外观落定，再淡出启动卡片、放出主控台。
   booted = true;
+  await appearanceReady;
   await overlay.finish();
 
   document.getElementById('app').hidden = false;

@@ -24,6 +24,7 @@ import { openNodeMemoryRuntime } from './memory-session.ts';
 import { startHttpServer } from './http-server.ts';
 import { startClosureLoop } from './loop.ts';
 import { startProjectionLoop } from './projection-loop.ts';
+import { launchBrowser, type ManagedBrowserChild } from './browser-launcher.ts';
 
 /** 前端静态资产目录（与本文件同目录的 web/，编译后 lib 镜像同构路径仍成立）。 */
 const WEB_ROOT = fileURLToPath(new URL('./web/', import.meta.url));
@@ -246,11 +247,44 @@ export async function serve(config: ServeConfig): Promise<ServeHandle> {
   console.log('[fasti-http] 浏览器打开上面的地址即可（页面已内联本次 token）。');
   console.log(`[fasti-http] 命令行验证：curl -H "Authorization: Bearer ${token}" '${server.url}/experiences?channel=${config.channel}'`);
 
+  // #240 B 方案：按需代开浏览器。默认缺省不代开、老行为不变；
+  // 失败只警告不抛穿（浏览器缺失/被拦都不得影响 HTTP 服务）。
+  let appWindow: ManagedBrowserChild | undefined;
+  if (config.openBrowser !== undefined) {
+    const launcher = config.browserLauncher ?? launchBrowser;
+    try {
+      const launched = await launcher({
+        url: `${server.url}/app/`,
+        openMode: config.openBrowser,
+        ...(config.browserPath === undefined ? {} : { executablePath: config.browserPath }),
+      });
+      if (launched.ok) {
+        console.log(`[fasti-http] 已代开浏览器（${config.openBrowser}）：${launched.executable ?? ''}`);
+        if (config.openBrowser === 'app') {
+          appWindow = launched.child;
+        }
+      } else {
+        console.warn(`[fasti-http] 浏览器代开未成功（${launched.reason ?? 'unknown'}），请手动打开上面的地址。`);
+      }
+    } catch (error) {
+      console.warn('[fasti-http] 浏览器代开抛错（已隔离，不影响服务）：', error);
+    }
+  }
+
   return {
     url: server.url,
     port: server.port,
     token,
     async close() {
+      // app 应用窗与服务同生共死：优雅关闭路径（Ctrl+C/编程 close）先收子进程；
+      // 直接关终端的硬终止路径由操作系统收走整棵进程树，不经过这里。
+      if (config.openBrowser === 'app' && appWindow !== undefined) {
+        try {
+          appWindow.kill();
+        } catch {
+          // 子进程已自行退出时 kill 无果属正常，不阻断关闭。
+        }
+      }
       closureLoop.stop();
       projectionLoop.stop();
       // 先释放总线上所有长轮询等待，避免 pulse 请求悬挂到 server 强制关闭。

@@ -79,3 +79,39 @@ export const fetchCards    = ({ limit, offset } = {}, signal) => request(`/api/c
 export const fetchCard     = (id, signal) => request(`/api/cards/${encodeURIComponent(id)}`, signal);
 export const fetchProjection = (signal) => request('/api/projection', signal);
 export const fetchPulse    = (after, signal) => request(`/api/pulse?after=${encodeURIComponent(String(after))}`, signal);
+
+/* ---------- 挂件私有面（/ui/*；只动外观设置，不碰内核，皆 Bearer） ---------- */
+
+/** 带请求体的同源写请求：JSON patch 传对象、上传传 File/Blob。 */
+async function send(method, path, body) {
+  const headers = { Authorization: `Bearer ${TOKEN}` };
+  let payload;
+  if (body instanceof Blob) {
+    headers['Content-Type'] = 'application/octet-stream';
+    payload = body;
+  } else if (body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    payload = JSON.stringify(body);
+  }
+  let res;
+  try {
+    res = await fetch(path, { method, headers, body: payload, cache: 'no-store' });
+  } catch {
+    throw new ApiError(0, { error: { code: 'network', message: '网络错误或服务不可达' } });
+  }
+  if (!res.ok) {
+    let errBody = null;
+    try { errBody = await res.json(); } catch { /* 非 JSON 错误体 */ }
+    throw new ApiError(res.status, errBody);
+  }
+  try { return await res.json(); } catch {
+    throw new ApiError(res.status, { error: { code: 'bad-json', message: '响应不是合法 JSON' } });
+  }
+}
+
+export const fetchUiState       = () => request('/ui/state');
+export const putUiSettings      = (patch) => send('PUT', '/ui/state', patch);
+export const uploadSplash       = (slot, file) => send('POST', `/ui/splash/${encodeURIComponent(slot)}`, file);
+export const deleteSplashSlot   = (slot) => send('DELETE', `/ui/splash/${encodeURIComponent(slot)}`);
+export const uploadWallpaper    = (file) => send('POST', '/ui/wallpaper', file);
+export const deleteWallpaperFile = (name) => send('DELETE', `/ui/wallpaper/${encodeURIComponent(name)}`);

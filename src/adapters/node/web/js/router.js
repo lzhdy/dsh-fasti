@@ -1,4 +1,4 @@
-// router.js —— hash 路由：#/overview #/raw #/experiences #/events #/cards #/projection
+// router.js —— hash 路由：#/overview #/raw #/experiences #/events #/cards #/projection #/settings
 // 支持跨视图携带 focus（如「经历 → 原文」跳转定位），并集中管理抽屉关闭。
 
 import { closeDrawer } from './drawer.js';
@@ -10,9 +10,10 @@ import viewExperiences from './views/experiences.js';
 import viewEvents from './views/events.js';
 import viewCards from './views/cards.js';
 import viewProjection from './views/projection.js';
+import viewSettings from './views/settings.js';
 
 /** 视图注册表（顺序即导航顺序） */
-export const VIEWS = [viewOverview, viewRaw, viewExperiences, viewEvents, viewCards, viewProjection];
+export const VIEWS = [viewOverview, viewRaw, viewExperiences, viewEvents, viewCards, viewProjection, viewSettings];
 
 const ROUTES = Object.fromEntries(VIEWS.map((v) => [v.id, v]));
 

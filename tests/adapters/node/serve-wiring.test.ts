@@ -113,3 +113,62 @@ test('serve() 组合根：鉴权/静态托管/长轮询断连/干净关闭 全�
     cleanupTempRoot(root);
   }
 });
+
+test('serve() 浏览器代开：默认绝不拉起；app 模式随 close() 收子进程，fullscreen 不收', async () => {
+  interface Rec {
+    req: { url: string; openMode: string; executablePath?: string };
+    killed: boolean;
+  }
+  const makeLauncher = () => {
+    const calls: Rec[] = [];
+    const launcher = async (req: { url: string; openMode: 'app' | 'fullscreen'; executablePath?: string }) => {
+      const rec: Rec = { req, killed: false };
+      calls.push(rec);
+      return { ok: true as const, child: { kill: () => { rec.killed = true; return true; } } };
+    };
+    return { calls, launcher };
+  };
+  const base = () => ({
+    dataRoot: makeTempRoot(),
+    port: 0,
+    channel: 'wiring-browser',
+    openaiBaseURL: undefined,
+    openaiModel: undefined,
+    openaiApiKey: undefined,
+    openaiReasoningEffort: undefined,
+  });
+
+  // ① 默认配置：注入的 launcher 不应被调用（1889 存量用例同样靠这个默认值零打扰）。
+  const dflt = makeLauncher();
+  const h0 = await serve({ ...base(), browserLauncher: dflt.launcher });
+  try {
+    assert.equal(dflt.calls.length, 0);
+  } finally {
+    await h0.close();
+  }
+
+  // ② app 模式：拉起一次、URL 指向 /app/、close() 时子进程被 kill（同生共死）。
+  const appRec = makeLauncher();
+  const h1 = await serve({ ...base(), openBrowser: 'app', browserPath: '/custom/chrome', browserLauncher: appRec.launcher });
+  try {
+    assert.equal(appRec.calls.length, 1);
+    assert.equal(appRec.calls[0]?.req.openMode, 'app');
+    assert.equal(appRec.calls[0]?.req.executablePath, '/custom/chrome');
+    assert.match(appRec.calls[0]?.req.url ?? '', /\/app\/$/);
+    assert.equal(appRec.calls[0]?.killed, false);
+  } finally {
+    await h1.close();
+  }
+  assert.equal(appRec.calls[0]?.killed, true, 'app 窗口必须随服务 close() 同步退出');
+
+  // ③ fullscreen 模式：拉起但 close() 不 kill（node 死后浏览器留着，刷新显示未连接）。
+  const fsRec = makeLauncher();
+  const h2 = await serve({ ...base(), openBrowser: 'fullscreen', browserLauncher: fsRec.launcher });
+  try {
+    assert.equal(fsRec.calls.length, 1);
+    assert.equal(fsRec.calls[0]?.req.openMode, 'fullscreen');
+  } finally {
+    await h2.close();
+  }
+  assert.equal(fsRec.calls[0]?.killed, false, 'fullscreen 窗口不随服务退出而被收掉');
+});

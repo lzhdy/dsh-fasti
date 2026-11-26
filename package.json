@@ -12,6 +12,8 @@
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "node --test \"tests/**/*.test.ts\"",
     "start": "node src/adapters/node/serve.ts",
+    "app": "node src/adapters/node/serve.ts --open=app",
+    "app:fullscreen": "node src/adapters/node/serve.ts --open=fullscreen",
     "verify": "npm run build && npm run typecheck && npm test"
   },
   "dependencies": {},

@@ -39,3 +39,35 @@ test('readServeConfig：既有 OPENAI_* 变量与端口解析不受影响', () =
   assert.equal(config.port, 9001);
   assert.equal(config.channel, 'dsh');
 });
+
+test('readServeConfig：默认不代开浏览器（openBrowser/browserPath 均为 undefined）', () => {
+  const config = readServeConfig({}, []);
+  assert.equal(config.openBrowser, undefined);
+  assert.equal(config.browserPath, undefined);
+});
+
+test('readServeConfig：FASTI_OPEN_BROWSER=app/fullscreen 透传，off 与空白回落 undefined', () => {
+  assert.equal(readServeConfig({ FASTI_OPEN_BROWSER: 'app' }, []).openBrowser, 'app');
+  assert.equal(readServeConfig({ FASTI_OPEN_BROWSER: ' fullscreen ' }, []).openBrowser, 'fullscreen');
+  assert.equal(readServeConfig({ FASTI_OPEN_BROWSER: 'off' }, []).openBrowser, undefined);
+  assert.equal(readServeConfig({ FASTI_OPEN_BROWSER: '  ' }, []).openBrowser, undefined);
+});
+
+test('readServeConfig：argv --open=app 覆盖环境变量；--browser-path 透传', () => {
+  const config = readServeConfig(
+    { FASTI_OPEN_BROWSER: 'fullscreen', FASTI_BROWSER_PATH: ' /opt/browser/chrome ' },
+    ['--open=app'],
+  );
+  assert.equal(config.openBrowser, 'app');
+  assert.equal(config.browserPath, '/opt/browser/chrome');
+});
+
+test('readServeConfig：argv 也支持 --open <mode> 空格形式', () => {
+  const config = readServeConfig({}, ['--open', 'fullscreen']);
+  assert.equal(config.openBrowser, 'fullscreen');
+});
+
+test('readServeConfig：非法模式值启动即报错（env 与 argv 各守一道）', () => {
+  assert.throws(() => readServeConfig({ FASTI_OPEN_BROWSER: 'kiosk' }, []), /FASTI_OPEN_BROWSER/);
+  assert.throws(() => readServeConfig({}, ['--open=kiosk']), /--open/);
+});

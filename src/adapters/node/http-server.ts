@@ -18,7 +18,8 @@
 
 import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { Fasti } from '../../api/index.ts';
@@ -26,9 +27,42 @@ import type { LoggerPort } from '../../ports/logger-port.ts';
 import type { MemoryObservationFace } from '../../assembly/host-tool-runtime.ts';
 import type { ChatHandler } from './chat.ts';
 import type { ActivityBus } from './activity-bus.ts';
+import {
+  IMAGE_EXTS,
+  MEDIA_DIR,
+  VIDEO_EXTS,
+  WALLPAPER_DIR,
+  UiMediaError,
+  commitUpload,
+  defaultUiRoot,
+  deleteSplash,
+  deleteWallpaper,
+  ensureUiDirs,
+  readUiState,
+  safeResolve,
+  tempUploadPath,
+  writeSettings,
+} from './ui-store.ts';
+import type { SplashSlot } from './ui-store.ts';
 
 /** 请求体上限：1 MiB（本地单人使用足够，超大即拒，防内存滥用）。 */
 const MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * 挂件上传上限：300 MiB（#240 启动视频/壁纸专用）。
+ * 该上限**只对 `/ui/*` 上传路由生效**，其余路由仍守 1 MiB；上传全程流式落盘，不整读进内存。
+ */
+const MAX_UPLOAD_BYTES = 300 * 1024 * 1024;
+
+/** 挂件媒体 MIME（/ui/media/* 专用，与 /app 静态白名单互不影响）。 */
+const UI_MEDIA_MIME: Readonly<Record<string, string>> = Object.freeze({
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+});
 
 /** Host 头允许值（去掉端口后精确匹配，绝不用通配）。 */
 const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
@@ -77,6 +111,13 @@ export interface HttpServerOptions {
   readonly bootId?: string;
   /** 前端静态资产目录（/app/* 托管根）；缺省时静态路由统一 404。 */
   readonly webRoot?: string;
+  /**
+   * 挂件私有目录（#240 外观设置/启动视频/壁纸）；缺省 `~/.dsh/fasti-ui`。
+   * 与内核数据根平级、不嵌套：这里只有装饰，不是记忆。
+   */
+  readonly uiRoot?: string;
+  /** 挂件上传单文件上限（测试注入小值用）；缺省 300 MiB，仅对 `/ui/*` 生效。 */
+  readonly maxUploadBytes?: number;
   /** 长轮询挂等毫秒（测试注入短值用），缺省 5000。 */
   readonly pulseWaitMs?: number;
   /** 诊断日志。缺省 no-op（内核零依赖，日志是调用方的事）。 */
@@ -113,6 +154,18 @@ function jsonReply(status: number, payload: unknown): Reply {
     status,
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify(payload),
+  };
+}
+
+/**
+ * 上传被拒时的错误回复：主动关闭连接。
+ * 此时请求体没被消费，留着 keep-alive 复用会污染下一条请求（浏览器会看到 socket hang up）。
+ */
+function uploadRejectReply(status: number, code: string, message: string): Reply {
+  return {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', Connection: 'close' },
+    body: JSON.stringify({ error: { code, message } }),
   };
 }
 
@@ -208,7 +261,24 @@ export async function startHttpServer(fasti: Fasti, options: HttpServerOptions):
   const bootId = options.bootId ?? randomBytes(8).toString('hex');
   const startedAt = Date.now();
   const webRoot = options.webRoot !== undefined ? path.resolve(options.webRoot) : null;
+  const uiRoot = options.uiRoot !== undefined ? path.resolve(options.uiRoot) : defaultUiRoot();
+  const maxUploadBytes = options.maxUploadBytes ?? MAX_UPLOAD_BYTES;
   const pulseWaitMs = options.pulseWaitMs ?? DEFAULT_PULSE_WAIT_MS;
+  await ensureUiDirs(uiRoot);
+
+  /**
+   * 启动视频首屏判定（#240 甲案）：进程内布尔，**本进程第一份入口 HTML** 拿 full，
+   * 之后无论刷新、新开标签、还是并发第二个请求，一律 mini；进程重启归零。
+   * 不用浏览器存储（前端契约冻结「无 localStorage/sessionStorage/cookie」）。
+   */
+  let splashConsumed = false;
+  const takeSplashSlot = (): SplashSlot => {
+    if (splashConsumed) {
+      return 'mini';
+    }
+    splashConsumed = true;
+    return 'full';
+  };
 
   const server = http.createServer((req, res) => {
     const send = (reply: Reply): void => {
@@ -265,8 +335,16 @@ export async function startHttpServer(fasti: Fasti, options: HttpServerOptions):
           send(errorReply(404, 'not-found', '路径不存在'));
           return;
         }
-        const staticReply = await serveStaticAsset(webRoot, pathname, url, { token, bootId, channel });
+        const staticReply = await serveStaticAsset(webRoot, pathname, url, { token, bootId, channel }, takeSplashSlot);
         send(staticReply);
+        return;
+      }
+
+      // ── /ui 挂件私有面（#240）：外观设置、启动视频、壁纸。只动挂件目录，绝不碰内核 ──
+      // /ui/media/* 免 Bearer（<video>/CSS 背景无法自定义请求头），其余 /ui 逐一 Bearer。
+      // 安全模型与 /app 静态面同构：无秘密、无 CORS、只绑 loopback、Host 白名单与路径圈定仍在。
+      if (pathname === '/ui' || pathname.startsWith('/ui/')) {
+        await handleUiRequest({ req, res, pathname, method, token, uiRoot, maxUploadBytes, send });
         return;
       }
 
@@ -507,6 +585,8 @@ interface BootstrapInfo {
   readonly token: string;
   readonly bootId: string;
   readonly channel: string;
+  /** 启动视频槽位（#240）：本进程第一屏 `full`，之后 `mini`；前端据此决定播哪支。 */
+  readonly splash: SplashSlot;
 }
 
 /**
@@ -518,7 +598,7 @@ function staticSecurityHeaders(nonce?: string): Record<string, string> {
   const scriptSrc = nonce === undefined ? "'self'" : `'self' 'nonce-${nonce}'`;
   return {
     'Content-Security-Policy':
-      `default-src 'none'; script-src ${scriptSrc}; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`,
+      `default-src 'none'; script-src ${scriptSrc}; style-src 'self'; img-src 'self' data: blob:; media-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`,
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
   };
@@ -533,6 +613,7 @@ function renderBootstrapScript(boot: BootstrapInfo, nonce: string): string {
     token: boot.token,
     bootId: boot.bootId,
     channel: boot.channel,
+    splash: boot.splash,
   })
     .replace(/</gu, '\\u003c')
     .replace(/>/gu, '\\u003e')
@@ -565,7 +646,8 @@ async function serveStaticAsset(
   webRoot: string,
   pathname: string,
   url: URL,
-  boot: BootstrapInfo,
+  boot: Omit<BootstrapInfo, 'splash'>,
+  takeSplashSlot: () => SplashSlot,
 ): Promise<Reply> {
   // URL 已拦掉明文 ../（会被规范化出 /app 前缀）；这里主要防 %2f 等编码形态。
   let rel = decodeURIComponent(pathname.slice('/app/'.length));
@@ -597,7 +679,8 @@ async function serveStaticAsset(
   // 入口 HTML：每响应独立 nonce，注入唯一内联 bootstrap；普通内联脚本在 head 即执行，
   // 早于默认 defer 的 ESM 模块，外部 app.js 读取时 window.__FASTI_BOOTSTRAP__ 必然就绪。
   const nonce = randomBytes(16).toString('base64url');
-  const injected = Buffer.from(injectBootstrap(data.toString('utf8'), renderBootstrapScript(boot, nonce)), 'utf8');
+  const fullBoot: BootstrapInfo = { ...boot, splash: takeSplashSlot() };
+  const injected = Buffer.from(injectBootstrap(data.toString('utf8'), renderBootstrapScript(fullBoot, nonce)), 'utf8');
   return {
     status: 200,
     headers: {
@@ -607,6 +690,296 @@ async function serveStaticAsset(
     },
     body: injected,
   };
+}
+
+interface UiRouteDeps {
+  readonly req: http.IncomingMessage;
+  readonly res: http.ServerResponse;
+  readonly pathname: string;
+  readonly method: string;
+  readonly token: string;
+  readonly uiRoot: string;
+  readonly maxUploadBytes: number;
+  readonly send: (reply: Reply) => void;
+}
+
+/**
+ * `/ui/*` 路由总入口（#240）。分两类：
+ *  - 只读媒体 `/ui/media/*`：免 Bearer（`<video src>` 与 CSS 背景带不了请求头），
+ *    只靠 Host 白名单 + 后缀白名单 + 路径圈定，回硬盘既有文件，绝不接受写入；
+ *  - 其余 `/ui/state|splash|wallpaper`：逐一 Bearer，只写挂件私有目录。
+ */
+async function handleUiRequest(deps: UiRouteDeps): Promise<void> {
+  const { req, res, pathname, method, token, uiRoot, maxUploadBytes, send } = deps;
+
+  if (pathname.startsWith('/ui/media/')) {
+    if (method !== 'GET') {
+      send(errorReply(405, 'method-not-allowed', '媒体读取仅支持 GET'));
+      return;
+    }
+    const rest = decodeURIComponent(pathname.slice('/ui/media/'.length));
+    const isWallpaper = rest.startsWith('w/');
+    const name = isWallpaper ? rest.slice(2) : rest;
+    const abs = isWallpaper
+      ? safeResolve(uiRoot, WALLPAPER_DIR, name, IMAGE_EXTS)
+      : safeResolve(uiRoot, MEDIA_DIR, name, VIDEO_EXTS);
+    if (abs === null) {
+      send(errorReply(404, 'not-found', '路径不存在'));
+      return;
+    }
+    const mime = UI_MEDIA_MIME[path.extname(abs).toLowerCase()];
+    if (mime === undefined) {
+      send(errorReply(404, 'not-found', '路径不存在'));
+      return;
+    }
+    await streamFileWithRange(req, res, abs, mime);
+    return;
+  }
+
+  if (!tokenMatches(req.headers.authorization, token)) {
+    send(errorReply(401, 'unauthorized', '缺少或错误的访问凭证'));
+    return;
+  }
+
+  if (pathname === '/ui/state') {
+    if (method === 'GET') {
+      send(jsonReply(200, await readUiState(uiRoot)));
+      return;
+    }
+    if (method === 'PUT') {
+      const body = await readBody(req);
+      if (body.tooLarge) {
+        send(errorReply(413, 'body-too-large', '请求体超过上限'));
+        return;
+      }
+      let patch: unknown;
+      try {
+        patch = JSON.parse(body.text);
+      } catch {
+        send(errorReply(400, 'invalid-json', '请求体不是合法 JSON'));
+        return;
+      }
+      await writeSettings(uiRoot, patch);
+      send(jsonReply(200, await readUiState(uiRoot)));
+      return;
+    }
+    send(errorReply(405, 'method-not-allowed', '仅支持 GET/PUT'));
+    return;
+  }
+
+  const splashMatch = /^\/ui\/splash\/(full|mini)$/u.exec(pathname);
+  if (splashMatch !== null) {
+    const slot = splashMatch[1] === 'mini' ? 'mini' : 'full';
+    if (method === 'POST') {
+      await receiveUpload(deps, { kind: 'splash', slot });
+      return;
+    }
+    if (method === 'DELETE') {
+      await deleteSplash(uiRoot, slot);
+      send(jsonReply(200, await readUiState(uiRoot)));
+      return;
+    }
+    send(errorReply(405, 'method-not-allowed', '仅支持 POST/DELETE'));
+    return;
+  }
+
+  if (pathname === '/ui/wallpaper') {
+    if (method !== 'POST') {
+      send(errorReply(405, 'method-not-allowed', '仅支持 POST'));
+      return;
+    }
+    await receiveUpload(deps, { kind: 'wallpaper' });
+    return;
+  }
+
+  const wallpaperMatch = /^\/ui\/wallpaper\/([^/]+)$/u.exec(pathname);
+  if (wallpaperMatch !== null) {
+    if (method !== 'DELETE') {
+      send(errorReply(405, 'method-not-allowed', '仅支持 DELETE'));
+      return;
+    }
+    const name = decodeURIComponent(wallpaperMatch[1] ?? '');
+    const removed = await deleteWallpaper(uiRoot, name);
+    if (!removed) {
+      send(errorReply(404, 'not-found', '壁纸不存在'));
+      return;
+    }
+    // 删掉的正好是当前选中：连 active 一起清，避免前端指向不存在的文件。
+    const state = await readUiState(uiRoot);
+    if (state.settings.wallpaper.active === name) {
+      await writeSettings(uiRoot, { wallpaper: { active: null } });
+    }
+    send(jsonReply(200, await readUiState(uiRoot)));
+    return;
+  }
+
+  send(errorReply(404, 'not-found', '路径不存在'));
+}
+
+/** 上传落地：先流式写临时件，再按魔数验真、原子改名为正式名。 */
+async function receiveUpload(
+  deps: UiRouteDeps,
+  target: { kind: 'splash'; slot: SplashSlot } | { kind: 'wallpaper' },
+): Promise<void> {
+  const { req, uiRoot, maxUploadBytes, send } = deps;
+  const declared = Number(req.headers['content-length'] ?? '');
+  if (Number.isFinite(declared) && declared > maxUploadBytes) {
+    send(uploadRejectReply(413, 'body-too-large', '上传文件超过上限'));
+    return;
+  }
+  const tmp = tempUploadPath(uiRoot, 'ui');
+  const outcome = await receiveToFile(req, tmp, maxUploadBytes);
+  if (outcome !== 'ok') {
+    await rm(tmp, { force: true });
+    send(
+      outcome === 'too-large'
+        ? uploadRejectReply(413, 'body-too-large', '上传文件超过上限')
+        : uploadRejectReply(400, 'upload-aborted', '上传中断'),
+    );
+    return;
+  }
+  try {
+    await commitUpload(uiRoot, target, tmp);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    if (err instanceof UiMediaError) {
+      send(errorReply(400, err.code, err.message));
+      return;
+    }
+    throw err;
+  }
+  send(jsonReply(200, await readUiState(uiRoot)));
+}
+
+/** 把请求体逐块写进临时文件，超限立刻断流；不整读进内存。 */
+function receiveToFile(
+  req: http.IncomingMessage,
+  dest: string,
+  maxBytes: number,
+): Promise<'ok' | 'too-large' | 'error'> {
+  return new Promise((resolve) => {
+    let bytes = 0;
+    let settled = false;
+    const settle = (result: 'ok' | 'too-large' | 'error'): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    };
+    const ws = createWriteStream(dest);
+    req.on('data', (chunk: Buffer) => {
+      bytes += chunk.byteLength;
+      if (bytes > maxBytes) {
+        req.destroy();
+        ws.destroy();
+        settle('too-large');
+      }
+    });
+    req.on('aborted', () => {
+      ws.destroy();
+      settle('error');
+    });
+    req.on('error', () => {
+      ws.destroy();
+      settle('error');
+    });
+    ws.on('error', () => settle('error'));
+    ws.on('finish', () => settle('ok'));
+    req.pipe(ws);
+  });
+}
+
+/** 解析单段 Range；返回 null = 不认识/多段，按整份回（浏览器可接受）。 */
+function parseByteRange(header: string, size: number): { start: number; end: number } | 'unsatisfiable' | null {
+  const match = /^bytes=(\d*)-(\d*)$/u.exec(header.trim());
+  if (match === null) {
+    return null;
+  }
+  const startRaw = match[1] ?? '';
+  const endRaw = match[2] ?? '';
+  if (startRaw === '' && endRaw === '') {
+    return null;
+  }
+  if (startRaw === '') {
+    const suffix = Number(endRaw);
+    if (!Number.isFinite(suffix) || suffix <= 0 || size === 0) {
+      return 'unsatisfiable';
+    }
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(startRaw);
+  if (!Number.isFinite(start)) {
+    return null;
+  }
+  if (start >= size) {
+    return 'unsatisfiable';
+  }
+  const end = endRaw === '' ? size - 1 : Math.min(size - 1, Number(endRaw));
+  if (!Number.isFinite(end) || end < start) {
+    return 'unsatisfiable';
+  }
+  return { start, end };
+}
+
+/** 支持 Range 的文件回传（206/416/200），流式输出，52MB 视频也不整读进内存。 */
+async function streamFileWithRange(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  absPath: string,
+  mime: string,
+): Promise<void> {
+  let size = 0;
+  try {
+    const info = await stat(absPath);
+    if (!info.isFile()) {
+      throw new Error('not-a-file');
+    }
+    size = info.size;
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+    res.end(JSON.stringify({ ok: false, error: { code: 'not-found', message: '路径不存在' } }));
+    return;
+  }
+  const baseHeaders: Record<string, string> = {
+    'Content-Type': mime,
+    'Accept-Ranges': 'bytes',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'Cache-Control': 'no-cache',
+  };
+  const rangeHeader = req.headers.range;
+  if (typeof rangeHeader === 'string') {
+    const parsed = parseByteRange(rangeHeader, size);
+    if (parsed === 'unsatisfiable') {
+      res.writeHead(416, { ...baseHeaders, 'Content-Range': `bytes */${size}`, 'Content-Length': '0' });
+      res.end();
+      return;
+    }
+    if (parsed !== null) {
+      res.writeHead(206, {
+        ...baseHeaders,
+        'Content-Range': `bytes ${parsed.start}-${parsed.end}/${size}`,
+        'Content-Length': String(parsed.end - parsed.start + 1),
+      });
+      pipeFile(res, absPath, parsed.start, parsed.end);
+      return;
+    }
+  }
+  res.writeHead(200, { ...baseHeaders, 'Content-Length': String(size) });
+  pipeFile(res, absPath, undefined, undefined);
+}
+
+/** 起读流并接管错误；客户端提前断开时一并销毁，避免 fd 泄漏。 */
+function pipeFile(res: http.ServerResponse, absPath: string, start: number | undefined, end: number | undefined): void {
+  const stream = createReadStream(absPath, start === undefined ? {} : { start, end });
+  stream.on('error', () => {
+    res.destroy();
+  });
+  res.on('close', () => {
+    stream.destroy();
+  });
+  stream.pipe(res);
 }
 
 interface ObservationApiDeps {

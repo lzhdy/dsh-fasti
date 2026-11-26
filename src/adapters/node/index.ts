@@ -9,6 +9,19 @@ export { startHttpServer, type HttpServerOptions, type HttpServerHandle } from '
 export { serve } from './serve.ts';
 export { readServeConfig, type ServeConfig } from './config.ts';
 export {
+  launchBrowser,
+  buildBrowserArgs,
+  browserCandidates,
+  resolveExecutable,
+  spawnBrowser,
+  type BrowserOpenMode,
+  type BrowserLaunchRequest,
+  type BrowserLaunchResult,
+  type BrowserLauncherFn,
+  type BrowserSpawnFn,
+  type BrowserChildLike,
+} from './browser-launcher.ts';
+export {
   startClosureLoop,
   type ClosureLoopTarget,
   type ClosureLoopOptions,

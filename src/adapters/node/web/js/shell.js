@@ -191,7 +191,7 @@ export function renderNav(views, activeId) {
     navEl.append(item);
   }
   navEl.append(el('div', { class: 'nav-foot' },
-    '只读观测 · 无任何写操作',
+    '观测只读 · 外观设置只写本地挂件目录',
     el('br'), '数据随内核进程驻留内存',
   ));
   setActiveNav(activeId);
@@ -217,6 +217,7 @@ export function refreshNavBadges() {
     events: counts?.events?.total ?? null,
     cards: store.memory ? (store.memory.cards ?? 0) : '503',
     projection: null,
+    settings: null,
   };
   for (const [id, { badgeEl }] of navItems) {
     const v = values[id];
