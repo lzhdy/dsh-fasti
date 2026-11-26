@@ -1340,7 +1340,7 @@ button { font-family: inherit; }
   box-shadow: 0 0 14px rgba(255, 200, 87, 0.15);
 }
 
-/* ---------------- 响应式微调（1280–2560） ---------------- */
+/* ---------------- 响应式微调（桌面 1280–2560 为主，含 ≤600px 窄屏止血） ---------------- */
 
 @media (max-width: 1420px) {
   .metric.opt { display: none; }
@@ -1354,6 +1354,21 @@ button { font-family: inherit; }
   body { font-size: 13.5px; }
   .view { padding: 22px 30px 38px; }
   .ov-grid { grid-template-columns: minmax(320px, 400px) minmax(0, 1fr); }
+}
+
+/* #251 方案甲：窄屏（≤600px）只做止血——页面零横向溢出、应急可读；
+   不做手机优先的单列布局重做（乙案挂账，桌面端定位不变）。纯 CSS，DOM/JS 零改动。 */
+@media (max-width: 600px) {
+  /* 顶栏首行由固定 54px 改自适应；内容做减法：藏品牌副标题与「实例/运行」两次要项，
+     只留品牌名、L1 档位徽章与连接胶囊，nowrap 最小宽之和不再撑破视口。 */
+  #app { grid-template-rows: auto var(--strip-h) auto 1fr; }
+  #topbar { gap: 10px; padding: 8px 12px; }
+  .brand-text span { display: none; }
+  .topbar-status { gap: 10px; justify-content: flex-end; }
+  #topbar-status .tb-item { display: none; }
+
+  /* 详情抽屉取消 360/380px 最小宽（:701-707 与 :1350），改近全宽，手机上不再超出视口。 */
+  .drawer { width: 92vw; min-width: 0; }
 }
 
 /* 动效降级 */
