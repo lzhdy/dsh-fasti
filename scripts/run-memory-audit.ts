@@ -52,7 +52,13 @@ import { decideClarify } from '../src/memory/clarify-policy.ts';
 import type { ClarifyAction, ClarifyCandidate, ClarifyReason } from '../src/memory/clarify-policy.ts';
 import type { GatedSearchOutcome, GradedSignals } from '../src/memory/types.ts';
 import type { Top1Record } from '../src/memory/audit/top1-alignment.ts';
-import { applyGate, normalizeLexicalText } from '../src/memory/gate.ts';
+import { applyGateV1, applyGateV2, normalizeLexicalText } from '../src/memory/gate.ts';
+import type { ApplyGateInput } from '../src/memory/gate.ts';
+import { applyGateV3 } from '../src/memory/gate-v3.ts';
+import { loadVerifiedNullModel } from './p6/calibrate-candidate-v3.ts';
+import type { FrozenKMinTable } from '../src/memory/bigram-null-model.ts';
+import type { FrozenLocalityGeometryTable } from '../src/memory/locality-null-model.ts';
+import type { FrozenRaritySnapshot } from '../src/memory/bigram-null-model.ts';
 import { summarizeFourState } from '../src/memory/audit/four-state.ts';
 import type { FourStateProbeInput, FourStateSummary } from '../src/memory/audit/four-state.ts';
 import { assertMissAliasesSensitive, assertP6GoldItem } from '../src/memory/audit/fixture-guard.ts';
@@ -87,6 +93,7 @@ interface CliOptions {
   dataRoot: string | undefined;
   out: string | undefined;
   rulesVersion: string | undefined;
+  nullModelDir: string | undefined;
   sealDir: string | undefined;
   unsealReason: string | undefined;
   operator: string | undefined;
@@ -102,6 +109,7 @@ export function parseOptions(argv: string[]): CliOptions {
     dataRoot: undefined,
     out: undefined,
     rulesVersion: undefined,
+    nullModelDir: undefined,
     sealDir: undefined,
     unsealReason: undefined,
     operator: undefined,
@@ -117,6 +125,7 @@ export function parseOptions(argv: string[]): CliOptions {
       case '--data-root':
       case '--out':
       case '--rules-version':
+      case '--null-model':
       case '--seal-dir':
       case '--unseal-reason':
       case '--operator':
@@ -132,6 +141,8 @@ export function parseOptions(argv: string[]): CliOptions {
           options.out = value;
         } else if (arg === '--rules-version') {
           options.rulesVersion = value;
+        } else if (arg === '--null-model') {
+          options.nullModelDir = value;
         } else if (arg === '--seal-dir') {
           options.sealDir = value;
         } else if (arg === '--unseal-reason') {
@@ -173,7 +184,10 @@ function usage(): string {
     '',
     '  --data-root <目录>  数据根（**必填**，只读：真值 JSONL/卡/检索；永不在该库取写柄）',
     '  --out <目录>        审计输出库目录（**必填**，独立于 dataRoot；等于/位于其内一律拒绝 exit2）',
-    '  --rules-version <v> 受测规则版本（rules-v1/rules-v2），缺省当前生产版本；信封如实记录',
+    '  --rules-version <v> 受测规则版本（rules-v1/rules-v2/rules-v3），缺省当前生产版本；信封如实记录',
+    '  --null-model <目录> rules-v3 专用：已冻结空模型表目录（manifest＋五档 kmin＋几何＋稀有桶）。',
+    '                      传入即逐 artifact 重算 sha256 对账，任一不符 fail-loud；v1/v2 路径忽略。',
+    '                      审计侧固定按 bMin=3 档回放（W5 确认档，不得自选档）。',
     '  --holdout           显式解封封存层跑一次（必须同时给 --seal-dir 与 --unseal-reason）',
     '  --seal-dir <目录>   已封存夹具目录（G6：先哈希核验，读取即追加解封留痕）',
     '  --unseal-reason <t> 本次解封理由（必填，写入封存目录 unseal-log.jsonl）',
@@ -450,6 +464,11 @@ export interface AuditOptions {
    */
   rulesVersion?: string;
   /**
+   * rules-v3 专用：已冻结空模型表目录（#230 蓝图 218 §10.2）。v3 通道**必须**给，
+   * 缺表时 fail-loud 拒绝回放——审计不得以「近似门」冒充受测门。
+   */
+  nullModelDir?: string;
+  /**
    * 已封存夹具目录（v4 §8/序9 G6）。--holdout 终判必须走封存集：
    * 传入即先重算哈希核验，再在解封时追加留痕；裸 --holdout 旗标已废止。
    */
@@ -460,8 +479,78 @@ export interface AuditOptions {
   operator?: string;
 }
 
+/*
+ * 【封存标记 · 2026-11-26 主控拍板，正本 §11.13.21】rules-v3 候选门上线线已终止并整体封存。
+ * 下方 v3 具名回放通道（白名单/版本分派/--null-model/缺表 fail-loud）作为休眠件保留：
+ * 生产常量 CURRENT_RULES_VERSION 恒 rules-v1、默认审计路径零行为变化，v3 仅在显式
+ * --rules-version rules-v3 且带冻结表时可达。复工必须先读正本 §11.13.21 与蓝图 218 §10/§11，
+ * 走新卡＋主控新授权，禁止在此直接续线。
+ */
 /** 允许出现在审计信封里的规则版本（与 cue-derive 白名单同源管理，未知值拒收）。 */
-const KNOWN_RULES_VERSIONS: ReadonlySet<string> = new Set(['rules-v1', 'rules-v2']);
+export const KNOWN_RULES_VERSIONS: ReadonlySet<string> = new Set(['rules-v1', 'rules-v2', 'rules-v3']);
+
+/** 版本→具名门实现（#230 蓝图 218 §10.2）。未知版本 fail-closed，绝不回落生产常量门。 */
+export type RulesGateMode = 'v1' | 'v2' | 'v3';
+
+/**
+ * rules v3 候选门固定使用的 bMin 档：3。
+ * 法定出处：W5 一次性确认档（#229 留档，`calibrate-candidate-v3` 机械定档 selected=b3）。
+ * 审计侧不得自选档，否则等价于事后调档，W5「不再调档」条款即失效。
+ */
+export const FROZEN_B_MIN_V3 = 3;
+
+/**
+ * v3 通道的表目录前置守卫：v3 必须有 --null-model，v1/v2 一律忽略该参数。
+ * 独立成纯函数以便红测钉住「缺表即拒跑」这条，而不是只靠文本守卫。
+ */
+export function requireNullModelDirForV3(mode: RulesGateMode, nullModelDir: string | undefined): string | undefined {
+  if (mode !== 'v3') {
+    return nullModelDir;
+  }
+  if (nullModelDir === undefined) {
+    throw new Error('rules-v3 必须指定 --null-model：拒绝以缺表状态跑 rules-v3');
+  }
+  return nullModelDir;
+}
+
+/** 审计侧 v3 门所需三张正式冻结表（#226 落盘、哈希已对账）。 */
+interface FrozenGateTables {
+  readonly kminTable: FrozenKMinTable;
+  readonly geometryTable: FrozenLocalityGeometryTable;
+  readonly raritySnapshot: FrozenRaritySnapshot;
+}
+
+/**
+ * 装载并校验 v3 冻结表。任一 artifact 哈希/schema/档位不符即抛错（复用 calibrate-candidate-v3
+ * 的 fail-loud 对账口径，不另造一套校验）。固定取 bMin=3 档：审计侧不自选档。
+ */
+function loadFrozenGateTablesForAudit(nullModelDir: string | undefined): FrozenGateTables {
+  const dir = requireNullModelDirForV3('v3', nullModelDir);
+  if (dir === undefined) throw new Error('rules-v3 必须指定 --null-model：拒绝以缺表状态跑 rules-v3');
+  const bundle = loadVerifiedNullModel(dir);
+  const kminTable = bundle.kminByBMin.get(FROZEN_B_MIN_V3);
+  if (kminTable === undefined) {
+    throw new Error(`冻结表缺 bMin=${FROZEN_B_MIN_V3} 档：拒绝以缺表状态跑 rules-v3`);
+  }
+  return { kminTable, geometryTable: bundle.geometry, raritySnapshot: bundle.rarity };
+}
+
+/** 把受测版本标签解析为具名门选择；白名单之外的标签一律拒绝。 */
+export function resolveRulesGateMode(rulesVersion: string): RulesGateMode {
+  if (!KNOWN_RULES_VERSIONS.has(rulesVersion)) {
+    throw new Error(`未知规则版本「${rulesVersion}」：审计信封只接受 ${[...KNOWN_RULES_VERSIONS].join('/')}`);
+  }
+  switch (rulesVersion) {
+    case 'rules-v1':
+      return 'v1';
+    case 'rules-v2':
+      return 'v2';
+    case 'rules-v3':
+      return 'v3';
+    default:
+      throw new Error(`未知规则版本「${rulesVersion}」：审计信封只接受 ${[...KNOWN_RULES_VERSIONS].join('/')}`);
+  }
+}
 
 /**
  * P0 分级词面信号留痕行（#193/194 §四 P0）：每题一条，仅披露不判分。
@@ -538,9 +627,26 @@ export interface AuditReport {
 export async function runAudit(options: AuditOptions): Promise<AuditReport> {
   const seed = options.rngSeed ?? DEFAULT_RNG_SEED;
   const rulesVersion = options.rulesVersion ?? CURRENT_RULES_VERSION;
-  if (!KNOWN_RULES_VERSIONS.has(rulesVersion)) {
-    throw new Error(`未知规则版本「${rulesVersion}」：审计信封只接受 ${[...KNOWN_RULES_VERSIONS].join('/')}`);
-  }
+  const gateMode = resolveRulesGateMode(rulesVersion);
+  // #230：v3 具名通道必须带正式冻结表，缺表即 fail-loud——绝不以近似门冒充受测门。
+  const v3Tables = gateMode === 'v3' ? loadFrozenGateTablesForAudit(options.nullModelDir) : null;
+  /** 受测门唯一入口：六处回放一律经此分派，源码内不得再出现裸 applyGate 调用。 */
+  const gate = (input: ApplyGateInput): GatedSearchOutcome => {
+    switch (gateMode) {
+      case 'v1':
+        return applyGateV1(input);
+      case 'v2':
+        return applyGateV2(input);
+      case 'v3':
+        if (v3Tables === null) throw new Error('rules-v3 门表未装载：拒绝以缺表状态跑 rules-v3');
+        return applyGateV3({
+          ...input,
+          kminTable: v3Tables.kminTable,
+          geometryTable: v3Tables.geometryTable,
+          raritySnapshot: v3Tables.raritySnapshot,
+        });
+    }
+  };
   // 序9/G6：holdout 终判只能读封存集，先哈希核验；普通 dry-run 仍可用施工夹具目录。
   let fixturesDir = options.fixturesDir;
   if (options.holdout) {
@@ -686,7 +792,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       const gatedTop1 = await collectTop1Records(questions, async (question) => {
         const qNorm = normalizeLexicalText(question.queryText);
         const candidates = await explainedHandle.searchExplained({ text: question.queryText, atMs: options.nowMs, limit: undefined });
-        const outcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
+        const outcome = gate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
         const resolvedEventId = relayMap.get(question.targetEventId) ?? question.targetEventId;
         const topCard = outcome.accepted[0]?.card ?? null;
         // P0 留痕（#193）：同一趟回放顺手取信号向量，不额外检索、不改任何裁决。
@@ -701,7 +807,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
         });
         // #194 澄清决策器离线模拟：对同一候选全集重跑一次纯函数门（无 IO）取全过门卡，
         // 只记录「若当时有澄清机制会如何分」，不改上方生产等价回放的任何结果。
-        const fullOutcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
+        const fullOutcome = gate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
         const clarifyVerdict = decideClarify(clarifyCandidatesOf(qNorm, fullOutcome));
         const goldInTieGroup = goldCard === null
           ? null
@@ -747,7 +853,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
       for (const item of abstainItems) {
         const qNorm = normalizeLexicalText(item.query);
         const candidates = await explainedHandle.searchExplained({ text: item.query, atMs: options.nowMs, limit: undefined });
-        const outcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
+        const outcome = gate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
         const topCard = outcome.accepted[0]?.card ?? null;
         const committed = topCard !== null;
         const top1IsGold = item.goldCardId !== null && topCard?.cardId === item.goldCardId;
@@ -761,7 +867,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
           probeKind: item.kind,
         });
         // #194：弃权队列离线模拟，看点是 ASK_MULTI 误触发数（期望 0，不该反问时不打扰）。
-        const abstainFull = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
+        const abstainFull = gate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
         const abstainVerdict = decideClarify(clarifyCandidatesOf(qNorm, abstainFull));
         clarifyPolicyRows.push({
           probeRef: `abstain:${item.kind}:${clarifyPolicyRows.length}`,
@@ -786,7 +892,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
         });
         const qNorm = normalizeLexicalText(item.query);
         const candidates = await explainedHandle.searchExplained({ text: item.query, atMs: options.nowMs, limit: undefined });
-        const outcome = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
+        const outcome = gate({ qNorm, candidates, atMs: options.nowMs, limit: 1 });
         const gatedCardId = outcome.accepted[0]?.card.cardId ?? null;
         gatedClarifyProbes.push({
           query: item.query,
@@ -795,7 +901,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditReport> {
           top1IsDecoy: gatedCardId !== null && item.pairCardIds.includes(gatedCardId),
         });
         // #194：澄清题主战场——配对双卡信号全等时应落 ASK_MULTI 且 pairLocked=true。
-        const clarifyFull = applyGate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
+        const clarifyFull = gate({ qNorm, candidates, atMs: options.nowMs, limit: candidates.length });
         const clarifyVerdict = decideClarify(clarifyCandidatesOf(qNorm, clarifyFull));
         clarifyPolicyRows.push({
           probeRef: `clarify:${clarifyPolicyRows.length}`,
@@ -1155,6 +1261,7 @@ async function main(): Promise<void> {
       dryRun: options.dryRun,
       nowMs: options.nowMs ?? Date.now(),
       ...(options.rulesVersion === undefined ? {} : { rulesVersion: options.rulesVersion }),
+      ...(options.nullModelDir === undefined ? {} : { nullModelDir: options.nullModelDir }),
       ...(options.sealDir === undefined ? {} : { sealedDir: options.sealDir }),
       ...(options.unsealReason === undefined ? {} : { unsealReason: options.unsealReason }),
       ...(options.operator === undefined ? {} : { operator: options.operator }),
