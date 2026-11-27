@@ -65,7 +65,6 @@ export async function loadSqlite(): Promise<SqliteModule> {
   }
 }
 
-/** 供测试重置模块缓存。 */
 /** 判断 node:sqlite 当前是否可用。 */
 export async function isSqliteAvailable(): Promise<boolean> {
   try {
@@ -137,7 +136,18 @@ export class SqliteProjection implements ProjectionEngine {
       if (existing.has(name)) {
         continue;
       }
-      db.exec(`ALTER TABLE event ADD COLUMN ${name} ${type}`);
+      try {
+        db.exec(`ALTER TABLE event ADD COLUMN ${name} ${type}`);
+      } catch (error) {
+        // NOT NULL 无默认值列对非空表补列必然失败（实测 node:sqlite 报
+        // "Cannot add a NOT NULL column with default value NULL"）。
+        // 上面契约只承诺补可空列；真撞上说明老库缺的是结构性列，须指明列名与去路。
+        throw new Error(
+          `event 表补列 ${name}（${type}）失败：${(error as Error).message}；` +
+            '老库缺 NOT NULL 列无法在线补齐，需从真源重建投影库',
+          { cause: error },
+        );
+      }
     }
   }
 

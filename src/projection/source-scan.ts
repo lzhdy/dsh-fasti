@@ -12,6 +12,7 @@
 
 import type { Experience } from '../contract/experience.ts';
 import type { EventRecord } from '../contract/event.ts';
+import { isoToMs } from '../core/time.ts';
 import { makeSnippet, matchesSubstring } from './types.ts';
 import { toEdgeRow } from './edge.ts';
 import { foldCurrentEvents, matchesEventQuery, sortEventRows } from './event-row.ts';
@@ -218,8 +219,9 @@ export function toProjection(experience: Experience): ExperienceProjection {
     channel: experience.scene.channel,
     scene_ref: experience.scene.ref,
     initiation: experience.initiation,
-    occurred_ms: Date.parse(experience.occurred_at),
-    recorded_ms: Date.parse(experience.recorded_at),
+    // 与 rebuild.ts 的 toProjection 同口径：非法 ISO 抛 TypeError（fail-loud），不用裸 Date.parse 静默得 NaN。
+    occurred_ms: isoToMs(experience.occurred_at),
+    recorded_ms: isoToMs(experience.recorded_at),
     tick: experience.tick,
     status: 'active',
     shard: '',

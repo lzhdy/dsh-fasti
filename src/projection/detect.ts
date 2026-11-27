@@ -174,7 +174,8 @@ export function quarantineCorruptProjection(projectionDir: string): string | nul
   if (!exists(file)) {
     return null;
   }
-  const quarantined = `${file}.corrupt`;
+  // 时间戳后缀：连续两次损坏各留一份诊断件，不覆盖上一份（POSIX rename 同名即覆盖）。
+  const quarantined = `${file}.${Date.now()}.corrupt`;
   try {
     fs.renameSync(file, quarantined);
     return path.basename(quarantined);

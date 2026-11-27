@@ -450,6 +450,11 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
     const needsRebuild = engineChanged || checkpoint.needs_rebuild;
 
     if (needsRebuild && this.experienceLog.count() > 0) {
+      // G03 重建保险（与手动重建入口 api/index.ts rebuildProjections 同构）：
+      // 先落 needs_rebuild=true 再让 rebuildProjection 清库重建 ——
+      // 重建中途崩溃时标记保持 true，下次启动继续重建；不依赖"引擎档位恰好也没保存"的隐式顺序。
+      this.checkpoint.setNeedsRebuild(true);
+      this.checkpoint.save();
       await rebuildProjection(this.engine, this.rebuildSource());
     }
 

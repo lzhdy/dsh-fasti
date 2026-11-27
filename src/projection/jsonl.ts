@@ -13,6 +13,10 @@
  *   projection/l2/index/channel.jsonl—— 通道索引（channel → id 列表）
  *   projection/l2/index/term.jsonl   —— 词法倒排（term → id 列表）
  *
+ * 注意：index/ 三类文件是**写后供外部检视/离线诊断的落盘件，运行时并不读回** ——
+ * open 时内存倒排与时间/通道桶一律从 experience.jsonl + document.jsonl 重建，
+ * 因此索引文件滞后或缺失不影响检索正确性（重建即重写）。
+ *
  * 检索语义与 L1/L3 一致：ASCII 大小写不敏感子串匹配（用户拍板 Q1）。
  */
 
