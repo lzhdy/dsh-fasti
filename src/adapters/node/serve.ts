@@ -111,6 +111,20 @@ export async function serve(config: ServeConfig): Promise<ServeHandle> {
     ...(config.dataRoot === undefined ? {} : { dataRoot: config.dataRoot }),
     llmPort,
     onDiagnostic: (level, message) => logger.warn(`${level}: ${message}`),
+    // 摘要失败上报（与 dsh mount.ts 同口径）：node 宿主没有宿主日志设施，落 console；
+    // 不设代码内阈值，阈值判读进 runbook（正本 §11.8.6「熔断走 runbook」）。
+    onClosureFailure: (failure) => {
+      logger.warn(
+        '摘要未生成（%s，已试 %d 次）：%s',
+        failure.state,
+        failure.attempts,
+        failure.error,
+      );
+    },
+    // L3 观测逐事件上报（不设代码阈值；三率派生与人工阈值进 runbook）。
+    onClosureObservation: (observation) => {
+      logger.warn('摘要观测：%s', JSON.stringify(observation));
+    },
   });
 
   // #157 进程内活动总线：写入链（观测 stage）、两个节拍、读出链（聊天工具）统一汇入。
