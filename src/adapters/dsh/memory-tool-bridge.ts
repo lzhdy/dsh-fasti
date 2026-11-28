@@ -162,7 +162,7 @@ export function openDshMemoryBridge(input: OpenDshMemoryBridgeInput): DshMemoryB
   const cardsByAnchor = defineTool({
     name: MEMORY_TOOL_NAMES.cardsByAnchor,
     description:
-      'Fetch the safe detail view of memory cards anchored to one experience id. Only whitelased display fields are returned; internal aliases and sensitive terms are never exposed.',
+      'Fetch the safe detail view of memory cards anchored to one experience id. Only whitelisted display fields are returned; internal aliases and sensitive terms are never exposed.',
     parameters: {
       experienceId: { type: 'string', required: true, description: 'The experience/anchor id to look up.' },
     },
