@@ -21,6 +21,7 @@ import {
 } from '../core/errors.ts';
 import { ensureDir, exists } from '../core/fsx.ts';
 import { isSha256Hex, sha256Hex } from '../core/hash.ts';
+import { codePointLengthOf } from '../core/text.ts';
 import { isoToMs, nowIso } from '../core/time.ts';
 import { parseChannelDescriptor } from '../contract/channel.ts';
 import type { ChannelDescriptor } from '../contract/channel.ts';
@@ -632,8 +633,8 @@ export class Fasti implements FastiPrimitives, EventPrimitives {
         occurred_at: input.occurred_at ?? input.asserted_at ?? ingestedAt,
         recorded_at: ingestedAt,
         // 逐记录计数：**全量** raw_text 码点长度（含工具轮，§5.0.2 约束 5）。
-        // 与时间轴同口径（Array.from 计数码点，不是 UTF-16 长度），不引新依赖。
-        char_count: Array.from(input.raw_text).length,
+        // 口径全仓唯一实现于 core/text.ts（C10 拍板：摄入与回查同口径对账）。
+        char_count: codePointLengthOf(input.raw_text),
         ...typingFieldsOf(typing, {
           id: input.event_id,
           channel,

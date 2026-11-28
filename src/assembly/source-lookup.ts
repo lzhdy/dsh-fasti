@@ -14,6 +14,7 @@
  */
 
 import { ChannelBoundaryError, SchemaError } from '../core/errors.ts';
+import { codePointLengthOf, codePointSlice } from '../core/text.ts';
 import type {
   ExperienceSummaryView,
   Pointer,
@@ -31,6 +32,8 @@ export type { CountScope, ExperienceSummaryView, Pointer, RawTurnView };
  * 字符闸数值与事件摄入侧的原始字符保险丝（event/params.ts 中的同值常量）对齐，
  * 但两者语义独立——一个管摄入、一个管回查信封；本模块**不得引用**摄入侧符号，
  * 改值必须分别评审，避免一条保险丝被两处语义绑架。
+ * 字符闸与游标（charOffset/nextCharOffset/totalChars）口径＝码点（code point），
+ * 与摄入侧 char_count 同口径对账，由 core/text.ts 原语保证（C10 统一拍板）。
  */
 export const MAX_RAW_TURNS_PER_LOOKUP = 20;
 export const MAX_RAW_LOOKUP_CHARS = 50000;
@@ -41,7 +44,7 @@ export const MAX_RAW_LOOKUP_CHARS = 50000;
  * 不属于真源定位契约。语义定死：charOffset 恒作用于**本次解析结果的首行**，允许配 seq 区间。
  */
 export type LookupPointer = Pointer & {
-  /** 首行行内字符偏移（非负整数）；仅 midRow 续取时出现，缺省表示从头读取。 */
+  /** 首行行内字符偏移（非负整数，**码点**口径）；仅 midRow 续取时出现，缺省表示从头读取。 */
   readonly charOffset?: number;
 };
 
@@ -50,10 +53,10 @@ export type LookupPointer = Pointer & {
  *  - turns：过闸后实际返回的原文行（行内截断时末行为前段）；
  *  - truncated：是否有行被两道闸挡下；
  *  - totalTurns/totalChars：**偏移应用之后、截断之前**的解析全集口径，不是返回集合的计数，
- *    下游据此判断尾部是否还可翻页，禁止改写成返回段合计；
+ *    下游据此判断尾部是否还可翻页，禁止改写成返回段合计（码点口径）；
  *  - midRow：截断点是否落在某一行内部（单行自身超字符闸的退化情形）；
  *  - nextSeq/nextCharOffset：行内续取游标，必须成对出现（共同锁定被截行与行内起点），
- *    无行内截断时双双显式 null。
+ *    无行内截断时双双显式 null（nextCharOffset 为码点口径）。
  */
 export interface RawTurnLookupView {
   readonly turns: readonly RawTurnView[];
@@ -169,7 +172,7 @@ export interface SourceLookupOptions {
  */
 export function applyLookupCaps(rows: readonly RawTurnView[]): RawTurnLookupView {
   const totalTurns = rows.length;
-  const totalChars = rows.reduce((sum, row) => sum + row.rawText.length, 0);
+  const totalChars = rows.reduce((sum, row) => sum + codePointLengthOf(row.rawText), 0);
 
   const turns: RawTurnView[] = [];
   let usedChars = 0;
@@ -183,7 +186,7 @@ export function applyLookupCaps(rows: readonly RawTurnView[]): RawTurnLookupView
       truncated = true;
       break;
     }
-    const length = row.rawText.length;
+    const length = codePointLengthOf(row.rawText);
     if (usedChars + length <= MAX_RAW_LOOKUP_CHARS) {
       turns.push(row);
       usedChars += length;
@@ -194,9 +197,9 @@ export function applyLookupCaps(rows: readonly RawTurnView[]): RawTurnLookupView
     if (length > MAX_RAW_LOOKUP_CHARS) {
       const remaining = MAX_RAW_LOOKUP_CHARS - usedChars;
       if (remaining > 0) {
-        // 用 substring 取行内前段：装配层静态门禁用 .slice/.splice（候选预切片门，M6 规则④），
-        // 字符串截断语义与 slice 完全等价且不触碰任何候选数组。
-        turns.push({ ...row, rawText: row.rawText.substring(0, remaining) });
+        // 行内前段截断经 core/text.ts 码点切片完成（装配层静态门禁用 .slice/.splice——候选预切片门，
+        // M6 规则④），不触碰任何候选数组，且码点下标永不劈开代理对。
+        turns.push({ ...row, rawText: codePointSlice(row.rawText, 0, remaining) });
         usedChars += remaining;
         midRow = true;
         nextSeq = row.seq;
@@ -260,14 +263,14 @@ export function createSourceLookupPort(
       //    等价覆盖跳行读取（区间首行不是上次 nextSeq 时自然在此被挡住），端口无需会话状态。
       if (pointer.charOffset !== undefined) {
         const first = rows[0];
-        if (first === undefined || pointer.charOffset >= first.rawText.length) {
+        if (first === undefined || pointer.charOffset >= codePointLengthOf(first.rawText)) {
           throw new SchemaError('charOffset 越出本次解析首行的实际长度，拒绝跳行读取');
         }
         // 解构空位取余下行，避免 .slice 触发装配层候选预切片静态门。
         const [, ...rest] = rows;
         const shiftedFirst: RawTurnView = {
           ...first,
-          rawText: first.rawText.substring(pointer.charOffset),
+          rawText: codePointSlice(first.rawText, pointer.charOffset),
         };
         rows = [shiftedFirst, ...rest];
       }

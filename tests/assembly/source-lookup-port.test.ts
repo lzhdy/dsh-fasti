@@ -34,6 +34,7 @@ import type {
   SourceLookupPort,
 } from '../../src/assembly/source-lookup.ts';
 import { ChannelBoundaryError, SchemaError } from '../../src/core/errors.ts';
+import { codePointLengthOf } from '../../src/core/text.ts';
 import { makeExperience } from '../helpers.ts';
 
 // ── 编译期断言工具 ───────────────────────────────────────────────────────────
@@ -441,4 +442,38 @@ test('S8 截断不是死胡同：信封保留 total* 原长，配合 Pointer.seq
   assert.equal(view.turns.length, MAX_RAW_TURNS_PER_LOOKUP);
   assert.equal(view.totalTurns, 40, '她能据真实总数决定下一页 seq 区间，而非面对静默短结果');
   assert.equal(view.totalChars, 40);
+});
+
+// ── C10 astral 口径钉死：闸/游标/截断全口径＝码点（拍板记录 L0-1）──────────
+// 下列三用例在 UTF-16 口径下必红：astral 字符 UTF-16 占 2 单位，两侧计数会差一倍。
+
+test('S10 astral 单行超闸 + midRow 续取往返：闸、游标、截断全口径＝码点', async () => {
+  const text = '😀'.repeat(60000); // 码点 60000 > 50000 闸；UTF-16 长 120000
+  const spy = makeSpyFacade([{ channel: 'dsh', shard: '2026-11', seq: 1, event_id: 'e1', raw_text: text }]);
+  const port = createSourceLookupPort(spy.facade, { channel: 'dsh' });
+
+  const view = await port.resolveRawText({ channel: 'dsh', id: 'raw_1', shard: '2026-11', seq: 1 });
+  assert.equal(view.midRow, true);
+  assert.equal(codePointLengthOf(view.turns[0]?.rawText ?? ''), 50000, '行内前段＝50000 码点（旧 UTF-16 口径只会给 25000）');
+  assert.equal(view.nextCharOffset, 50000, '续取起点为码点口径 50000（旧口径会是 100000 量级）');
+  assert.equal(view.totalChars, 60000, 'totalChars 同为码点口径全量');
+
+  const cont = await port.resolveRawText({ channel: 'dsh', id: 'raw_1', shard: '2026-11', seq: 1, charOffset: 50000 });
+  assert.equal(cont.truncated, false, '余段通过越界闸后一次取完');
+  assert.equal(codePointLengthOf(cont.turns[0]?.rawText ?? ''), 10000, '剩余 10000 码点');
+});
+
+test('S11 astral 多行闸判定：4×12000 码点＝48000 ≤ 闸全纳（UTF-16 口径会误超闸）', () => {
+  const rows = Array.from({ length: 4 }, (_unused, i) => makeTurn(i + 1, '😀'.repeat(12000)));
+  const view = applyLookupCaps(rows);
+  assert.equal(view.truncated, false, '48000 码点不越 50000 闸，禁止按 UTF-16 的 96000 误截');
+  assert.equal(view.turns.length, 4, '四行全返');
+  assert.equal(view.totalChars, 48000);
+});
+
+test('S12 首行 charOffset 码点语义：偏移永不劈开代理对', async () => {
+  const spy = makeSpyFacade([{ channel: 'dsh', shard: '2026-11', seq: 1, event_id: 'e1', raw_text: '😀😀tail' }]);
+  const port = createSourceLookupPort(spy.facade, { channel: 'dsh' });
+  const view = await port.resolveRawText({ channel: 'dsh', id: 'raw_1', shard: '2026-11', seq: 1, charOffset: 2 });
+  assert.equal(view.turns[0]?.rawText, 'tail', 'charOffset=2 跳过两个 emoji（码点）；旧 UTF-16 substring(2) 会得 😀tail');
 });
