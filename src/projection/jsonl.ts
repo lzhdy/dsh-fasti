@@ -20,9 +20,10 @@
  * 检索语义与 L1/L3 一致：ASCII 大小写不敏感子串匹配（用户拍板 Q1）。
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 
-import { appendJsonl, readJsonlFile } from '../core/jsonl.ts';
+import { appendJsonl, readJsonlFile, toJsonLine } from '../core/jsonl.ts';
 import { ensureDir, writeFileAtomic } from '../core/fsx.ts';
 import { asciiLower, makeSnippet, matchesSubstring } from './types.ts';
 import {
@@ -53,6 +54,14 @@ import type {
  * 再由精确判定收口，于是三档结果集完全一致。
  */
 export const MIN_INDEX_TERM_LENGTH = 3;
+
+/**
+ * D1 压实触发阈值（开机按需誊清）：某数据账已解析行数 ≥ COMPACT_MIN_ROWS
+ * 且 ≥ 现存行数 × COMPACT_RATIO 时，载入完成后整体原子重写为当前态。
+ * 初值凭经验设定，观测数据上来再调（对齐拍板记录 7 的观测精神）。
+ */
+export const COMPACT_MIN_ROWS = 64;
+export const COMPACT_RATIO = 2;
 
 /**
  * 把文本切成字符三元组（滑动窗口，长度 3）。
@@ -117,6 +126,10 @@ export class JsonlProjection implements ProjectionEngine {
   private readonly byChannel = new Map<string, Set<string>>();
   /** 时间桶（occurred_ms 按天）→ 文档 id 集合。 */
   private readonly byTimeBucket = new Map<number, Set<string>>();
+  /** 载入期计数：每本数据账本次 open 解析到的行数（残行不计入）。 */
+  private readonly parsedRows = new Map<string, number>();
+  /** 尾净状态缓存（L3-补1·单写者纪律：本引擎是四本账的唯一写者，追加后尾必净）。 */
+  private readonly tailClean = new Map<string, boolean>();
 
   constructor(dir: string) {
     this.dir = dir;
@@ -130,26 +143,37 @@ export class JsonlProjection implements ProjectionEngine {
     this.inverted.clear();
     this.byChannel.clear();
     this.byTimeBucket.clear();
+    this.parsedRows.clear();
+    this.tailClean.clear();
 
     ensureDir(this.dir);
     ensureDir(path.join(this.dir, 'index'));
 
-    for (const row of readJsonlFile<ExperienceProjection>(this.file('experience.jsonl'))) {
+    for (const row of readJsonlFile<ExperienceProjection>(this.file('experience.jsonl'), { tolerant: true })) {
+      this.parsedRows.set('experience.jsonl', (this.parsedRows.get('experience.jsonl') ?? 0) + 1);
       this.experiences.set(row.id, toExperienceProjection(row));
     }
-    for (const row of readJsonlFile<EdgeProjection>(this.file('edge.jsonl'))) {
+    for (const row of readJsonlFile<EdgeProjection>(this.file('edge.jsonl'), { tolerant: true })) {
+      this.parsedRows.set('edge.jsonl', (this.parsedRows.get('edge.jsonl') ?? 0) + 1);
       this.edges.set(row.id, toEdgeProjection(row));
     }
-    for (const row of readJsonlFile<{ id: string; text: string }>(this.file('document.jsonl'))) {
+    for (const row of readJsonlFile<{ id: string; text: string }>(this.file('document.jsonl'), { tolerant: true })) {
+      this.parsedRows.set('document.jsonl', (this.parsedRows.get('document.jsonl') ?? 0) + 1);
       this.documents.set(row.id, row.text);
       this.indexText(row.id, row.text);
     }
     // 事件行：文件里可能残留同 id 的旧版本行 → 载入时按最大 version 折叠。
-    for (const row of foldCurrentEventRows(
-      readJsonlFile<unknown>(this.file('event.jsonl')).map((raw) => decodeEventRow(raw)),
-    )) {
+    // （物理行数按折叠前的解析行数计——压实触发对账用。）
+    const eventRows = readJsonlFile<unknown>(this.file('event.jsonl'), { tolerant: true }).map((raw) =>
+      decodeEventRow(raw),
+    );
+    this.parsedRows.set('event.jsonl', eventRows.length);
+    for (const row of foldCurrentEventRows(eventRows)) {
       this.events.set(row.id, row);
     }
+
+    // D1：开机按需誊清——此刻刚载入完、尚未对外服务，是全天唯一无并发追加的安全窗口。
+    this.compactIfNeeded();
   }
 
   async close(): Promise<void> {
@@ -158,18 +182,18 @@ export class JsonlProjection implements ProjectionEngine {
 
   async upsertExperience(row: ExperienceProjection): Promise<void> {
     this.experiences.set(row.id, row);
-    appendJsonl(this.file('experience.jsonl'), row);
+    this.appendRow('experience.jsonl', row);
     this.indexChannel(row);
   }
 
   async upsertEdge(row: EdgeProjection): Promise<void> {
     this.edges.set(row.id, row);
-    appendJsonl(this.file('edge.jsonl'), row);
+    this.appendRow('edge.jsonl', row);
   }
 
   async upsertDocument(id: string, text: string): Promise<void> {
     this.documents.set(id, text);
-    appendJsonl(this.file('document.jsonl'), { id, text });
+    this.appendRow('document.jsonl', { id, text });
     this.indexText(id, text);
     this.flushIndexes();
   }
@@ -222,6 +246,10 @@ export class JsonlProjection implements ProjectionEngine {
       if (!matchesSubstring(text, keyword)) {
         continue;
       }
+      // 已知降级态（D3 注释化拍板，随 D2 而来）：documents 载入正常而 experiences 末行
+      // 因尾行容忍被丢时，该文档的 kind/channel 查不到对应经历行 → 如实给空串返回命中。
+      // 不是 bug：命中本身有效。自愈＝写前残行切除（L3-补1：下次该 id upsert 即补行愈合），
+      // 整体重建为兜底。不得改为抛错或隐藏命中。
       const row = this.experiences.get(id);
       hits.push({
         id,
@@ -296,7 +324,7 @@ export class JsonlProjection implements ProjectionEngine {
       return;
     }
     this.events.set(row.id, row);
-    appendJsonl(this.file('event.jsonl'), encodeEventRow(row));
+    this.appendRow('event.jsonl', encodeEventRow(row));
   }
 
   /** 事件查询（过滤与排序走共享实现 → 与 L1/L3 同语义）。 */
@@ -406,6 +434,86 @@ export class JsonlProjection implements ProjectionEngine {
       this.byTimeBucket.set(bucket, posting);
     }
     posting.add(row.id);
+  }
+
+  /**
+   * L3-补1（D2 配套·写前残行切除）：追加前确保账本以 '\n' 收尾，残行截到最后一个换行
+   * 之后（全文无换行截到 0）再 appendJsonl。否则新行会与残行拼进同一行——重开时整行被
+   * 尾行容忍丢弃（新写入凭空消失），或残行沦为中间坏行令下一次 open 抛 CorruptedError。
+   * 残行从未成为有效数据，切除零信息损失。读取侧 tolerant 一字不动（残行可能撑到 open
+   * 都没等到追加，双保险）。
+   */
+  private appendRow(name: string, row: unknown): void {
+    this.repairTornTail(name);
+    appendJsonl(this.file(name), row);
+    this.tailClean.set(name, true);
+  }
+
+  /** L3-补1：快路径 O(1) 末字节探测；不净才读回切除（单写者纪律下缓存尾净状态）。 */
+  private repairTornTail(name: string): void {
+    if (this.tailClean.get(name) === true) {
+      return;
+    }
+    const file = this.file(name);
+    const size = fs.existsSync(file) ? fs.statSync(file).size : 0;
+    if (size === 0) {
+      this.tailClean.set(name, true);
+      return;
+    }
+    const fd = fs.openSync(file, 'r');
+    let lastByte = 0;
+    try {
+      const buffer = Buffer.allocUnsafe(1);
+      fs.readSync(fd, buffer, 0, 1, size - 1);
+      lastByte = buffer[0] ?? 0;
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (lastByte === 0x0a) {
+      this.tailClean.set(name, true);
+      return;
+    }
+    // 残行切除：截到最后一个换行之后；全文无换行截到 0。
+    const text = fs.readFileSync(file, 'utf8');
+    const keepBytes = Buffer.byteLength(text.slice(0, text.lastIndexOf('\n') + 1), 'utf8');
+    fs.truncateSync(file, keepBytes);
+    this.tailClean.set(name, true);
+  }
+
+  /** D1：逐账对账，触发即整体原子重写为当前态；只写四本数据账，不碰 index/（flushIndexes 自管）。 */
+  private compactIfNeeded(): void {
+    this.compactFile(
+      'experience.jsonl',
+      this.experiences.size,
+      [...this.experiences.values()].sort((a, b) => (a.id < b.id ? -1 : 1)),
+    );
+    this.compactFile('edge.jsonl', this.edges.size, [...this.edges.values()].sort((a, b) => (a.id < b.id ? -1 : 1)));
+    this.compactFile(
+      'document.jsonl',
+      this.documents.size,
+      [...this.documents.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([id, text]) => ({ id, text })),
+    );
+    this.compactFile(
+      'event.jsonl',
+      this.events.size,
+      [...this.events.values()].sort((a, b) => (a.id < b.id ? -1 : 1)).map((row) => encodeEventRow(row)),
+    );
+  }
+
+  /**
+   * 触发条件：账本物理行数 ≥ COMPACT_MIN_ROWS 且 ≥ 现存行数 × COMPACT_RATIO。
+   * 重写行序按 id 排序（确定性，重开重压收敛到同一文件内容）；行格式经 toJsonLine
+   * 与 appendJsonl 逐字节同构；空账写空串（与 flushIndexes 空态先例一致）。
+   * 每文件独立原子重写：崩在半路，任何已完成子集折叠出的逻辑状态与全量完成相同。
+   */
+  private compactFile(name: string, liveRows: number, rows: readonly unknown[]): void {
+    // 物理行数以本次载入的解析行数为准（残行不计入，重写后自然消失）。
+    const parsedRows = this.parsedRows.get(name) ?? 0;
+    if (parsedRows < COMPACT_MIN_ROWS || parsedRows < liveRows * COMPACT_RATIO) {
+      return;
+    }
+    const body = rows.length === 0 ? '' : `${rows.map((row) => toJsonLine(row)).join('\n')}\n`;
+    writeFileAtomic(this.file(name), body);
   }
 
   /** 把三类索引落盘（审计口径：时间索引、通道索引、词法倒排）。 */
